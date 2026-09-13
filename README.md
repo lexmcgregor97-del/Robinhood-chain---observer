@@ -45,6 +45,17 @@ decimals and quote-token classification pass the market-safety gate.
 for a virtual entry until quote-token identity, liquidity, simulated buy and
 sell success, pool age, price impact, and round-trip loss are all measured.
 
+## Dedicated wallet boundary
+
+The bot supports a dedicated EOA loaded from deployment secrets. It remains
+disarmed unless `LIVE_TRADING_ENABLED` exactly matches the explicit arm phrase
+and every required limit and router allowlist is valid. `/api/wallet` reveals
+only configuration state and the public address—never key material.
+
+Before signing is connected, every proposed transaction must pass chain-ID,
+router allowlist, per-trade, daily-spend, gas, slippage, and calldata checks.
+The current build can validate an intent but cannot broadcast it.
+
 ## Reuse policy
 
 - `viem` (MIT): EVM ABI and RPC primitives.
