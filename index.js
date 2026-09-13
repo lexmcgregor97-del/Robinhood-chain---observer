@@ -54,8 +54,8 @@ const metrics = {
   v2Pools: 0, v3Pools: 0, swaps: 0, rpcLatencyMs: 0,
 };
 const persistence = {
-  enabled: Boolean(STATE_FILE), restored: false, lastSavedAt: null,
-  lastAttemptAt: 0, lastError: null, stateFile: STATE_FILE ? "configured" : null,
+  enabled: Boolean(STATE_FILE), restored: false, restoredCursor: null, restoredPoolCount: 0,
+  lastSavedAt: null, lastAttemptAt: 0, lastError: null, stateFile: STATE_FILE ? "configured" : null,
 };
 
 function persistedState() {
@@ -80,6 +80,8 @@ async function restoreState() {
     if (state.paper) paperPortfolio.restore(state.paper);
     if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
     persistence.restored = true;
+    persistence.restoredCursor = metrics.cursor;
+    persistence.restoredPoolCount = pools.size;
     persistence.lastSavedAt = state.savedAt;
   } catch (error) {
     persistence.lastError = error instanceof Error ? error.message : String(error);
