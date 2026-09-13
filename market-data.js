@@ -1,0 +1,49 @@
+import { decodeEventLog, parseAbiItem } from "viem";
+
+const V2_SWAP_EVENT = parseAbiItem(
+  "event Swap(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)",
+);
+const PANCAKE_V3_SWAP_EVENT = parseAbiItem(
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint128 protocolFeesToken0, uint128 protocolFeesToken1)",
+);
+const UNISWAP_V3_SWAP_EVENT = parseAbiItem(
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
+);
+
+const abs = (value) => value < 0n ? -value : value;
+
+export function decodeSwapEvent(log, version) {
+  const abi = version === "v2"
+    ? [V2_SWAP_EVENT]
+    : [PANCAKE_V3_SWAP_EVENT, UNISWAP_V3_SWAP_EVENT];
+  const decoded = decodeEventLog({ abi, data: log.data, topics: log.topics, strict: true });
+  const args = decoded.args;
+  let amount0;
+  let amount1;
+  if (version === "v2") {
+    amount0 = args.amount0In - args.amount0Out;
+    amount1 = args.amount1In - args.amount1Out;
+  } else {
+    amount0 = args.amount0;
+    amount1 = args.amount1;
+  }
+  if (amount0 === 0n || amount1 === 0n) throw new Error("Swap has a zero token leg");
+  return {
+    protocol: version === "v2" ? "pancakeswap-v2" : decoded.eventName === "Swap" ? "v3" : "unknown",
+    direction: amount0 > 0n ? "token0-to-token1" : "token1-to-token0",
+    amount0: amount0.toString(),
+    amount1: amount1.toString(),
+    absoluteAmount0: abs(amount0).toString(),
+    absoluteAmount1: abs(amount1).toString(),
+    sqrtPriceX96: args.sqrtPriceX96?.toString() ?? null,
+    liquidity: args.liquidity?.toString() ?? null,
+    tick: args.tick != null ? Number(args.tick) : null,
+  };
+}
+
+export function normalizedExecutionPrice(decoded, decimals0, decimals1) {
+  const amount0 = Number(decoded.absoluteAmount0) / (10 ** decimals0);
+  const amount1 = Number(decoded.absoluteAmount1) / (10 ** decimals1);
+  if (!Number.isFinite(amount0) || !Number.isFinite(amount1) || amount0 <= 0 || amount1 <= 0) return null;
+  return amount1 / amount0;
+}
