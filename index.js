@@ -29,6 +29,7 @@ const pools = new Map();
 const tokenCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
 let pollRunning = false;
+let nextPollDelayMs = POLL_MS;
 let executionConfig;
 try { executionConfig = loadExecutionConfig(); }
 catch (error) {
@@ -169,12 +170,17 @@ async function poll() {
     metrics.blockTimestamp = intHex(block?.timestamp);
     metrics.successfulPolls += 1;
     metrics.lastError = null;
+    nextPollDelayMs = POLL_MS;
   } catch (error) {
     metrics.failedPolls += 1;
     metrics.lastError = error instanceof Error ? error.message : String(error);
+    const rateLimited = metrics.lastError.includes("429");
+    nextPollDelayMs = rateLimited
+      ? Math.min(Math.max(nextPollDelayMs * 2, 15_000), 120_000)
+      : Math.min(Math.max(nextPollDelayMs * 2, POLL_MS), 30_000);
   } finally {
     pollRunning = false;
-    setTimeout(poll, POLL_MS);
+    setTimeout(poll, nextPollDelayMs);
   }
 }
 
@@ -218,7 +224,7 @@ function snapshot() {
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
     latestBlock: metrics.latestBlock, blockTimestamp: metrics.blockTimestamp,
     cursor: metrics.cursor, polling: {
-      intervalMs: POLL_MS, successful: metrics.successfulPolls,
+      configuredIntervalMs: POLL_MS, nextDelayMs: nextPollDelayMs, successful: metrics.successfulPolls,
       failed: metrics.failedPolls, lastError: metrics.lastError,
     },
     backfill,
