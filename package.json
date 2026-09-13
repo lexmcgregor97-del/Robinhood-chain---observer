@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check signals.js && node --check market-data.js && node --check risk-gate.js && node --check wallet.js",
+    "check": "node --check index.js && node --check signals.js && node --check market-data.js && node --check risk-gate.js && node --check wallet.js && node --check paper-portfolio.js",
     "test": "node --test"
   },
   "engines": {
