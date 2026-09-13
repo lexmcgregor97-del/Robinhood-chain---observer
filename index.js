@@ -4,10 +4,11 @@ import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
+import { ROBINHOOD } from "./chain-config.js";
 
 const PORT = Number(process.env.PORT || 3000);
-const RPC_URL = process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
-const CHAIN_ID = 4663;
+const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
+const CHAIN_ID = ROBINHOOD.chainId;
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 const BACKFILL = 20_000;
 const CHUNK = 500;
@@ -18,8 +19,6 @@ const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
 const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 
-const V2_FACTORY = "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E";
-const V3_FACTORY = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865";
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
 const V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
@@ -79,25 +78,21 @@ function registerPool(pool) {
 }
 
 async function discover(from, to) {
-  const [v2, v3] = await Promise.all([
-    getLogs(from, to, V2_FACTORY, [PAIR_CREATED]),
-    getLogs(from, to, V3_FACTORY, [POOL_CREATED]),
-  ]);
-  for (const log of v2) {
-    if (log.topics.length < 3 || dataWord(log.data, 0).length !== 64) continue;
-    registerPool({
-      address: wordAddress(log.data, 0), version: "v2",
-      token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
-      fee: null, discoveryBlock: log.blockNumber,
-    });
-  }
-  for (const log of v3) {
-    if (log.topics.length < 4 || dataWord(log.data, 1).length !== 64) continue;
-    registerPool({
-      address: wordAddress(log.data, 1), version: "v3",
-      token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
-      fee: intHex(log.topics[3]), discoveryBlock: log.blockNumber,
-    });
+  const batches = await Promise.all(ROBINHOOD.factories.map(async (factory) => ({
+    factory, logs: await getLogs(from, to, factory.address,
+      [factory.version === "v2" ? PAIR_CREATED : POOL_CREATED]),
+  })));
+  for (const { factory, logs } of batches) {
+    for (const log of logs) {
+      const poolWord = factory.version === "v2" ? 0 : 1;
+      if (log.topics.length < (factory.version === "v2" ? 3 : 4) || dataWord(log.data, poolWord).length !== 64) continue;
+      registerPool({
+        address: wordAddress(log.data, poolWord), dex: factory.dex, version: factory.version,
+        token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
+        fee: factory.version === "v3" ? intHex(log.topics[3]) : null,
+        discoveryBlock: log.blockNumber,
+      });
+    }
   }
 }
 
@@ -213,6 +208,8 @@ function snapshot() {
     backfill: metrics.backfill,
     pancakeswap: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
       totalPools: pools.size, swapsObserved: metrics.swaps, capacity: MAX_POOLS },
+    venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
+      [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
   };
 }
@@ -233,7 +230,7 @@ async function dashboard() {
   const cards = [];
   for (const pool of active) {
     const [a, b] = await Promise.all([tokenMeta(pool.token0), tokenMeta(pool.token1)]);
-    cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
+    cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${esc(pool.dex || "unknown")} · ${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
   }
   const s = snapshot();
   return `<!doctype html><meta name="viewport" content="width=device-width"><title>Robinhood Observer</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Robinhood Chain Observer</h1><p class="warn">OBSERVATION ONLY / NO PAPER STRATEGY YET<br>In-memory state resets on redeploy.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
