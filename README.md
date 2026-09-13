@@ -35,3 +35,14 @@ Endpoints: `/`, `/health`, `/api/scanner`, `/api/pools`, `/api/signals`.
 window, and recency. This is the first paper layer. Price, liquidity, honeypot,
 slippage, virtual fills, and P/L gates must be added and validated before any
 wallet or live-execution layer.
+
+Swap payloads are decoded with `viem` and the latest raw token deltas are kept
+on each pool. Human-normalized execution prices are available once token
+decimals and quote-token classification pass the market-safety gate.
+
+## Reuse policy
+
+- `viem` (MIT): EVM ABI and RPC primitives.
+- PancakeSwap SDK (MIT): approved for later route and price-impact math.
+- Hummingbot (Apache-2.0): architecture reference only unless attribution is added.
+- GPL/AGPL or unlicensed trading repositories: no copied code.
