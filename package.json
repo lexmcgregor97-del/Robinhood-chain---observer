@@ -1,0 +1,14 @@
+{
+  "name": "robinhood-chain-observer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js && node --check signals.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
