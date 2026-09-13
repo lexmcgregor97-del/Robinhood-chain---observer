@@ -28,6 +28,7 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 const pools = new Map();
 const tokenCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
+let pollRunning = false;
 let executionConfig;
 try { executionConfig = loadExecutionConfig(); }
 catch (error) {
@@ -145,11 +146,20 @@ async function scanRange(from, to) {
 async function bootstrap(latest) {
   const from = Math.max(1, latest - BACKFILL);
   metrics.backfill = { active: true, from, to: latest, current: from };
-  await scanRange(from, latest);
-  metrics.backfill.active = false;
+  try {
+    await scanRange(from, latest);
+  } finally {
+    metrics.backfill.active = false;
+    metrics.backfill.current = Math.min(metrics.cursor || from, latest);
+  }
 }
 
 async function poll() {
+  if (pollRunning) {
+    setTimeout(poll, POLL_MS);
+    return;
+  }
+  pollRunning = true;
   try {
     const latest = intHex(await rpc("eth_blockNumber", []));
     if (!metrics.cursor) await bootstrap(latest);
@@ -163,6 +173,7 @@ async function poll() {
     metrics.failedPolls += 1;
     metrics.lastError = error instanceof Error ? error.message : String(error);
   } finally {
+    pollRunning = false;
     setTimeout(poll, POLL_MS);
   }
 }
@@ -197,6 +208,11 @@ const esc = (value) => String(value).replace(/[&<>"']/g, (c) => ({
 })[c]);
 
 function snapshot() {
+  const backfill = {
+    ...metrics.backfill,
+    active: metrics.backfill.active && metrics.cursor <= metrics.backfill.to,
+    current: Math.min(metrics.backfill.current, metrics.backfill.to),
+  };
   return {
     mode: "OBSERVATION_ONLY_NO_PAPER_STRATEGY",
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
@@ -205,8 +221,8 @@ function snapshot() {
       intervalMs: POLL_MS, successful: metrics.successfulPolls,
       failed: metrics.failedPolls, lastError: metrics.lastError,
     },
-    backfill: metrics.backfill,
-    pancakeswap: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
+    backfill,
+    poolDiscovery: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
       totalPools: pools.size, swapsObserved: metrics.swaps, capacity: MAX_POOLS },
     venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
