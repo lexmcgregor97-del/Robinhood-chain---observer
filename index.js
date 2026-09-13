@@ -256,13 +256,19 @@ async function marketSafety(pool) {
   };
   if (pool.version !== "v2") return base;
   try {
-    const reserves = decodeV2Reserves(await rpc("eth_call",
-      [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
+    const [reservesResult, token0Meta, token1Meta] = await Promise.all([
+      rpc("eth_call", [{ to: pool.address, data: "0x0902f1ac" }, "latest"]),
+      tokenMeta(pool.token0),
+      tokenMeta(pool.token1),
+    ]);
+    const reserves = decodeV2Reserves(reservesResult);
     return evaluateV2MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
       quoteTokens: [ROBINHOOD.weth, ROBINHOOD.usdg],
       reserve0: reserves.reserve0,
       reserve1: reserves.reserve1,
+      token0Decimals: token0Meta.decimals,
+      token1Decimals: token1Meta.decimals,
       quoteAmountIn: PAPER_QUOTE_PROBE_WEI,
     });
   } catch (error) {
