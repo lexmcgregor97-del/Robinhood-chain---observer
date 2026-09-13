@@ -5,6 +5,7 @@ import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import { ROBINHOOD } from "./chain-config.js";
+import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
@@ -18,6 +19,7 @@ const SIGNAL_WINDOW_BLOCKS = Number(process.env.SIGNAL_WINDOW_BLOCKS || 20);
 const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
 const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
+const PAPER_QUOTE_PROBE_WEI = BigInt(process.env.PAPER_QUOTE_PROBE_WEI || "1000000000000000000");
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -243,8 +245,37 @@ function signals(limit = 25) {
   }).slice(0, limit);
 }
 
-function candidates(limit = 25) {
-  return signals(limit).map((pool) => ({ ...pool, riskGate: evaluateRiskGate(pool) }));
+async function marketSafety(pool) {
+  const base = {
+    quoteTokenKnown: [ROBINHOOD.weth, ROBINHOOD.usdg].map((a) => a.toLowerCase())
+      .includes(pool.token0) !== [ROBINHOOD.weth, ROBINHOOD.usdg].map((a) => a.toLowerCase())
+      .includes(pool.token1),
+    liquidityKnown: false, buySimulationOk: false, sellSimulationOk: false,
+    poolAgeBlocks: (metrics.latestBlock || metrics.cursor) - pool.discoveryBlock,
+    priceImpactPct: null, roundTripLossPct: null,
+  };
+  if (pool.version !== "v2") return base;
+  try {
+    const reserves = decodeV2Reserves(await rpc("eth_call",
+      [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
+    return evaluateV2MarketSafety(pool, {
+      latestBlock: metrics.latestBlock || metrics.cursor,
+      quoteTokens: [ROBINHOOD.weth, ROBINHOOD.usdg],
+      reserve0: reserves.reserve0,
+      reserve1: reserves.reserve1,
+      quoteAmountIn: PAPER_QUOTE_PROBE_WEI,
+    });
+  } catch (error) {
+    return { ...base, measurementError: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function candidates(limit = 25) {
+  const ranked = signals(limit);
+  return Promise.all(ranked.map(async (pool) => {
+    const measured = { ...pool, marketSafety: await marketSafety(pool) };
+    return { ...measured, riskGate: evaluateRiskGate(measured) };
+  }));
 }
 
 async function dashboard() {
@@ -265,7 +296,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/scanner") return json(res, snapshot());
     if (req.url === "/api/pools") return json(res, { total: pools.size, pools: [...pools.values()].slice(0, 100) });
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
-    if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: candidates() });
+    if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: await candidates() });
     if (req.url === "/api/wallet") return json(res, executionConfig.publicStatus);
     if (req.url === "/api/paper") return json(res, paperPortfolio.snapshot());
     if (req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(await dashboard()); return; }
