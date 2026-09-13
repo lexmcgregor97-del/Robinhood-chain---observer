@@ -20,6 +20,8 @@ export function evaluateV2MarketSafety(pool, options) {
   const base = {
     quoteTokenKnown,
     quoteToken: token0IsQuote ? lower(pool.token0) : token1IsQuote ? lower(pool.token1) : null,
+    baseToken: token0IsQuote ? lower(pool.token1) : token1IsQuote ? lower(pool.token0) : null,
+    tokenPriceQuote: null,
     liquidityKnown: false,
     buySimulationOk: false,
     sellSimulationOk: false,
@@ -38,8 +40,14 @@ export function evaluateV2MarketSafety(pool, options) {
       quoteAmountIn,
       feeBps: pool.dex === "pancakeswap" ? 25 : 30,
     });
+    const quoteDecimals = Number(token0IsQuote ? options.token0Decimals : options.token1Decimals);
+    const tokenDecimals = Number(token0IsQuote ? options.token1Decimals : options.token0Decimals);
+    const quoteHuman = Number(reserveQuote) / (10 ** quoteDecimals);
+    const tokenHuman = Number(reserveToken) / (10 ** tokenDecimals);
+    const tokenPriceQuote = quoteHuman > 0 && tokenHuman > 0 ? quoteHuman / tokenHuman : null;
     return {
       ...base,
+      tokenPriceQuote: Number.isFinite(tokenPriceQuote) ? tokenPriceQuote : null,
       liquidityKnown: true,
       reserveQuote: reserveQuote.toString(),
       reserveToken: reserveToken.toString(),
