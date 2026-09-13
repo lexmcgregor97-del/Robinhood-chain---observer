@@ -7,6 +7,7 @@ import { PaperPortfolio } from "./paper-portfolio.js";
 import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
+import { loadJsonState, saveJsonState } from "./state-store.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
@@ -23,6 +24,8 @@ const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 const PAPER_WETH_PROBE_WEI = BigInt(process.env.PAPER_WETH_PROBE_WEI || "1000000000000000");
 const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10");
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
+const STATE_FILE = String(process.env.STATE_FILE || "");
+const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -50,6 +53,52 @@ const metrics = {
   backfill: { active: false, from: 0, to: 0, current: 0 },
   v2Pools: 0, v3Pools: 0, swaps: 0, rpcLatencyMs: 0,
 };
+const persistence = {
+  enabled: Boolean(STATE_FILE), restored: false, lastSavedAt: null,
+  lastAttemptAt: 0, lastError: null, stateFile: STATE_FILE ? "configured" : null,
+};
+
+function persistedState() {
+  return {
+    cursor: metrics.cursor,
+    pools: [...pools.values()],
+    paper: paperPortfolio.serialize(),
+    paperAutomation,
+  };
+}
+
+async function restoreState() {
+  if (!STATE_FILE) return;
+  try {
+    const state = await loadJsonState(STATE_FILE);
+    if (!state) return;
+    for (const pool of (state.pools || []).slice(0, MAX_POOLS)) pools.set(pool.address, pool);
+    metrics.cursor = Number(state.cursor) || 0;
+    metrics.v2Pools = [...pools.values()].filter((pool) => pool.version === "v2").length;
+    metrics.v3Pools = [...pools.values()].filter((pool) => pool.version === "v3").length;
+    metrics.swaps = [...pools.values()].reduce((sum, pool) => sum + (Number(pool.swapCount) || 0), 0);
+    if (state.paper) paperPortfolio.restore(state.paper);
+    if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
+    persistence.restored = true;
+    persistence.lastSavedAt = state.savedAt;
+  } catch (error) {
+    persistence.lastError = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function persistState(force = false) {
+  if (!STATE_FILE) return;
+  const now = Date.now();
+  if (!force && now - persistence.lastAttemptAt < STATE_SAVE_MS) return;
+  persistence.lastAttemptAt = now;
+  try {
+    await saveJsonState(STATE_FILE, persistedState());
+    persistence.lastSavedAt = Date.now();
+    persistence.lastError = null;
+  } catch (error) {
+    persistence.lastError = error instanceof Error ? error.message : String(error);
+  }
+}
 
 async function rpc(method, params) {
   const started = Date.now();
@@ -181,6 +230,7 @@ async function poll() {
     if (!metrics.backfill.active && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
       await runPaperCycle();
     }
+    await persistState();
   } catch (error) {
     metrics.failedPolls += 1;
     metrics.lastError = error instanceof Error ? error.message : String(error);
@@ -243,6 +293,7 @@ function snapshot() {
     venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
+    persistence,
   };
 }
 
@@ -383,5 +434,14 @@ function json(res, value) {
   res.end(JSON.stringify(value));
 }
 
+await restoreState();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
+
+async function shutdown() {
+  await persistState(true);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5_000).unref();
+}
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
