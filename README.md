@@ -26,7 +26,8 @@ Optional environment variables:
 - `SIGNAL_WINDOW_BLOCKS` (defaults to `20`)
 - `SIGNAL_MIN_SWAPS` (defaults to `3`)
 
-Endpoints: `/`, `/health`, `/api/scanner`, `/api/pools`, `/api/signals`.
+Endpoints: `/`, `/health`, `/api/scanner`, `/api/pools`, `/api/signals`,
+`/api/candidates`.
 
 ## Current build stage
 
@@ -39,6 +40,10 @@ wallet or live-execution layer.
 Swap payloads are decoded with `viem` and the latest raw token deltas are kept
 on each pool. Human-normalized execution prices are available once token
 decimals and quote-token classification pass the market-safety gate.
+
+`/api/candidates` is deliberately fail-closed. A pool cannot become eligible
+for a virtual entry until quote-token identity, liquidity, simulated buy and
+sell success, pool age, price impact, and round-trip loss are all measured.
 
 ## Reuse policy
 
