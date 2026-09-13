@@ -1,6 +1,7 @@
 import http from "node:http";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent } from "./market-data.js";
+import { evaluateRiskGate } from "./risk-gate.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
@@ -211,6 +212,10 @@ function signals(limit = 25) {
   }).slice(0, limit);
 }
 
+function candidates(limit = 25) {
+  return signals(limit).map((pool) => ({ ...pool, riskGate: evaluateRiskGate(pool) }));
+}
+
 async function dashboard() {
   const active = signals(10);
   const cards = [];
@@ -229,6 +234,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/scanner") return json(res, snapshot());
     if (req.url === "/api/pools") return json(res, { total: pools.size, pools: [...pools.values()].slice(0, 100) });
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
+    if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: candidates() });
     if (req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(await dashboard()); return; }
     res.writeHead(404).end("Not Found");
   } catch (error) { res.writeHead(500).end("Internal Error"); }
