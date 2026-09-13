@@ -29,3 +29,14 @@ test("round-trips serialized state", () => {
 test("rejects malformed restored state", () => {
   assert.throws(() => new PaperPortfolio({ state: { mode: "LIVE", openPositions: [], trades: [] } }), /invalid-paper-state/);
 });
+
+
+test("tracks peak return for trailing exits", () => {
+  const p = new PaperPortfolio({ initialCash: 1000 });
+  p.open({ pool: "0xpeak", token: "TOK", price: 10, notional: 100 });
+  p.mark("0xpeak", 15);
+  const marked = p.mark("0xpeak", 13);
+  assert.equal(marked.markPrice, 13);
+  assert.equal(marked.peakPrice, 15);
+  assert.equal(marked.peakReturnPct, 50);
+});
