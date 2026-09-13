@@ -3,6 +3,7 @@ import { rankPools } from "./signals.js";
 import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
+import { PaperPortfolio } from "./paper-portfolio.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
@@ -14,6 +15,8 @@ const MAX_POOLS = 5_000;
 const MAX_RECENT = 50;
 const SIGNAL_WINDOW_BLOCKS = Number(process.env.SIGNAL_WINDOW_BLOCKS || 20);
 const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
+const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
+const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 
 const V2_FACTORY = "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E";
 const V3_FACTORY = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865";
@@ -25,6 +28,7 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 
 const pools = new Map();
 const tokenCache = new Map();
+const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
 let executionConfig;
 try { executionConfig = loadExecutionConfig(); }
 catch (error) {
@@ -244,6 +248,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
     if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: candidates() });
     if (req.url === "/api/wallet") return json(res, executionConfig.publicStatus);
+    if (req.url === "/api/paper") return json(res, paperPortfolio.snapshot());
     if (req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(await dashboard()); return; }
     res.writeHead(404).end("Not Found");
   } catch (error) { res.writeHead(500).end("Internal Error"); }
