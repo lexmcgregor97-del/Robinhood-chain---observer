@@ -1,6 +1,6 @@
 # Robinhood Chain Observer
 
-Read-only PancakeSwap V2/V3 pool and swap observer for Robinhood Chain (chain ID 4663).
+Read-only Uniswap and PancakeSwap V2/V3 pool and swap observer for Robinhood Chain (chain ID 4663).
 
 ## Safety boundary
 
@@ -69,6 +69,14 @@ The V2 simulator applies constant-product reserve changes and pool fees in both
 directions. It reports buy/sell output, price impact, and round-trip loss using
 integer arithmetic. This supplies two of the candidate gate's required safety
 measurements without estimating them from chart candles.
+
+## Robinhood Chain venues
+
+Factory discovery covers both Uniswap and PancakeSwap V2/V3. WETH, USDG,
+factory, and router addresses are pinned in `chain-config.js` from Robinhood,
+Uniswap, and PancakeSwap primary sources. Router addresses are references only;
+the wallet allowlist remains empty until deployment configuration explicitly
+selects a venue.
 
 ## Reuse policy
 
