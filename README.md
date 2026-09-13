@@ -8,7 +8,7 @@ Read-only Uniswap and PancakeSwap V2/V3 pool and swap observer for Robinhood Cha
 - No wallet, live trading, position sizing, or P/L logic.
 - Paper-signal scoring ranks pool activity and acceleration; it never submits transactions.
 - HTTP endpoints are GET-only.
-- Scanner state is bounded and in memory; it resets on redeploy.
+- Scanner state is bounded. It persists atomically when `STATE_FILE` points to a mounted volume; otherwise it resets on redeploy.
 
 ## Run
 
@@ -84,3 +84,10 @@ selects a venue.
 - PancakeSwap SDK (MIT): approved for later route and price-impact math.
 - Hummingbot (Apache-2.0): architecture reference only unless attribution is added.
 - GPL/AGPL or unlicensed trading repositories: no copied code.
+
+## Persistence
+
+Set `STATE_FILE=/data/observer-state.json` after mounting a Railway volume at `/data`.
+The service atomically checkpoints its cursor, bounded pool history, paper portfolio,
+trades, and automation state every 30 seconds and again during graceful shutdown.
+Without a mounted volume, persistence remains disabled and the scanner continues safely in memory.
