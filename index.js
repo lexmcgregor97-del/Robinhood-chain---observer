@@ -2,6 +2,7 @@ import http from "node:http";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
+import { loadExecutionConfig } from "./wallet.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
@@ -24,6 +25,13 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 
 const pools = new Map();
 const tokenCache = new Map();
+let executionConfig;
+try { executionConfig = loadExecutionConfig(); }
+catch (error) {
+  console.error(`Wallet configuration rejected: ${error instanceof Error ? error.message : String(error)}`);
+  executionConfig = { armed: false, account: null,
+    publicStatus: { armed: false, walletConfigured: false, address: null } };
+}
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
   successfulPolls: 0, failedPolls: 0, lastError: null,
@@ -235,6 +243,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/pools") return json(res, { total: pools.size, pools: [...pools.values()].slice(0, 100) });
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
     if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: candidates() });
+    if (req.url === "/api/wallet") return json(res, executionConfig.publicStatus);
     if (req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(await dashboard()); return; }
     res.writeHead(404).end("Not Found");
   } catch (error) { res.writeHead(500).end("Internal Error"); }
