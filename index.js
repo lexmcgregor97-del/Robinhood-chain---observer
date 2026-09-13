@@ -239,6 +239,7 @@ async function poll() {
       ? Math.min(Math.max(nextPollDelayMs * 2, 15_000), 120_000)
       : Math.min(Math.max(nextPollDelayMs * 2, POLL_MS), 30_000);
   } finally {
+    await persistState();
     pollRunning = false;
     setTimeout(poll, nextPollDelayMs);
   }
