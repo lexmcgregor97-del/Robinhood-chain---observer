@@ -25,7 +25,7 @@ export class PaperPortfolio {
     if (notional > this.cash) throw new Error("insufficient-paper-cash");
     const quantity = (notional - fee) / price;
     const position = { pool, token, quantity, entryPrice: price, markPrice: price,
-      costBasis: notional, entryFee: fee, openedAt: timestamp };
+      costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price };
     this.cash -= notional;
     this.positions.set(pool, position);
     this.trades.push({ type: "open", pool, token, price, quantity, notional, fee, timestamp });
@@ -36,6 +36,7 @@ export class PaperPortfolio {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
     position.markPrice = finitePositive(price, "price");
+    position.peakPrice = Math.max(position.peakPrice || position.entryPrice, position.markPrice);
     return this.positionSnapshot(position);
   }
 
@@ -58,8 +59,11 @@ export class PaperPortfolio {
 
   positionSnapshot(position) {
     const marketValue = position.quantity * position.markPrice;
+    const returnPct = ((marketValue / position.costBasis) - 1) * 100;
+    const peakMarketValue = position.quantity * (position.peakPrice || position.markPrice);
+    const peakReturnPct = ((peakMarketValue / position.costBasis) - 1) * 100;
     return { ...position, marketValue, unrealizedPnl: marketValue - position.costBasis,
-      returnPct: ((marketValue / position.costBasis) - 1) * 100 };
+      returnPct, peakReturnPct };
   }
 
   snapshot() {
@@ -84,6 +88,7 @@ export class PaperPortfolio {
       pool: position.pool, token: position.token, quantity: Number(position.quantity),
       entryPrice: Number(position.entryPrice), markPrice: Number(position.markPrice),
       costBasis: Number(position.costBasis), entryFee: Number(position.entryFee), openedAt: position.openedAt,
+      peakPrice: Number(position.peakPrice || position.markPrice),
     }]));
     if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [p.quantity, p.entryPrice, p.markPrice, p.costBasis])].every(Number.isFinite)) throw new Error("invalid-paper-state");
   }
