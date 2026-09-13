@@ -63,6 +63,13 @@ realized/unrealized P/L. The accounting engine includes entry and exit fees,
 position limits, overspend protection, deterministic marks, and serializable
 state for persistence. It is not yet wired to open positions automatically.
 
+## Swap simulation
+
+The V2 simulator applies constant-product reserve changes and pool fees in both
+directions. It reports buy/sell output, price impact, and round-trip loss using
+integer arithmetic. This supplies two of the candidate gate's required safety
+measurements without estimating them from chart candles.
+
 ## Reuse policy
 
 - `viem` (MIT): EVM ABI and RPC primitives.
