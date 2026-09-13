@@ -1,5 +1,6 @@
 import http from "node:http";
 import { rankPools } from "./signals.js";
+import { decodeSwapEvent } from "./market-data.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
@@ -94,6 +95,16 @@ function recordSwap(log) {
   pool.lastSwapBlock = log.blockNumber;
   pool.recent.push(log.blockNumber);
   if (pool.recent.length > MAX_RECENT) pool.recent.shift();
+  try {
+    pool.lastSwap = {
+      blockNumber: log.blockNumber,
+      transactionHash: log.transactionHash,
+      ...decodeSwapEvent(log, pool.version),
+    };
+    pool.decodeError = null;
+  } catch (error) {
+    pool.decodeError = error instanceof Error ? error.message : String(error);
+  }
   metrics.swaps += 1;
 }
 
