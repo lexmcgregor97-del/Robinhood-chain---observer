@@ -56,6 +56,13 @@ Before signing is connected, every proposed transaction must pass chain-ID,
 router allowlist, per-trade, daily-spend, gas, slippage, and calldata checks.
 The current build can validate an intent but cannot broadcast it.
 
+## Paper portfolio
+
+`/api/paper` reports virtual cash, open positions, market value, equity, and
+realized/unrealized P/L. The accounting engine includes entry and exit fees,
+position limits, overspend protection, deterministic marks, and serializable
+state for persistence. It is not yet wired to open positions automatically.
+
 ## Reuse policy
 
 - `viem` (MIT): EVM ABI and RPC primitives.
