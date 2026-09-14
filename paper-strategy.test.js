@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
+import {
+  planPaperEntry, paperExitReason, paperCircuitFailures,
+} from "./paper-strategy.js";
 
 const candidate = {
   address: "0xpool",
@@ -26,6 +28,21 @@ test("prevents duplicate pool positions", () => {
   const plan = planPaperEntry(candidate, { cash: 1000, openPositions: [{ pool: "0xpool" }] });
   assert.equal(plan.approved, false);
   assert.ok(plan.failures.includes("position-already-open"));
+});
+
+test("blocks new entries at the realized drawdown limit", () => {
+  assert.deepEqual(
+    paperCircuitFailures({ maxRealizedDrawdownPct: 20 }),
+    ["paper-drawdown-circuit-breaker"],
+  );
+  assert.deepEqual(paperCircuitFailures({ maxRealizedDrawdownPct: 19.99 }), []);
+});
+
+test("drawdown circuit fails closed for invalid policy", () => {
+  assert.deepEqual(
+    paperCircuitFailures({ maxRealizedDrawdownPct: 1 }, { maxRealizedDrawdownPct: 0 }),
+    ["invalid-drawdown-policy"],
+  );
 });
 
 test("applies stop, target, trail and time exits deterministically", () => {
