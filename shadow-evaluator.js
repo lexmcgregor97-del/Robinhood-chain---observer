@@ -86,7 +86,13 @@ export class ShadowEvaluator {
     this.samples = [];
   }
 
-  observe(candidates, now = Date.now()) {
+  pendingPoolAddresses() {
+    return [...new Set(this.samples
+      .filter((sample) => !sample.closedAt)
+      .map((sample) => sample.pool))];
+  }
+
+  resolve(candidates, now = Date.now()) {
     const prices = new Map(candidates
       .filter((candidate) => finite(candidate?.marketSafety?.tokenPriceQuote))
       .map((candidate) => [candidate.address, Number(candidate.marketSafety.tokenPriceQuote)]));
@@ -98,7 +104,9 @@ export class ShadowEvaluator {
       sample.exitPrice = exitPrice;
       sample.returnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
     }
+  }
 
+  record(candidates, now = Date.now()) {
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
@@ -115,6 +123,11 @@ export class ShadowEvaluator {
       }
     }
     if (this.samples.length > 2000) this.samples = this.samples.slice(-2000);
+  }
+
+  observe(candidates, now = Date.now()) {
+    this.resolve(candidates, now);
+    this.record(candidates, now);
   }
 
   snapshot() {
