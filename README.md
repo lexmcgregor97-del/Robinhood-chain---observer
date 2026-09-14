@@ -9,7 +9,7 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 - Every HTTP endpoint is GET-only.
 - New paper and shadow entries are paused during the measurement repair.
 - Existing paper positions are marked and closed only in the virtual ledger.
-- The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, and inconsistent native value. It is not connected to a signer.
+- The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, inconsistent spend declarations, and native value. ERC-20 approval validation permits only the exact planned amount to an approved router; unlimited allowances fail closed. Neither boundary is connected to a signer.
 
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
