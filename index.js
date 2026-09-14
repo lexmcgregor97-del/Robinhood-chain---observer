@@ -32,6 +32,8 @@ const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10"
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
+const V3_BITMAP_MAX_WORDS = Number(process.env.V3_BITMAP_MAX_WORDS || 32);
+const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 300_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -41,6 +43,7 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 
 const pools = new Map();
 const tokenCache = new Map();
+const v3BoundaryCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 let pollRunning = false;
@@ -326,6 +329,39 @@ function signals(limit = 25) {
   }).slice(0, limit);
 }
 
+async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
+  const key = `${pool.address}:${zeroForOne ? "down" : "up"}`;
+  const cached = v3BoundaryCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    const stillAhead = cached.boundaryTick === null
+      || (zeroForOne ? cached.boundaryTick <= currentTick : cached.boundaryTick > currentTick);
+    if (stillAhead) return cached.boundaryTick;
+  }
+
+  const compressedTick = compressTick(currentTick, tickSpacing);
+  const { wordPos } = bitmapPosition(compressedTick);
+  const currentBitmap = decodeUint(await rpc("eth_call", [{
+    to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
+  }, "latest"]), "tick-bitmap");
+  let boundaryTick = findInitializedTickInWord({
+    bitmap: currentBitmap, wordPos, currentCompressedTick: compressedTick,
+    tickSpacing, zeroForOne,
+  });
+
+  for (let offset = 1; boundaryTick === null && offset <= V3_BITMAP_MAX_WORDS; offset += 1) {
+    const adjacentWordPos = wordPos + (zeroForOne ? -offset : offset);
+    const adjacentBitmap = decodeUint(await rpc("eth_call", [{
+      to: pool.address, data: encodeInt16Call("0x5339c296", adjacentWordPos),
+    }, "latest"]), "tick-bitmap");
+    boundaryTick = findInitializedTickInWholeWord({
+      bitmap: adjacentBitmap, wordPos: adjacentWordPos, tickSpacing, zeroForOne,
+    });
+  }
+
+  v3BoundaryCache.set(key, { boundaryTick, expiresAt: Date.now() + V3_BOUNDARY_CACHE_MS });
+  return boundaryTick;
+}
+
 async function marketSafety(pool) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg];
   const quoteAddresses = quoteTokens.map((address) => address.toLowerCase());
@@ -366,25 +402,9 @@ async function marketSafety(pool) {
     ]);
     const slot0 = decodeV3Slot0(slot0Result);
     const tickSpacing = Number(decodeUint(tickSpacingResult, "tick-spacing"));
-    const compressedTick = compressTick(slot0.tick, tickSpacing);
-    const { wordPos } = bitmapPosition(compressedTick);
-    const bitmapResult = await rpc("eth_call", [{
-      to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
-    }, "latest"]);
-    let boundaryTick = findInitializedTickInWord({
-      bitmap: decodeUint(bitmapResult, "tick-bitmap"), wordPos, currentCompressedTick: compressedTick,
-      tickSpacing, zeroForOne: quoteIsToken0,
-    });
-    for (let offset = 1; boundaryTick === null && offset <= 8; offset += 1) {
-      const adjacentWordPos = wordPos + (quoteIsToken0 ? -offset : offset);
-      const adjacentResult = await rpc("eth_call", [{
-        to: pool.address, data: encodeInt16Call("0x5339c296", adjacentWordPos),
-      }, "latest"]);
-      boundaryTick = findInitializedTickInWholeWord({
-        bitmap: decodeUint(adjacentResult, "tick-bitmap"),
-        wordPos: adjacentWordPos, tickSpacing, zeroForOne: quoteIsToken0,
-      });
-    }
+    const boundaryTick = await resolveV3Boundary(
+      pool, slot0.tick, tickSpacing, quoteIsToken0,
+    );
     return evaluateV3MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
       quoteTokens, sqrtPriceX96: slot0.sqrtPriceX96, currentTick: slot0.tick,
