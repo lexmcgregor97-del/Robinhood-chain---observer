@@ -3,6 +3,8 @@ const finite = (value) => Number.isFinite(Number(value));
 export const SHADOW_RULES = Object.freeze([
   { name: "escape-strict", signal: "escape-velocity", maxDeviationPct: 5 },
   { name: "escape-relaxed", signal: "escape-velocity", maxDeviationPct: 10 },
+  { name: "escape-confirmed", signal: "escape-velocity", maxDeviationPct: 5,
+    confirmationCycles: 2 },
   { name: "breakout-strict", signal: "breakout-watch", maxDeviationPct: 5 },
 ]);
 
@@ -87,6 +89,7 @@ export class ShadowEvaluator {
       ? 5 * 60_000 : this.horizonsMs[0];
     this.rules = rules;
     this.samples = [];
+    this.confirmations = new Map();
   }
 
   pendingPoolAddresses() {
@@ -122,9 +125,19 @@ export class ShadowEvaluator {
   }
 
   record(candidates, now = Date.now()) {
+    const observedConfirmationKeys = new Set();
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
+        const confirmationKey = `${rule.name}:${candidate.address}`;
+        const requiredCycles = Number(rule.confirmationCycles || 1);
+        if (requiredCycles > 1) {
+          observedConfirmationKeys.add(confirmationKey);
+          const count = Number(this.confirmations.get(confirmationKey) || 0) + 1;
+          this.confirmations.set(confirmationKey, count);
+          if (count < requiredCycles) continue;
+        }
+        let recorded = false;
         for (const horizonMs of this.horizonsMs) {
           const duplicate = this.samples.some((sample) => !sample.closedAt
             && !sample.resolutionFailedAt && sample.rule === rule.name
@@ -140,8 +153,13 @@ export class ShadowEvaluator {
             executionCostPct: Number(candidate.marketSafety.roundTripLossPct),
             openedAt: now,
           });
+          recorded = true;
         }
+        if (recorded && requiredCycles > 1) this.confirmations.set(confirmationKey, 0);
       }
+    }
+    for (const key of this.confirmations.keys()) {
+      if (!observedConfirmationKeys.has(key)) this.confirmations.delete(key);
     }
     if (this.samples.length > 2000) this.samples = this.samples.slice(-2000);
   }
@@ -178,7 +196,8 @@ export class ShadowEvaluator {
   }
 
   serialize() {
-    return { horizonMs: this.horizonMs, horizonsMs: this.horizonsMs, samples: this.samples };
+    return { horizonMs: this.horizonMs, horizonsMs: this.horizonsMs,
+      samples: this.samples, confirmations: Object.fromEntries(this.confirmations) };
   }
 
   restore(state) {
@@ -187,5 +206,6 @@ export class ShadowEvaluator {
       ...sample,
       horizonMs: Number(sample.horizonMs || state.horizonMs || 5 * 60_000),
     }));
+    this.confirmations = new Map(Object.entries(state.confirmations || {}));
   }
 }

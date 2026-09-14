@@ -137,3 +137,22 @@ test("restoring legacy state preserves samples without replacing configured hori
   assert.deepEqual(evaluator.snapshot().horizonsMs, [60_000, 300_000, 900_000]);
   assert.equal(evaluator.serialize().samples[0].horizonMs, 300_000);
 });
+
+test("confirmed timing rule requires two consecutive qualifying cycles", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  evaluator.record([candidate()], 1000);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-confirmed").length, 0);
+  evaluator.record([candidate()], 1050);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-confirmed").length, 1);
+});
+
+test("confirmed timing streak resets when the signal disappears", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  evaluator.record([candidate()], 1000);
+  evaluator.record([], 1050);
+  evaluator.record([candidate()], 1100);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-confirmed").length, 0);
+});
