@@ -3,6 +3,16 @@ export const ROBINHOOD = Object.freeze({
   rpcUrl: "https://rpc.mainnet.chain.robinhood.com",
   weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
   usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  quoteTokens: Object.freeze([
+    Object.freeze({
+      symbol: "WETH", decimals: 18,
+      address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    }),
+    Object.freeze({
+      symbol: "USDG", decimals: 6,
+      address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    }),
+  ]),
   factories: Object.freeze([
     { dex: "pancakeswap", version: "v2", address: "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E" },
     { dex: "pancakeswap", version: "v3", address: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865" },
