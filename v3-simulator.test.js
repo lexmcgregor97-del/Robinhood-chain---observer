@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  decodeUint, decodeV3Slot0, normalizedV3Price, simulateV3RoundTrip,
+  decodeUint, decodeV3Slot0, normalizedV3Price, quoteV3WithinTick, simulateV3RoundTrip,
 } from "./v3-simulator.js";
 
 const word = (n) => BigInt(n).toString(16).padStart(64, "0");
