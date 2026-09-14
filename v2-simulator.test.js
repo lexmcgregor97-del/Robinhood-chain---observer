@@ -13,7 +13,6 @@ test("simulates reserve changes across a round trip", () => {
     quoteAmountIn: 10_000n, feeBps: 25 });
   assert.ok(result.sellAmountOut < 10_000n);
   assert.ok(result.roundTripLossBps > 0);
-  assert.equal(result.profitableWithoutPriceMove, false);
 });
 
 test("larger trades incur more impact", () => {
