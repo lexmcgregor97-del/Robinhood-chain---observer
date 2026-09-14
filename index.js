@@ -6,7 +6,8 @@ import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
-import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
+import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
+import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
@@ -325,36 +326,48 @@ function signals(limit = 25) {
 }
 
 async function marketSafety(pool) {
+  const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg];
+  const quoteAddresses = quoteTokens.map((address) => address.toLowerCase());
+  const quoteIsToken0 = quoteAddresses.includes(pool.token0);
+  const quoteIsToken1 = quoteAddresses.includes(pool.token1);
   const base = {
-    quoteTokenKnown: [ROBINHOOD.weth, ROBINHOOD.usdg].map((a) => a.toLowerCase())
-      .includes(pool.token0) !== [ROBINHOOD.weth, ROBINHOOD.usdg].map((a) => a.toLowerCase())
-      .includes(pool.token1),
+    quoteTokenKnown: quoteIsToken0 !== quoteIsToken1,
+    quoteToken: quoteIsToken0 ? pool.token0 : quoteIsToken1 ? pool.token1 : null,
+    baseToken: quoteIsToken0 ? pool.token1 : quoteIsToken1 ? pool.token0 : null,
     liquidityKnown: false, buySimulationOk: false, sellSimulationOk: false,
     poolAgeBlocks: (metrics.latestBlock || metrics.cursor) - pool.discoveryBlock,
     priceImpactPct: null, roundTripLossPct: null,
   };
-  if (pool.version !== "v2") return base;
+  if (!base.quoteTokenKnown) return base;
   try {
-    const [reservesResult, token0Meta, token1Meta] = await Promise.all([
-      rpc("eth_call", [{ to: pool.address, data: "0x0902f1ac" }, "latest"]),
-      tokenMeta(pool.token0),
-      tokenMeta(pool.token1),
+    const [token0Meta, token1Meta] = await Promise.all([
+      tokenMeta(pool.token0), tokenMeta(pool.token1),
     ]);
-    const reserves = decodeV2Reserves(reservesResult);
-    const quoteIsToken0 = [ROBINHOOD.weth, ROBINHOOD.usdg]
-      .map((address) => address.toLowerCase()).includes(pool.token0);
     const quoteAddress = quoteIsToken0 ? pool.token0 : pool.token1;
     const quoteDecimals = quoteIsToken0 ? token0Meta.decimals : token1Meta.decimals;
     const quoteAmountIn = quoteAddress === ROBINHOOD.usdg.toLowerCase()
       ? PAPER_USDG_PROBE_UNITS * (10n ** BigInt(quoteDecimals))
       : PAPER_WETH_PROBE_WEI;
-    return evaluateV2MarketSafety(pool, {
+    if (pool.version === "v2") {
+      const reserves = decodeV2Reserves(await rpc("eth_call",
+        [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
+      return evaluateV2MarketSafety(pool, {
+        latestBlock: metrics.latestBlock || metrics.cursor,
+        quoteTokens, reserve0: reserves.reserve0, reserve1: reserves.reserve1,
+        token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
+        quoteAmountIn,
+      });
+    }
+    const [slot0Result, liquidityResult] = await Promise.all([
+      rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
+      rpc("eth_call", [{ to: pool.address, data: "0x1a686502" }, "latest"]),
+    ]);
+    const slot0 = decodeV3Slot0(slot0Result);
+    return evaluateV3MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
-      quoteTokens: [ROBINHOOD.weth, ROBINHOOD.usdg],
-      reserve0: reserves.reserve0,
-      reserve1: reserves.reserve1,
-      token0Decimals: token0Meta.decimals,
-      token1Decimals: token1Meta.decimals,
+      quoteTokens, sqrtPriceX96: slot0.sqrtPriceX96, currentTick: slot0.tick,
+      liquidity: decodeUint(liquidityResult, "liquidity"),
+      token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       quoteAmountIn,
     });
   } catch (error) {
