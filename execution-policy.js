@@ -4,7 +4,7 @@ const lowerSet = (values = []) => new Set(values.map((value) => String(value).to
 
 export function evaluateExecutionPolicy(rawIntent, policy, {
   now = Date.now(),
-  dailySpentWei = "0",
+  dailySpent = "0",
 } = {}) {
   const failures = [];
   let intent;
@@ -21,9 +21,10 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
   const walletAddress = String(policy.walletAddress || "").toLowerCase();
   const maxExpiryMs = Number(policy.maxExpiryMs || 60_000);
   const value = BigInt(intent.valueWei);
-  const dailySpent = BigInt(String(dailySpentWei));
   const maxValue = BigInt(String(policy.maxValueWei ?? "0"));
-  const maxDaily = BigInt(String(policy.maxDailySpendWei ?? "0"));
+  const spendLimit = Object.fromEntries(Object.entries(policy.spendLimits || {}).map(
+    ([asset, limit]) => [asset.toLowerCase(), limit],
+  ))[intent.spendAsset];
 
   if (!allowedChains.has(intent.chainId)) failures.push("chain-not-allowed");
   if (intent.from !== walletAddress) failures.push("wallet-mismatch");
@@ -33,7 +34,16 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
   if (intent.expiresAt <= now) failures.push("intent-expired");
   if (intent.expiresAt > now + maxExpiryMs) failures.push("expiry-too-distant");
   if (value > maxValue) failures.push("transaction-value-limit");
-  if (dailySpent + value > maxDaily) failures.push("daily-spend-limit");
+  if (!spendLimit) failures.push("spend-asset-not-allowed");
+  else {
+    const amount = BigInt(intent.spendAmount);
+    if (amount > BigInt(String(spendLimit.maxPerTransaction ?? "0"))) {
+      failures.push("transaction-spend-limit");
+    }
+    if (BigInt(String(dailySpent)) + amount > BigInt(String(spendLimit.maxDaily ?? "0"))) {
+      failures.push("daily-spend-limit");
+    }
+  }
 
   return { approved: failures.length === 0, failures, intent };
 }
