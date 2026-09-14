@@ -1,0 +1,68 @@
+{
+  "capturedAt": "2026-09-14T21:49:43Z",
+  "codeBaseline": "a26226e",
+  "paperEpoch": "2026-09-14-paper-v4-v2-fast-exit",
+  "mode": "PAPER_ONLY",
+  "health": {
+    "status": "ok",
+    "uptimeSeconds": 3702,
+    "latestBlock": 63138886,
+    "cursor": 63138756,
+    "lagBlocks": 130,
+    "successfulPolls": 436,
+    "failedPolls": 0,
+    "rpcRequests": 11285,
+    "rpcFailures": 0,
+    "rpcRateLimits": 0,
+    "rpcFailovers": 0,
+    "turnkeyConfigured": true,
+    "turnkeyAuthenticated": true,
+    "turnkeyWalletVisible": true,
+    "turnkeyAddressMatch": true
+  },
+  "paper": {
+    "closedTrades": 51,
+    "openTrades": 2,
+    "wins": 20,
+    "losses": 31,
+    "winRatePct": 39.21568627450981,
+    "realizedPnlWeth": -0.00905373203364283,
+    "expectancyPerTradeWeth": -0.00017752415752240842,
+    "maxRealizedDrawdownPct": 13.390029496551783,
+    "feesPaidWeth": 0.002613843746277789,
+    "averageHoldMs": 145665.5294117647,
+    "exitReasons": {
+      "stopLoss": { "trades": 31, "pnlWeth": -0.05201513578808228, "averageReturnPct": -20.18279082725763 },
+      "takeProfit": { "trades": 5, "pnlWeth": 0.025801926229788635, "averageReturnPct": 59.47972094368091 },
+      "trailingStop": { "trades": 15, "pnlWeth": 0.01715947752465081, "averageReturnPct": 13.483905718169096 }
+    }
+  },
+  "shadow": {
+    "samples": 504,
+    "closed": 473,
+    "open": 3,
+    "censored": 28,
+    "uniquePools": 66,
+    "promotionStatuses": {
+      "escape-activity": "promotion-candidate",
+      "steady-accumulation": "promotion-candidate",
+      "activity-pullback": "promotion-candidate"
+    }
+  },
+  "microMainnet": {
+    "eligible": false,
+    "failures": [
+      "paper-expectancy-not-positive",
+      "paper-drawdown-too-high",
+      "sell-probe-not-ready",
+      "runtime-not-ready"
+    ]
+  },
+  "validation": {
+    "testsPassed": 139,
+    "testsFailed": 0,
+    "syntaxCheck": "passed",
+    "diffCheck": "passed",
+    "embeddedSecretPatternScan": "no-match"
+  }
+}
