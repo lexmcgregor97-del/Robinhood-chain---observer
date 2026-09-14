@@ -8,6 +8,7 @@ import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
+import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord } from "./tick-boundary.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
@@ -358,15 +359,26 @@ async function marketSafety(pool) {
         quoteAmountIn,
       });
     }
-    const [slot0Result, liquidityResult] = await Promise.all([
+    const [slot0Result, liquidityResult, tickSpacingResult] = await Promise.all([
       rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
       rpc("eth_call", [{ to: pool.address, data: "0x1a686502" }, "latest"]),
+      rpc("eth_call", [{ to: pool.address, data: "0xd0c93a7c" }, "latest"]),
     ]);
     const slot0 = decodeV3Slot0(slot0Result);
+    const tickSpacing = Number(decodeUint(tickSpacingResult, "tick-spacing"));
+    const compressedTick = compressTick(slot0.tick, tickSpacing);
+    const { wordPos } = bitmapPosition(compressedTick);
+    const bitmapResult = await rpc("eth_call", [{
+      to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
+    }, "latest"]);
+    const boundaryTick = findInitializedTickInWord({
+      bitmap: decodeUint(bitmapResult, "tick-bitmap"), wordPos, currentCompressedTick: compressedTick,
+      tickSpacing, zeroForOne: quoteIsToken0,
+    });
     return evaluateV3MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
       quoteTokens, sqrtPriceX96: slot0.sqrtPriceX96, currentTick: slot0.tick,
-      liquidity: decodeUint(liquidityResult, "liquidity"),
+      liquidity: decodeUint(liquidityResult, "liquidity"), boundaryTick,
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       quoteAmountIn,
     });
