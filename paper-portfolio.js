@@ -47,13 +47,18 @@ export class PaperPortfolio {
     return this.positionSnapshot(position);
   }
 
-  close({ pool, price, fee = 0, timestamp = Date.now(), reason = "manual", audit = null }) {
+  close({
+    pool, price, proceeds: filledProceeds,
+    fee = 0, timestamp = Date.now(), reason = "manual", audit = null,
+  }) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
     price = finitePositive(price, "price");
     fee = Number(fee);
     if (!Number.isFinite(fee) || fee < 0) throw new Error("invalid-fee");
-    const proceeds = position.quantity * price - fee;
+    const proceeds = filledProceeds === undefined
+      ? position.quantity * price - fee
+      : finitePositive(filledProceeds, "proceeds");
     const pnl = proceeds - position.costBasis;
     this.cash += proceeds;
     this.realizedPnl += pnl;
