@@ -27,3 +27,15 @@ test("blocks excessive execution loss", () => {
   });
   assert.ok(result.failures.includes("round-trip-loss-too-high"));
 });
+
+
+test("V3 candidates fail closed until tick boundaries are measured", () => {
+  const result = evaluateRiskGate({
+    version: "v3", signal: { state: "escape-velocity" }, marketSafety: {
+      quoteTokenKnown: true, liquidityKnown: true, buySimulationOk: true, sellSimulationOk: true,
+      poolAgeBlocks: 100, priceImpactPct: 1, roundTripLossPct: 1, tickBoundaryKnown: false,
+    },
+  });
+  assert.equal(result.eligibleForPaperEntry, false);
+  assert.ok(result.failures.includes("v3-tick-boundary-unmeasured"));
+});
