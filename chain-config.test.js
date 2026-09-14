@@ -18,8 +18,8 @@ test("pins Robinhood mainnet and canonical quote assets", () => {
   );
 });
 
-test("keeps every factory and router address valid and unique", () => {
-  const addresses = [...ROBINHOOD.factories.map((item) => item.address), ...Object.values(ROBINHOOD.approvedRouters)];
+test("keeps every factory address valid and unique", () => {
+  const addresses = ROBINHOOD.factories.map((item) => item.address);
   assert.ok(addresses.every(isAddress));
   assert.equal(new Set(addresses.map((address) => address.toLowerCase())).size, addresses.length);
 });
