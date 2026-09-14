@@ -12,8 +12,11 @@ export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
   if (candidate.signal?.state !== policy.requiredSignal) failures.push("signal-not-ready");
   if (!safety.quoteTokenKnown) failures.push("unknown-quote-token");
   if (!safety.liquidityKnown) failures.push("liquidity-not-measured");
-  if (!safety.buySimulationOk) failures.push("buy-simulation-failed");
-  if (!safety.sellSimulationOk) failures.push("sell-simulation-failed");
+  if (!safety.buyMathOk) failures.push("buy-math-failed");
+  if (!safety.sellMathOk) failures.push("sell-math-failed");
+  if (policy.requireSellProbe && safety.sellProbe?.passed !== true) {
+    failures.push("sell-probe-required");
+  }
   if (candidate.version === "v3" && !safety.tickBoundaryKnown) failures.push("v3-tick-boundary-unmeasured");
   if (candidate.version === "v3" && safety.tickBoundaryKnown && !safety.staysWithinActiveTick) failures.push("v3-probe-crosses-tick");
   if (!safety.priceAuditAvailable) failures.push("price-audit-unavailable");
