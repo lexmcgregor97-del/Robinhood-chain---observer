@@ -22,7 +22,7 @@ export class PaperPortfolio {
   }
 
   open({
-    pool, token, price, quantity: filledQuantity,
+    pool, token, price, quantity: filledQuantity, quantityUnits = null,
     notional, fee = 0, timestamp = Date.now(), audit = null,
   }) {
     if (this.positions.has(pool)) throw new Error("position-already-open");
@@ -35,12 +35,18 @@ export class PaperPortfolio {
     const quantity = filledQuantity === undefined
       ? (notional - fee) / price
       : finitePositive(filledQuantity, "quantity");
-    const position = { pool, token, quantity, entryPrice: price, markPrice: price,
+    if (quantityUnits !== null) {
+      // Exact filled quantity in token base units; exits must use this, never a
+      // Number -> BigInt round trip (see review finding C-1).
+      if (typeof quantityUnits !== "string" || !/^[0-9]+$/.test(quantityUnits)
+          || BigInt(quantityUnits) <= 0n) throw new Error("invalid-quantity-units");
+    }
+    const position = { pool, token, quantity, quantityUnits, entryPrice: price, markPrice: price,
       costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price,
       entryAudit: audit ? structuredClone(audit) : null };
     this.cash -= notional;
     this.positions.set(pool, position);
-    this.trades.push({ type: "open", pool, token, price, quantity, notional, fee, timestamp,
+    this.trades.push({ type: "open", pool, token, price, quantity, quantityUnits, notional, fee, timestamp,
       audit: audit ? structuredClone(audit) : null });
     return { ...position };
   }
@@ -56,6 +62,7 @@ export class PaperPortfolio {
   close({
     pool, price, proceeds: filledProceeds,
     fee = 0, timestamp = Date.now(), reason = "manual", audit = null,
+    measurementFailure = false,
   }) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
@@ -73,6 +80,7 @@ export class PaperPortfolio {
     this.positions.delete(pool);
     const trade = { type: "close", pool, token: position.token, price,
       quantity: position.quantity, proceeds, fee, pnl, reason, timestamp,
+      measurementFailure: measurementFailure === true,
       audit: audit ? structuredClone(audit) : null };
     this.trades.push(trade);
     return { ...trade };
@@ -107,6 +115,8 @@ export class PaperPortfolio {
     this.trades = structuredClone(state.trades);
     this.positions = new Map(state.openPositions.map((position) => [position.pool, {
       pool: position.pool, token: position.token, quantity: Number(position.quantity),
+      quantityUnits: typeof position.quantityUnits === "string" && /^[0-9]+$/.test(position.quantityUnits)
+        ? position.quantityUnits : null,
       entryPrice: Number(position.entryPrice), markPrice: Number(position.markPrice),
       costBasis: Number(position.costBasis), entryFee: Number(position.entryFee), openedAt: position.openedAt,
       peakPrice: Number(position.peakPrice || position.markPrice),
