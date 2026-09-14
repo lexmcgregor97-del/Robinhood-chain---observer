@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ShadowEvaluator, shadowRuleMatches } from "./shadow-evaluator.js";
+import {
+  ShadowEvaluator, shadowRuleMatches, evaluateShadowPromotion,
+} from "./shadow-evaluator.js";
 
 function candidate(signal = "escape-velocity", price = 2, deviation = 4) {
   return {
@@ -40,4 +42,32 @@ test("keeps one unresolved sample per rule and pool", () => {
   evaluator.observe([candidate()], 1000);
   evaluator.observe([candidate()], 1050);
   assert.equal(evaluator.serialize().samples.length, 2);
+});
+
+test("promotion remains advisory until enough samples exist", () => {
+  const result = evaluateShadowPromotion({
+    closedSamples: 12, averageReturnPct: 10, medianReturnPct: 5,
+    winRatePct: 60, maxCumulativeDrawdownPct: 5,
+  });
+  assert.equal(result.status, "collecting");
+  assert.equal(result.remainingSamples, 18);
+});
+
+test("promotion requires robust return and drawdown evidence", () => {
+  const promoted = evaluateShadowPromotion({
+    closedSamples: 30, averageReturnPct: 3, medianReturnPct: 1,
+    winRatePct: 50, maxCumulativeDrawdownPct: 20,
+  });
+  assert.equal(promoted.status, "promotion-candidate");
+  assert.equal(promoted.eligible, true);
+
+  const rejected = evaluateShadowPromotion({
+    closedSamples: 30, averageReturnPct: 1, medianReturnPct: -1,
+    winRatePct: 40, maxCumulativeDrawdownPct: 30,
+  });
+  assert.equal(rejected.status, "rejected");
+  assert.deepEqual(rejected.failures, [
+    "average-return-too-low", "median-return-too-low",
+    "win-rate-too-low", "shadow-drawdown-too-high",
+  ]);
 });
