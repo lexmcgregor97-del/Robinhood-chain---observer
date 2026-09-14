@@ -21,6 +21,8 @@ import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
 import { createTokenMetadataLoader } from "./token-metadata.js";
+import { LogDeduplicator } from "./log-deduplicator.js";
+import { PositionLiveness } from "./position-liveness.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
@@ -67,6 +69,8 @@ const paperBooks = new Map([
   [ROBINHOOD.weth.toLowerCase(), { symbol: "WETH", portfolio: wethPaperPortfolio }],
 ]);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
+let logDeduplicator = new LogDeduplicator();
+let positionLiveness = new PositionLiveness();
 let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
 let candidateCache = null;
@@ -95,6 +99,8 @@ function persistedState() {
     ])),
     paperAutomation,
     shadow: shadowEvaluator.serialize(),
+    processedLogs: logDeduplicator.serialize(),
+    positionLiveness: positionLiveness.serialize(),
   };
 }
 
@@ -125,6 +131,8 @@ async function restoreState() {
     }
     if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
     if (state.shadow) shadowEvaluator.restore(state.shadow);
+    logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
+    positionLiveness = new PositionLiveness({ state: state.positionLiveness || {} });
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
@@ -222,6 +230,7 @@ async function discover(from, to, rangeTimes) {
 function recordSwap(log, timestampMs) {
   const pool = pools.get(String(log.address).toLowerCase());
   if (!pool) return;
+  if (!logDeduplicator.accept(log)) return;
   pool.swapCount += 1;
   pool.lastSwapBlock = log.blockNumber;
   pool.lastSwapTimestampMs = timestampMs;
@@ -293,6 +302,7 @@ async function scanRange(from, to) {
     const rangeTimes = await blockRangeTimes(start, end);
     await discover(start, end, rangeTimes);
     await observeSwaps(start, end, rangeTimes);
+    logDeduplicator.prune(end);
     metrics.cursor = end;
     if (metrics.backfill.active) metrics.backfill.current = end;
   }
@@ -539,9 +549,14 @@ async function paperExitQuote(pool, position) {
     const { reserve0, reserve1 } = decodeV2Reserves(await rpc(
       "eth_call", [{ to: pool.address, data: "0x0902f1ac" }, "latest"],
     ));
+    const reserveIn = quoteIsToken0 ? reserve1 : reserve0;
+    const reserveOut = quoteIsToken0 ? reserve0 : reserve1;
+    if (reserveIn <= 0n || reserveOut <= 0n) {
+      return { quoteToken, liquidityZero: true };
+    }
     const fill = quoteV2({
-      reserveIn: quoteIsToken0 ? reserve1 : reserve0,
-      reserveOut: quoteIsToken0 ? reserve0 : reserve1,
+      reserveIn,
+      reserveOut,
       amountIn: baseAmountIn,
       feeBps: pool.dex === "pancakeswap" ? 25 : 30,
     });
@@ -554,6 +569,7 @@ async function paperExitQuote(pool, position) {
     ]);
     const slot0 = decodeV3Slot0(slot0Result);
     const liquidity = decodeUint(liquidityResult, "liquidity");
+    if (liquidity <= 0n) return { quoteToken, liquidityZero: true };
     let tickSpacing = Number(pool.tickSpacing);
     if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) {
       tickSpacing = Number(decodeUint(await rpc("eth_call", [{
@@ -655,10 +671,47 @@ async function runPaperCycle() {
   try {
     for (const [quoteToken, book] of paperBooks) {
       for (const position of book.portfolio.snapshot().openPositions) {
+        const key = `${quoteToken}:${position.pool}`;
         const pool = pools.get(position.pool);
-        if (!pool) continue;
-        const exit = await paperExitQuote(pool, position);
-        if (exit.quoteToken !== quoteToken || !Number.isFinite(exit.executionPrice)) continue;
+        let exit = null;
+        let livenessReason = null;
+        if (!pool) {
+          livenessReason = positionLiveness.observe(key, "unavailable");
+        } else {
+          try {
+            exit = await paperExitQuote(pool, position);
+            livenessReason = positionLiveness.observe(
+              key, exit.liquidityZero ? "zero-liquidity" : "healthy",
+            );
+          } catch (error) {
+            livenessReason = positionLiveness.observe(key, "unavailable");
+            rememberPaperDecision({
+              type: "mark-unavailable",
+              quote: book.symbol,
+              pool: position.pool,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (livenessReason) {
+          book.portfolio.close({
+            pool: position.pool,
+            price: 0,
+            proceeds: 0,
+            fee: 0,
+            reason: livenessReason,
+            audit: { block: metrics.latestBlock, reason: livenessReason },
+          });
+          paperAutomation.exits += 1;
+          rememberPaperDecision({
+            type: "exit", quote: book.symbol, pool: position.pool,
+            reason: livenessReason, price: 0, proceeds: 0,
+          });
+          continue;
+        }
+        if (!exit || exit.liquidityZero
+            || exit.quoteToken !== quoteToken
+            || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
         const reason = paperExitReason(marked);
         if (reason) {
