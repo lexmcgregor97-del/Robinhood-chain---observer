@@ -15,7 +15,10 @@ export class PaperPortfolio {
     if (state) this.restore(state);
   }
 
-  open({ pool, token, price, notional, fee = 0, timestamp = Date.now(), audit = null }) {
+  open({
+    pool, token, price, quantity: filledQuantity,
+    notional, fee = 0, timestamp = Date.now(), audit = null,
+  }) {
     if (this.positions.has(pool)) throw new Error("position-already-open");
     if (this.positions.size >= this.maxPositions) throw new Error("position-limit-reached");
     price = finitePositive(price, "price");
@@ -23,7 +26,9 @@ export class PaperPortfolio {
     fee = Number(fee);
     if (!Number.isFinite(fee) || fee < 0 || fee >= notional) throw new Error("invalid-fee");
     if (notional > this.cash) throw new Error("insufficient-paper-cash");
-    const quantity = (notional - fee) / price;
+    const quantity = filledQuantity === undefined
+      ? (notional - fee) / price
+      : finitePositive(filledQuantity, "quantity");
     const position = { pool, token, quantity, entryPrice: price, markPrice: price,
       costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price,
       entryAudit: audit ? structuredClone(audit) : null };
