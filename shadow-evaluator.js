@@ -145,7 +145,7 @@ export class ShadowEvaluator {
       .map((sample) => sample.pool))];
   }
 
-  resolve(candidates, now = Date.now()) {
+  resolve(candidates, now = Date.now(), { block = null } = {}) {
     const measurements = new Map(candidates.map((candidate) => [
       candidate.address, candidate.marketSafety || {},
     ]));
@@ -153,6 +153,17 @@ export class ShadowEvaluator {
       if (sample.closedAt || sample.censoredAt
           || now - sample.openedAt < this.horizonMs) continue;
       const safety = measurements.get(sample.pool);
+      if (safety?.liquidityZero === true) {
+        sample.closedAt = now;
+        sample.exitBlock = block;
+        sample.exitReserves = { quote: safety.reserveQuote ?? null, token: safety.reserveToken ?? null };
+        sample.exitPrice = 0;
+        sample.exitReason = "liquidity-zero";
+        sample.grossReturnPct = -100;
+        sample.netReturnPct = -100;
+        sample.returnPct = -100;
+        continue;
+      }
       const exitPrice = Number(safety?.tokenPriceQuote);
       if (!finite(exitPrice) || exitPrice <= 0) {
         if (now - sample.openedAt >= this.horizonMs * this.resolutionTimeoutMultiplier) {
@@ -162,6 +173,9 @@ export class ShadowEvaluator {
         continue;
       }
       sample.closedAt = now;
+      sample.exitBlock = block;
+      sample.exitReserves = { quote: safety.reserveQuote ?? null, token: safety.reserveToken ?? null };
+      sample.exitReason = "horizon";
       sample.exitPrice = exitPrice;
       sample.grossReturnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
       sample.netReturnPct = sample.grossReturnPct - Number(sample.executionCostPct);
@@ -169,7 +183,7 @@ export class ShadowEvaluator {
     }
   }
 
-  record(candidates, now = Date.now()) {
+  record(candidates, now = Date.now(), { block = null } = {}) {
     const observedEpisodeKeys = new Set();
     const observedPullbackKeys = new Set();
     for (const candidate of candidates) {
@@ -210,6 +224,13 @@ export class ShadowEvaluator {
           entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
           executionCostPct: Number(candidate.marketSafety.executionCostPct),
           openedAt: now,
+          entryBlock: block,
+          entryReserves: {
+            quote: candidate.marketSafety.reserveQuote ?? null,
+            token: candidate.marketSafety.reserveToken ?? null,
+          },
+          baseTokenDecimals: candidate.marketSafety.baseTokenDecimals ?? null,
+          lastSwapTransactionHash: candidate.lastSwap?.transactionHash ?? null,
         });
         if (finite(rule.pullbackMinPct)) this.pullbackSetups.delete(key);
       }
@@ -225,9 +246,9 @@ export class ShadowEvaluator {
     }
   }
 
-  observe(candidates, now = Date.now()) {
-    this.resolve(candidates, now);
-    this.record(candidates, now);
+  observe(candidates, now = Date.now(), options = {}) {
+    this.resolve(candidates, now, options);
+    this.record(candidates, now, options);
   }
 
   snapshot() {
