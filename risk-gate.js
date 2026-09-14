@@ -1,5 +1,5 @@
 export const DEFAULT_PAPER_POLICY = Object.freeze({
-  minPoolAgeBlocks: 20,
+  minPoolAgeMs: 5 * 60_000,
   maxPriceImpactPct: 5,
   maxRoundTripLossPct: 15,
   maxSpotSwapDeviationPct: 5,
@@ -21,8 +21,12 @@ export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
       || safety.spotVsLastSwapPct > policy.maxSpotSwapDeviationPct) {
     failures.push("spot-swap-price-dislocation");
   }
-  if (!Number.isFinite(safety.poolAgeBlocks) || safety.poolAgeBlocks < policy.minPoolAgeBlocks) failures.push("pool-too-new");
-  if (!Number.isFinite(safety.priceImpactPct) || safety.priceImpactPct > policy.maxPriceImpactPct) failures.push("price-impact-too-high");
-  if (!Number.isFinite(safety.roundTripLossPct) || safety.roundTripLossPct > policy.maxRoundTripLossPct) failures.push("round-trip-loss-too-high");
+  if (!Number.isFinite(safety.poolAgeMs) || safety.poolAgeMs < policy.minPoolAgeMs) {
+    failures.push("pool-too-new");
+  }
+  if (!Number.isFinite(safety.priceImpactPct)
+      || safety.priceImpactPct > policy.maxPriceImpactPct) failures.push("price-impact-too-high");
+  if (!Number.isFinite(safety.roundTripLossPct)
+      || safety.roundTripLossPct > policy.maxRoundTripLossPct) failures.push("round-trip-loss-too-high");
   return { eligibleForPaperEntry: failures.length === 0, failures, policy };
 }
