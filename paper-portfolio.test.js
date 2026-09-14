@@ -79,3 +79,13 @@ test("credits explicit simulated exit proceeds without subtracting fees twice", 
   assert.equal(trade.pnl, -2);
   assert.equal(book.snapshot().equity, 98);
 });
+
+test("can realize a confirmed worthless position at zero", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "rug", token: "TOK", price: 2, quantity: 10, notional: 20 });
+  const trade = book.close({
+    pool: "rug", price: 0, proceeds: 0, reason: "liquidity-zero",
+  });
+  assert.equal(trade.pnl, -20);
+  assert.equal(book.snapshot().equity, 80);
+});

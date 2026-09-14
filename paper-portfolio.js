@@ -4,6 +4,12 @@ const finitePositive = (value, name) => {
   return parsed;
 };
 
+const finiteNonNegative = (value, name) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} must be non-negative`);
+  return parsed;
+};
+
 export class PaperPortfolio {
   constructor({ initialCash = 1_000, maxPositions = 3, state } = {}) {
     this.initialCash = finitePositive(initialCash, "initialCash");
@@ -53,12 +59,14 @@ export class PaperPortfolio {
   }) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
-    price = finitePositive(price, "price");
+    price = filledProceeds === undefined
+      ? finitePositive(price, "price")
+      : finiteNonNegative(price, "price");
     fee = Number(fee);
     if (!Number.isFinite(fee) || fee < 0) throw new Error("invalid-fee");
     const proceeds = filledProceeds === undefined
       ? position.quantity * price - fee
-      : finitePositive(filledProceeds, "proceeds");
+      : finiteNonNegative(filledProceeds, "proceeds");
     const pnl = proceeds - position.costBasis;
     this.cash += proceeds;
     this.realizedPnl += pnl;
