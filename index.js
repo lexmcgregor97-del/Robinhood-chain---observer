@@ -243,22 +243,22 @@ function registerPool(pool) {
 }
 
 async function discover(from, to, rangeTimes) {
-  const batches = await Promise.all(ROBINHOOD.factories.map(async (factory) => ({
-    factory, logs: await getLogs(from, to, factory.address,
-      [factory.version === "v2" ? PAIR_CREATED : POOL_CREATED]),
-  })));
-  for (const { factory, logs } of batches) {
-    for (const log of logs) {
-      const poolWord = factory.version === "v2" ? 0 : 1;
-      if (log.topics.length < (factory.version === "v2" ? 3 : 4) || dataWord(log.data, poolWord).length !== 64) continue;
-      registerPool({
-        address: wordAddress(log.data, poolWord), dex: factory.dex, version: factory.version,
-        token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
-        fee: factory.version === "v3" ? intHex(log.topics[3]) : null,
-        discoveryBlock: log.blockNumber,
-        discoveryTimestampMs: estimateBlockTimestamp(log.blockNumber, rangeTimes),
-      });
-    }
+  const factories = new Map(ROBINHOOD.factories.map(
+    (factory) => [factory.address.toLowerCase(), factory],
+  ));
+  const logs = await getLogs(from, to, [...factories.keys()], [[PAIR_CREATED, POOL_CREATED]]);
+  for (const log of logs) {
+    const factory = factories.get(String(log.address).toLowerCase());
+    if (!factory) continue;
+    const poolWord = factory.version === "v2" ? 0 : 1;
+    if (log.topics.length < (factory.version === "v2" ? 3 : 4) || dataWord(log.data, poolWord).length !== 64) continue;
+    registerPool({
+      address: wordAddress(log.data, poolWord), dex: factory.dex, version: factory.version,
+      token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
+      fee: factory.version === "v3" ? intHex(log.topics[3]) : null,
+      discoveryBlock: log.blockNumber,
+      discoveryTimestampMs: estimateBlockTimestamp(log.blockNumber, rangeTimes),
+    });
   }
 }
 
@@ -289,21 +289,12 @@ function recordSwap(log, timestampMs) {
 }
 
 async function observeSwaps(from, to, rangeTimes) {
-  const groups = [
-    { version: "v2", topics: [V2_SWAP] },
-    { version: "v3", topics: [[PANCAKE_V3_SWAP, UNISWAP_V3_SWAP]] },
-  ];
-  for (const group of groups) {
-    const addresses = [...pools.values()]
-      .filter((pool) => pool.version === group.version)
-      .map((pool) => pool.address);
-    for (let i = 0; i < addresses.length; i += 100) {
-      const logs = await getLogs(from, to, addresses.slice(i, i + 100), group.topics);
-      logs.forEach((log) => recordSwap(
-        log, estimateBlockTimestamp(log.blockNumber, rangeTimes),
-      ));
-    }
-  }
+  const logs = await getLogs(
+    from, to, undefined, [[V2_SWAP, PANCAKE_V3_SWAP, UNISWAP_V3_SWAP]],
+  );
+  logs.forEach((log) => recordSwap(
+    log, estimateBlockTimestamp(log.blockNumber, rangeTimes),
+  ));
 }
 
 async function blockRangeTimes(from, to) {
