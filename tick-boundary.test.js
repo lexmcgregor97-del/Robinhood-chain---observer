@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord,
+  bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord, findInitializedTickInWholeWord,
   approximateSqrtRatioAtTick, staysWithinTickBoundary,
 } from "./tick-boundary.js";
 
@@ -37,4 +37,17 @@ test("applies a conservative boundary buffer", () => {
     startSqrtPriceX96: start, endSqrtPriceX96: boundary,
     boundaryTick: -60, zeroForOne: true,
   }), false);
+});
+
+test("finds the closest initialized tick in an adjacent word", () => {
+  const bitmap = (1n << 3n) | (1n << 200n);
+  assert.equal(findInitializedTickInWholeWord({
+    bitmap, wordPos: 2, tickSpacing: 10, zeroForOne: false,
+  }), (2 * 256 + 3) * 10);
+  assert.equal(findInitializedTickInWholeWord({
+    bitmap, wordPos: 2, tickSpacing: 10, zeroForOne: true,
+  }), (2 * 256 + 200) * 10);
+  assert.equal(findInitializedTickInWholeWord({
+    bitmap: 0n, wordPos: 2, tickSpacing: 10, zeroForOne: true,
+  }), null);
 });
