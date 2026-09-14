@@ -27,9 +27,15 @@ export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY)
 
 export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRATEGY) {
   const failures = [];
-  const price = Number(candidate?.marketSafety?.tokenPriceQuote);
+  const midPrice = Number(candidate?.marketSafety?.tokenPriceQuote);
+  const baseTokenDecimals = Number(candidate?.marketSafety?.baseTokenDecimals);
+  const buyAmountOut = candidate?.marketSafety?.buyAmountOut;
   if (!candidate?.riskGate?.eligibleForPaperEntry) failures.push("risk-gate-rejected");
-  if (!finite(price) || price <= 0) failures.push("price-unavailable");
+  if (!finite(midPrice) || midPrice <= 0) failures.push("price-unavailable");
+  if (!Number.isInteger(baseTokenDecimals) || baseTokenDecimals < 0
+      || baseTokenDecimals > 255 || buyAmountOut === undefined) {
+    failures.push("executable-fill-unavailable");
+  }
   if (!finite(portfolio?.cash) || portfolio.cash <= 0) failures.push("no-paper-cash");
   if ((portfolio?.openPositions || []).some((p) => p.pool === candidate?.address)) failures.push("position-already-open");
   const entryPct = Number(policy.entryCashPct);
@@ -38,13 +44,25 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
     failures.push("invalid-entry-policy");
   }
   const notional = failures.length ? 0 : Math.min(portfolio.cash * entryPct / 100, cap);
+  let quantity = 0;
+  if (!failures.length) {
+    try {
+      quantity = Number(BigInt(buyAmountOut)) / (10 ** baseTokenDecimals);
+      if (!finite(quantity) || quantity <= 0) failures.push("executable-fill-unavailable");
+    } catch {
+      failures.push("executable-fill-unavailable");
+    }
+  }
+  const executionPrice = quantity > 0 ? notional / quantity : 0;
   return {
     approved: failures.length === 0 && notional > 0,
     failures,
     order: failures.length ? null : {
       pool: candidate.address,
       token: candidate.marketSafety.baseToken,
-      price,
+      price: executionPrice,
+      midPrice,
+      quantity,
       notional,
     },
   };
