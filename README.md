@@ -7,7 +7,8 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 - No wallet, private key, signer, transaction construction, or write RPC exists.
 - No transaction can be signed or broadcast.
 - Every HTTP endpoint is GET-only.
-- New paper and shadow entries are paused during the measurement repair.
+- Paper and shadow sampling run continuously by default. Explicit environment
+  flags provide emergency brakes when either measurement path must be quarantined.
 - Existing paper positions are marked and closed only in the virtual ledger.
 - The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, inconsistent spend declarations, and native value. ERC-20 approval validation permits only the exact planned amount to an approved router; unlimited allowances fail closed. Neither boundary is connected to a signer.
 

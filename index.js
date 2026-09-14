@@ -24,6 +24,7 @@ import { createTokenMetadataLoader } from "./token-metadata.js";
 import { LogDeduplicator } from "./log-deduplicator.js";
 import { PositionLiveness } from "./position-liveness.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
+import { envFlag } from "./runtime-flags.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -55,8 +56,8 @@ const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
-const SHADOW_RECORDING_PAUSED = false;
-const PAPER_ENTRIES_PAUSED = true;
+const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
+const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -846,7 +847,10 @@ async function dashboard() {
     cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${esc(pool.dex || "unknown")} · ${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
   }
   const s = snapshot();
-  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Atlas Trader</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Atlas Trader</h1><p>Robinhood Chain adapter</p><p class="warn">PAPER MEASUREMENT REPAIR<br>New entries are paused; state persistence is monitored.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
+  const paperNotice = PAPER_ENTRIES_PAUSED
+    ? '<p class="warn">PAPER ENTRIES PAUSED<br>Shadow measurement continues.</p>'
+    : '<p class="ok">PAPER SAMPLING ACTIVE<br>Virtual entries and exits are enabled.</p>';
+  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Atlas Trader</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.ok{background:#14532d;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Atlas Trader</h1><p>Robinhood Chain adapter</p>${paperNotice}<section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
 }
 
 const server = http.createServer(async (req, res) => {
