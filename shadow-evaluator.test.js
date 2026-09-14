@@ -106,3 +106,23 @@ test("unpriceable samples become conservative losses after three horizons", () =
   assert.equal(summary.averageReturnPct, -100);
   assert.deepEqual(evaluator.pendingPoolAddresses(), []);
 });
+
+test("default evaluator records one, five and fifteen minute horizons", () => {
+  const evaluator = new ShadowEvaluator();
+  evaluator.record([candidate()], 1000);
+  const horizons = [...new Set(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-strict")
+    .map((sample) => sample.horizonMs))];
+  assert.deepEqual(horizons, [60_000, 300_000, 900_000]);
+  assert.deepEqual(evaluator.snapshot().horizonsMs, horizons);
+});
+
+test("each horizon resolves only when its own observation period elapses", () => {
+  const evaluator = new ShadowEvaluator({ horizonsMs: [100, 300] });
+  evaluator.record([candidate()], 1000);
+  evaluator.resolve([candidate("escape-velocity", 3)], 1100);
+  const samples = evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-strict");
+  assert.equal(samples.find((sample) => sample.horizonMs === 100).closedAt, 1100);
+  assert.equal(samples.find((sample) => sample.horizonMs === 300).closedAt, undefined);
+});

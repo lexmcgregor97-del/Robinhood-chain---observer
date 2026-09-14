@@ -80,8 +80,11 @@ export function evaluateShadowPromotion(summary, policy = DEFAULT_PROMOTION_POLI
 }
 
 export class ShadowEvaluator {
-  constructor({ horizonMs = 5 * 60 * 1000, rules = SHADOW_RULES } = {}) {
-    this.horizonMs = horizonMs;
+  constructor({ horizonMs, horizonsMs = [60_000, 5 * 60_000, 15 * 60_000],
+    rules = SHADOW_RULES } = {}) {
+    this.horizonsMs = horizonMs ? [horizonMs] : horizonsMs;
+    this.horizonMs = this.horizonsMs.includes(5 * 60_000)
+      ? 5 * 60_000 : this.horizonsMs[0];
     this.rules = rules;
     this.samples = [];
   }
@@ -97,11 +100,12 @@ export class ShadowEvaluator {
       .filter((candidate) => finite(candidate?.marketSafety?.tokenPriceQuote))
       .map((candidate) => [candidate.address, Number(candidate.marketSafety.tokenPriceQuote)]));
     for (const sample of this.samples) {
+      const sampleHorizonMs = Number(sample.horizonMs || this.horizonMs);
       if (sample.closedAt || sample.resolutionFailedAt
-          || now - sample.openedAt < this.horizonMs) continue;
+          || now - sample.openedAt < sampleHorizonMs) continue;
       const exitPrice = prices.get(sample.pool);
       if (!finite(exitPrice) || exitPrice <= 0) {
-        if (now - sample.openedAt >= this.horizonMs * 3) {
+        if (now - sample.openedAt >= sampleHorizonMs * 3) {
           sample.resolutionFailedAt = now;
           sample.grossReturnPct = -100;
           sample.netReturnPct = -100;
@@ -121,17 +125,22 @@ export class ShadowEvaluator {
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
-        const duplicate = this.samples.some((sample) => !sample.closedAt
-          && sample.rule === rule.name && sample.pool === candidate.address);
-        if (duplicate) continue;
-        this.samples.push({
-          rule: rule.name,
-          pool: candidate.address,
-          quoteToken: candidate.marketSafety.quoteToken,
-          entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
-          executionCostPct: Number(candidate.marketSafety.roundTripLossPct),
-          openedAt: now,
-        });
+        for (const horizonMs of this.horizonsMs) {
+          const duplicate = this.samples.some((sample) => !sample.closedAt
+            && !sample.resolutionFailedAt && sample.rule === rule.name
+            && sample.pool === candidate.address
+            && Number(sample.horizonMs || this.horizonMs) === horizonMs);
+          if (duplicate) continue;
+          this.samples.push({
+            rule: rule.name,
+            horizonMs,
+            pool: candidate.address,
+            quoteToken: candidate.marketSafety.quoteToken,
+            entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
+            executionCostPct: Number(candidate.marketSafety.roundTripLossPct),
+            openedAt: now,
+          });
+        }
       }
     }
     if (this.samples.length > 2000) this.samples = this.samples.slice(-2000);
@@ -145,28 +154,40 @@ export class ShadowEvaluator {
   snapshot() {
     const byRule = {};
     for (const rule of this.rules) {
-      const closed = this.samples.filter((sample) => sample.rule === rule.name
-        && (sample.closedAt || sample.resolutionFailedAt));
-      const summary = summarizeSamples(closed);
-      byRule[rule.name] = {
-        openSamples: this.samples.filter((sample) => sample.rule === rule.name
-          && !sample.closedAt && !sample.resolutionFailedAt).length,
-        resolutionFailures: closed.filter((sample) => sample.resolutionFailedAt).length,
-        ...summary,
-        promotion: evaluateShadowPromotion(summary),
-      };
+      const byHorizon = {};
+      for (const horizonMs of this.horizonsMs) {
+        const matching = this.samples.filter((sample) => sample.rule === rule.name
+          && Number(sample.horizonMs || this.horizonMs) === horizonMs);
+        const closed = matching.filter((sample) => sample.closedAt || sample.resolutionFailedAt);
+        const summary = summarizeSamples(closed);
+        byHorizon[String(horizonMs)] = {
+          openSamples: matching.filter((sample) => !sample.closedAt
+            && !sample.resolutionFailedAt).length,
+          resolutionFailures: closed.filter((sample) => sample.resolutionFailedAt).length,
+          ...summary,
+          promotion: evaluateShadowPromotion(summary),
+        };
+      }
+      const primary = byHorizon[String(this.horizonMs)];
+      byRule[rule.name] = { ...primary, byHorizon };
     }
     return { mode: "SHADOW_ONLY", horizonMs: this.horizonMs,
+      horizonsMs: this.horizonsMs,
       promotionPolicy: DEFAULT_PROMOTION_POLICY, byRule,
       recentSamples: this.samples.slice(-50) };
   }
 
   serialize() {
-    return { horizonMs: this.horizonMs, samples: this.samples };
+    return { horizonMs: this.horizonMs, horizonsMs: this.horizonsMs, samples: this.samples };
   }
 
   restore(state) {
     if (!state || !Array.isArray(state.samples)) return;
+    if (Array.isArray(state.horizonsMs) && state.horizonsMs.length) {
+      this.horizonsMs = state.horizonsMs;
+      this.horizonMs = this.horizonsMs.includes(5 * 60_000)
+        ? 5 * 60_000 : this.horizonsMs[0];
+    }
     this.samples = state.samples.slice(-2000);
   }
 }
