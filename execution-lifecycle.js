@@ -14,13 +14,14 @@ export class ExecutionLifecycleError extends Error {
 }
 
 export class ExecutionLifecycle {
-  constructor({ policy, ledger, journal, provider, validateCalldata = validateV2RouterCalldata }) {
-    if (!policy || !ledger || !journal || !provider || typeof validateCalldata !== "function") {
+  constructor({ policy, ledger, journal, nonceLane, provider, validateCalldata = validateV2RouterCalldata }) {
+    if (!policy || !ledger || !journal || !nonceLane || !provider || typeof validateCalldata !== "function") {
       throw new Error("invalid-execution-lifecycle-config");
     }
     this.policy = policy;
     this.ledger = ledger;
     this.journal = journal;
+    this.nonceLane = nonceLane;
     this.provider = provider;
     this.validateCalldata = validateCalldata;
     this.running = new Set();
@@ -29,18 +30,14 @@ export class ExecutionLifecycle {
   async submit(rawIntent, { now = Date.now() } = {}) {
     const spent = this.ledger.snapshot(now).spentWei;
     const evaluated = evaluateExecutionPolicy(rawIntent, this.policy, { now, dailySpentWei: spent });
-    if (!evaluated.approved) {
-      return Object.freeze({ status: "rejected", stage: "policy", failures: evaluated.failures });
-    }
+    if (!evaluated.approved) return Object.freeze({ status: "rejected", stage: "policy", failures: evaluated.failures });
 
     const { intent } = evaluated;
     if (this.running.has(intent.id)) {
       return Object.freeze({ status: "rejected", stage: "replay", failures: ["duplicate-intent"] });
     }
     const calldata = this.validateCalldata(intent, this.policy, { nowSeconds: Math.floor(now / 1000) });
-    if (!calldata.approved) {
-      return Object.freeze({ status: "rejected", stage: "calldata", failures: calldata.failures });
-    }
+    if (!calldata.approved) return Object.freeze({ status: "rejected", stage: "calldata", failures: calldata.failures });
 
     this.running.add(intent.id);
     const state = { intentId: intent.id, status: "pending", stage: "reserved", transactionHash: null };
@@ -56,7 +53,11 @@ export class ExecutionLifecycle {
 
     try {
       state.stage = "signing";
-      const signed = await this.provider.sign(intent);
+      const nonce = await this.nonceLane.reserve({
+        chainId: intent.chainId, walletAddress: intent.from, intentId: intent.id,
+      }, () => this.provider.getPendingNonce(intent));
+      await this.journal.transition(intent.id, { status: "nonce-reserved", nonce }, now);
+      const signed = await this.provider.sign(intent, { nonce });
       if (!signed || !TX_HASH.test(String(signed.transactionHash))) {
         throw new Error("signed-transaction-hash-required");
       }
@@ -73,6 +74,7 @@ export class ExecutionLifecycle {
       const succeeded = receipt?.status === "success" || receipt?.status === 1 || receipt?.status === "0x1";
       const status = succeeded ? "confirmed" : "reverted";
       await this.journal.transition(intent.id, { status, receipt }, now);
+      await this.nonceLane.finalize(intent.id);
       return Object.freeze({ ...state, stage: "confirmed", status, receipt });
     } catch (error) {
       throw new ExecutionLifecycleError(state.stage, error, state);
@@ -97,6 +99,7 @@ export class ExecutionLifecycle {
         const succeeded = receipt.status === "success" || receipt.status === 1 || receipt.status === "0x1";
         const status = succeeded ? "confirmed" : "reverted";
         await this.journal.transition(record.intentId, { status, receipt }, now);
+        await this.nonceLane.finalize(record.intentId);
         outcomes.push(Object.freeze({ ...record, status, receipt, recovery: "reconciled" }));
       } catch (error) {
         outcomes.push(Object.freeze({ ...record, recovery: "rpc-error", error: error.message }));
