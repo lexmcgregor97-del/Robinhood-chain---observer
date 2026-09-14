@@ -12,6 +12,7 @@ export function assessLiveReadiness(input, policy = DEFAULT_LIVE_PROMOTION_POLIC
   if (Number(paper.closedTrades || 0) < policy.minPaperTrades) failures.push("paper-sample-too-small");
   if (Number(paper.expectancyPerTrade || 0) <= policy.minPaperExpectancy) failures.push("paper-expectancy-not-positive");
   if (Number(paper.maxRealizedDrawdownPct || 0) > policy.maxPaperDrawdownPct) failures.push("paper-drawdown-too-high");
+  if (Number(paper.measurementFailures || 0) > 0) failures.push("paper-measurement-failures-present");
   if (Number(shadow.uniquePools || 0) < policy.minShadowUniquePools || shadow.eligible !== true) failures.push("shadow-evidence-insufficient");
   if (input?.sellProbeReady !== true) failures.push("sell-probe-not-ready");
   if (input?.walletConfigured !== true) failures.push("wallet-not-configured");
