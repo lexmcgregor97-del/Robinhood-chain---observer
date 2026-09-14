@@ -13,6 +13,8 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
+The dormant Turnkey adapter signs only the exact EVM transaction produced after Atlas policy and calldata validation, verifies that the returned signed transaction belongs to the configured wallet, and delegates broadcasting and receipt recovery to Atlas's RPC client. It remains disabled unless all required Turnkey credentials are present. The configured Turnkey API user must be non-root and independently restricted by Turnkey policies; never grant it unrestricted signing authority.
+
 ## Measurement model
 
 Swap activity is stored as timestamped per-block counts. Signals compare a 60-second window with a rate-normalized five-minute baseline; pool age is measured in elapsed time rather than block count.
