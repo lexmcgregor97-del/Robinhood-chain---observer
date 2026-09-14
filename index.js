@@ -26,6 +26,8 @@ import { PositionLiveness } from "./position-liveness.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { envFlag } from "./runtime-flags.js";
 import { assessLiveReadiness } from "./live-readiness.js";
+import { probeTurnkeyWallet, turnkeyConfigFromEnv } from "./turnkey-probe.js";
+import { Turnkey } from "@turnkey/sdk-server";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -101,6 +103,34 @@ const persistence = {
   writeBlocked: false, automationBlockedReason: null,
   stateFile: STATE_FILE ? "configured" : null,
 };
+const turnkeyEnvironment = turnkeyConfigFromEnv(process.env);
+const turnkeyStatus = {
+  configured: turnkeyEnvironment.configured,
+  identifiersValid: turnkeyEnvironment.identifiersValid,
+  missing: turnkeyEnvironment.missing,
+  checked: false, authenticated: false, walletVisible: false, addressMatch: false,
+  walletAccountId: null, accountCount: 0, lastError: null,
+};
+
+async function verifyTurnkeyConfiguration() {
+  if (!turnkeyEnvironment.configured || !turnkeyEnvironment.identifiersValid) return;
+  try {
+    const config = turnkeyEnvironment.config;
+    const client = new Turnkey({
+      apiBaseUrl: "https://api.turnkey.com",
+      defaultOrganizationId: config.organizationId,
+      apiPublicKey: config.apiPublicKey,
+      apiPrivateKey: config.apiPrivateKey,
+    }).apiClient();
+    Object.assign(turnkeyStatus, await probeTurnkeyWallet({ config,
+      getWalletAccounts: (request) => client.getWalletAccounts(request) }),
+    { checked: true, lastError: null });
+  } catch {
+    turnkeyStatus.checked = true;
+    turnkeyStatus.lastError = "turnkey-verification-failed";
+    console.error("Turnkey read-only verification failed");
+  }
+}
 
 function persistedState() {
   return {
@@ -394,6 +424,7 @@ function snapshot() {
     },
     readiness,
     persistence,
+    turnkey: turnkeyStatus,
   };
 }
 
@@ -854,7 +885,7 @@ function paperStatus() {
       paper: books.WETH.analytics,
       shadow: { uniquePools: escape.uniquePools, eligible: escape.promotion?.eligible },
       sellProbeReady: false,
-      walletConfigured: false,
+      walletConfigured: turnkeyStatus.authenticated && turnkeyStatus.addressMatch,
       rpcEndpointCount: rpcTransport.snapshot().endpointCount,
       operationalReady: operational.readyForPaper,
     }),
@@ -895,6 +926,7 @@ function json(res, value) {
 }
 
 await restoreState();
+await verifyTurnkeyConfiguration();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
 
