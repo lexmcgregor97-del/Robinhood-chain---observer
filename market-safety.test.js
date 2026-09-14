@@ -49,7 +49,8 @@ test("measures V3 state but preserves the tick-boundary guard", () => {
   });
   assert.equal(safety.liquidityKnown, true);
   assert.equal(safety.tokenPriceQuote, 1);
-  assert.equal(safety.buySimulationOk, true);
+  assert.equal(safety.buySimulationOk, false);
   assert.equal(safety.tickBoundaryKnown, false);
+  assert.equal(safety.staysWithinActiveTick, false);
   assert.equal(safety.simulationScope, "same-tick-only");
 });
