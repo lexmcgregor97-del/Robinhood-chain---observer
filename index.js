@@ -42,6 +42,7 @@ const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 400);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
 const BACKFILL = 20_000;
 const CHUNK = 500;
+const MAX_RECOVERY_LAG_BLOCKS = 300;
 const MAX_POOLS = 5_000;
 const SIGNAL_WINDOW_MS = Number(process.env.SIGNAL_WINDOW_MS || 60_000);
 const SIGNAL_BASELINE_MS = Number(process.env.SIGNAL_BASELINE_MS || 300_000);
@@ -94,6 +95,7 @@ const paperAutomation = { cycles: 0, entries: 0, exits: 0, lastError: null, rece
 const shadowEvaluator = new ShadowEvaluator();
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
+  recoverySkippedBlocks: 0,
   successfulPolls: 0, failedPolls: 0, lastError: null,
   backfill: { active: false, from: 0, to: 0, current: 0 },
   v2Pools: 0, v3Pools: 0, swaps: 0, rpcLatencyMs: 0,
@@ -348,14 +350,23 @@ async function bootstrap(latest) {
 async function poll() {
   try {
     const latest = intHex(await rpc("eth_blockNumber", []));
-    if (!metrics.cursor) await bootstrap(latest);
-    else if (latest > metrics.cursor) await scanRange(metrics.cursor + 1, latest);
-    const block = await rpc("eth_getBlockByNumber", [hexBlock(latest), false]);
     metrics.latestBlock = latest;
+    let caughtUp = true;
+    if (!metrics.cursor) await bootstrap(latest);
+    else if (latest > metrics.cursor) {
+      caughtUp = false;
+      const lag = latest - metrics.cursor;
+      if (lag > MAX_RECOVERY_LAG_BLOCKS) {
+        metrics.recoverySkippedBlocks += lag - MAX_RECOVERY_LAG_BLOCKS;
+        metrics.cursor = latest - MAX_RECOVERY_LAG_BLOCKS;
+      }
+      await scanRange(metrics.cursor + 1, latest);
+    }
+    const block = await rpc("eth_getBlockByNumber", [hexBlock(latest), false]);
     metrics.blockTimestamp = intHex(block?.timestamp);
     metrics.successfulPolls += 1;
     metrics.lastError = null;
-    nextPollDelayMs = POLL_MS;
+    nextPollDelayMs = caughtUp ? POLL_MS : 1_000;
     const ready = assessReadiness({
       latestBlock: metrics.latestBlock, cursor: metrics.cursor,
       backfillActive: metrics.backfill.active, lastError: metrics.lastError,
@@ -399,6 +410,10 @@ function snapshot() {
     cursor: metrics.cursor, polling: {
       configuredIntervalMs: POLL_MS, nextDelayMs: nextPollDelayMs, successful: metrics.successfulPolls,
       failed: metrics.failedPolls, lastError: metrics.lastError,
+    },
+    recovery: {
+      maxLagBlocks: MAX_RECOVERY_LAG_BLOCKS,
+      skippedBlocks: metrics.recoverySkippedBlocks,
     },
     backfill,
     poolDiscovery: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
