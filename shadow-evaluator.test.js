@@ -126,3 +126,14 @@ test("each horizon resolves only when its own observation period elapses", () =>
   assert.equal(samples.find((sample) => sample.horizonMs === 100).closedAt, 1100);
   assert.equal(samples.find((sample) => sample.horizonMs === 300).closedAt, undefined);
 });
+
+test("restoring legacy state preserves samples without replacing configured horizons", () => {
+  const evaluator = new ShadowEvaluator();
+  evaluator.restore({
+    horizonMs: 300_000,
+    horizonsMs: [300_000],
+    samples: [{ rule: "escape-strict", pool: "0xold", openedAt: 1, entryPrice: 2 }],
+  });
+  assert.deepEqual(evaluator.snapshot().horizonsMs, [60_000, 300_000, 900_000]);
+  assert.equal(evaluator.serialize().samples[0].horizonMs, 300_000);
+});

@@ -183,11 +183,9 @@ export class ShadowEvaluator {
 
   restore(state) {
     if (!state || !Array.isArray(state.samples)) return;
-    if (Array.isArray(state.horizonsMs) && state.horizonsMs.length) {
-      this.horizonsMs = state.horizonsMs;
-      this.horizonMs = this.horizonsMs.includes(5 * 60_000)
-        ? 5 * 60_000 : this.horizonsMs[0];
-    }
-    this.samples = state.samples.slice(-2000);
+    this.samples = state.samples.slice(-2000).map((sample) => ({
+      ...sample,
+      horizonMs: Number(sample.horizonMs || state.horizonMs || 5 * 60_000),
+    }));
   }
 }
