@@ -27,8 +27,12 @@ const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
 const BACKFILL = 20_000;
 const CHUNK = 500;
 const MAX_POOLS = 5_000;
-const MAX_RECENT = 50;
-const SIGNAL_WINDOW_BLOCKS = Number(process.env.SIGNAL_WINDOW_BLOCKS || 20);
+const SIGNAL_WINDOW_MS = Number(process.env.SIGNAL_WINDOW_MS || 60_000);
+const SIGNAL_BASELINE_MS = Number(process.env.SIGNAL_BASELINE_MS || 300_000);
+const SIGNAL_HISTORY_MS = Math.max(
+  SIGNAL_WINDOW_MS + SIGNAL_BASELINE_MS,
+  Number(process.env.SIGNAL_HISTORY_MS || 10 * 60_000),
+);
 const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
 const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
@@ -104,7 +108,16 @@ async function restoreState() {
   try {
     const state = await loadJsonState(STATE_FILE);
     if (!state) return;
-    for (const pool of (state.pools || []).slice(0, MAX_POOLS)) pools.set(pool.address, pool);
+    for (const savedPool of (state.pools || []).slice(0, MAX_POOLS)) {
+      const pool = {
+        ...savedPool,
+        recentBlocks: Array.isArray(savedPool.recentBlocks)
+          ? savedPool.recentBlocks.filter((bucket) => Number.isFinite(Number(bucket.timestampMs)))
+          : [],
+      };
+      delete pool.recent;
+      pools.set(pool.address, pool);
+    }
     metrics.cursor = Number(state.cursor) || 0;
     metrics.v2Pools = [...pools.values()].filter((pool) => pool.version === "v2").length;
     metrics.v3Pools = [...pools.values()].filter((pool) => pool.version === "v3").length;
@@ -172,12 +185,18 @@ async function getLogs(from, to, address, topics) {
 
 function registerPool(pool) {
   if (pools.has(pool.address) || pools.size >= MAX_POOLS) return;
-  pools.set(pool.address, { ...pool, swapCount: 0, lastSwapBlock: 0, recent: [] });
+  pools.set(pool.address, {
+    ...pool,
+    swapCount: 0,
+    lastSwapBlock: 0,
+    lastSwapTimestampMs: 0,
+    recentBlocks: [],
+  });
   if (pool.version === "v2") metrics.v2Pools += 1;
   else metrics.v3Pools += 1;
 }
 
-async function discover(from, to) {
+async function discover(from, to, rangeTimes) {
   const batches = await Promise.all(ROBINHOOD.factories.map(async (factory) => ({
     factory, logs: await getLogs(from, to, factory.address,
       [factory.version === "v2" ? PAIR_CREATED : POOL_CREATED]),
@@ -191,18 +210,24 @@ async function discover(from, to) {
         token0: topicAddress(log.topics[1]), token1: topicAddress(log.topics[2]),
         fee: factory.version === "v3" ? intHex(log.topics[3]) : null,
         discoveryBlock: log.blockNumber,
+        discoveryTimestampMs: estimateBlockTimestamp(log.blockNumber, rangeTimes),
       });
     }
   }
 }
 
-function recordSwap(log) {
+function recordSwap(log, timestampMs) {
   const pool = pools.get(String(log.address).toLowerCase());
   if (!pool) return;
   pool.swapCount += 1;
   pool.lastSwapBlock = log.blockNumber;
-  pool.recent.push(log.blockNumber);
-  if (pool.recent.length > MAX_RECENT) pool.recent.shift();
+  pool.lastSwapTimestampMs = timestampMs;
+  const blocks = pool.recentBlocks || (pool.recentBlocks = []);
+  const last = blocks.at(-1);
+  if (last?.blockNumber === log.blockNumber) last.count += 1;
+  else blocks.push({ blockNumber: log.blockNumber, timestampMs, count: 1 });
+  const historyFloor = timestampMs - SIGNAL_HISTORY_MS;
+  while (blocks.length && blocks[0].timestampMs < historyFloor) blocks.shift();
   try {
     pool.lastSwap = {
       blockNumber: log.blockNumber,
@@ -216,7 +241,7 @@ function recordSwap(log) {
   metrics.swaps += 1;
 }
 
-async function observeSwaps(from, to) {
+async function observeSwaps(from, to, rangeTimes) {
   const groups = [
     { version: "v2", topics: [V2_SWAP] },
     { version: "v3", topics: [[PANCAKE_V3_SWAP, UNISWAP_V3_SWAP]] },
@@ -227,16 +252,44 @@ async function observeSwaps(from, to) {
       .map((pool) => pool.address);
     for (let i = 0; i < addresses.length; i += 100) {
       const logs = await getLogs(from, to, addresses.slice(i, i + 100), group.topics);
-      logs.forEach(recordSwap);
+      logs.forEach((log) => recordSwap(
+        log, estimateBlockTimestamp(log.blockNumber, rangeTimes),
+      ));
     }
   }
+}
+
+async function blockRangeTimes(from, to) {
+  const [first, last] = await Promise.all([
+    rpc("eth_getBlockByNumber", [hexBlock(from), false]),
+    from === to
+      ? Promise.resolve(null)
+      : rpc("eth_getBlockByNumber", [hexBlock(to), false]),
+  ]);
+  const fromTimestampMs = intHex(first?.timestamp) * 1_000;
+  const toTimestampMs = (last ? intHex(last.timestamp) : intHex(first?.timestamp)) * 1_000;
+  if (!Number.isFinite(fromTimestampMs) || fromTimestampMs <= 0
+      || !Number.isFinite(toTimestampMs) || toTimestampMs <= 0) {
+    throw new Error("block-timestamp-unavailable");
+  }
+  return { from, to, fromTimestampMs, toTimestampMs };
+}
+
+function estimateBlockTimestamp(blockNumber, rangeTimes) {
+  if (rangeTimes.to <= rangeTimes.from) return rangeTimes.fromTimestampMs;
+  const ratio = (blockNumber - rangeTimes.from) / (rangeTimes.to - rangeTimes.from);
+  return Math.round(
+    rangeTimes.fromTimestampMs
+      + ratio * (rangeTimes.toTimestampMs - rangeTimes.fromTimestampMs),
+  );
 }
 
 async function scanRange(from, to) {
   for (let start = from; start <= to; start += CHUNK) {
     const end = Math.min(start + CHUNK - 1, to);
-    await discover(start, end);
-    await observeSwaps(start, end);
+    const rangeTimes = await blockRangeTimes(start, end);
+    await discover(start, end, rangeTimes);
+    await observeSwaps(start, end, rangeTimes);
     metrics.cursor = end;
     if (metrics.backfill.active) metrics.backfill.current = end;
   }
@@ -356,8 +409,10 @@ function snapshot() {
 }
 
 function signals(limit = 25) {
-  return rankPools([...pools.values()], metrics.latestBlock || metrics.cursor, {
-    windowBlocks: SIGNAL_WINDOW_BLOCKS,
+  const nowMs = (metrics.blockTimestamp * 1_000) || Date.now();
+  return rankPools([...pools.values()], nowMs, {
+    windowMs: SIGNAL_WINDOW_MS,
+    baselineMs: SIGNAL_BASELINE_MS,
     minSwaps: SIGNAL_MIN_SWAPS,
   }).slice(0, limit);
 }
@@ -386,6 +441,18 @@ async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
   return boundaryTick;
 }
 
+async function ensureDiscoveryTimestamp(pool) {
+  if (Number.isFinite(Number(pool.discoveryTimestampMs))
+      && Number(pool.discoveryTimestampMs) > 0) return Number(pool.discoveryTimestampMs);
+  const block = await rpc("eth_getBlockByNumber", [hexBlock(pool.discoveryBlock), false]);
+  const timestampMs = intHex(block?.timestamp) * 1_000;
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    throw new Error("pool-discovery-timestamp-unavailable");
+  }
+  pool.discoveryTimestampMs = timestampMs;
+  return timestampMs;
+}
+
 async function marketSafety(pool) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg];
   const quoteAddresses = quoteTokens.map((address) => address.toLowerCase());
@@ -396,11 +463,16 @@ async function marketSafety(pool) {
     quoteToken: quoteIsToken0 ? pool.token0 : quoteIsToken1 ? pool.token1 : null,
     baseToken: quoteIsToken0 ? pool.token1 : quoteIsToken1 ? pool.token0 : null,
     liquidityKnown: false, buySimulationOk: false, sellSimulationOk: false,
-    poolAgeBlocks: (metrics.latestBlock || metrics.cursor) - pool.discoveryBlock,
+    poolAgeMs: null,
     priceImpactPct: null, roundTripLossPct: null,
   };
   if (!base.quoteTokenKnown) return base;
   try {
+    const discoveryTimestampMs = await ensureDiscoveryTimestamp(pool);
+    base.poolAgeMs = Math.max(
+      0,
+      ((metrics.blockTimestamp * 1_000) || Date.now()) - discoveryTimestampMs,
+    );
     const [token0Meta, token1Meta] = await Promise.all([
       tokenMeta(pool.token0), tokenMeta(pool.token1),
     ]);
