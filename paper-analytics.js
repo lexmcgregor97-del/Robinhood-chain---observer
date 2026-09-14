@@ -60,6 +60,8 @@ export function analyzePaperTrades({ initialCash, trades = [], strategyVersion =
       version: entry.audit?.version || "unknown",
       venue: entry.audit?.venue || "unknown",
       strategyVersion: entry.audit?.strategyVersion || "legacy",
+      measurementFailure: trade.measurementFailure === true
+        || trade.reason === "price-unavailable-timeout",
     };
     closed.push(record);
     equity += pnl;
@@ -84,6 +86,11 @@ export function analyzePaperTrades({ initialCash, trades = [], strategyVersion =
     averageHoldMs: closed.length
       ? closed.reduce((sum, record) => sum + record.holdMs, 0) / closed.length : 0,
     maxRealizedDrawdownPct: maxDrawdownPct,
+    // Closes booked at zero because the exit could not be measured (RPC or
+    // conversion failure), not because the market went to zero. They stay in
+    // the P&L (conservative) but any non-zero count invalidates the cohort.
+    measurementFailures: closed.filter((record) => record.measurementFailure).length,
+    uniquePools: new Set(closed.map((record) => record.pool)).size,
     feesPaid,
     openTrades: openByPool.size,
     bySignal: grouped(closed, "signal"),
