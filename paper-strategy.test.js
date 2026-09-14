@@ -7,19 +7,28 @@ import {
 const candidate = {
   address: "0xpool",
   riskGate: { eligibleForPaperEntry: true },
-  marketSafety: { tokenPriceQuote: 2, baseToken: "0xtoken" },
+  marketSafety: {
+    tokenPriceQuote: 2,
+    baseToken: "0xtoken",
+    baseTokenDecimals: 2,
+    buyAmountOut: "4000",
+  },
 };
 
 test("sizes paper entries from cash with a hard cap", () => {
   const plan = planPaperEntry(candidate, { cash: 1000, openPositions: [] });
   assert.equal(plan.approved, true);
   assert.equal(plan.order.notional, 100);
-  assert.equal(plan.order.price, 2);
+  assert.equal(plan.order.quantity, 40);
+  assert.equal(plan.order.midPrice, 2);
+  assert.equal(plan.order.price, 2.5);
 });
 
 test("paper entry fails closed without risk approval or price", () => {
   const plan = planPaperEntry({ ...candidate, riskGate: { eligibleForPaperEntry: false },
-    marketSafety: { tokenPriceQuote: null } }, { cash: 1000, openPositions: [] });
+    marketSafety: {
+      tokenPriceQuote: null, baseTokenDecimals: 2, buyAmountOut: "4000",
+    } }, { cash: 1000, openPositions: [] });
   assert.equal(plan.approved, false);
   assert.deepEqual(plan.failures, ["risk-gate-rejected", "price-unavailable"]);
 });
@@ -52,4 +61,13 @@ test("applies stop, target, trail and time exits deterministically", () => {
   assert.equal(paperExitReason({ returnPct: 14, peakReturnPct: 25, openedAt: now }, now), "trailing-stop");
   assert.equal(paperExitReason({ returnPct: 1, openedAt: now - 6 * 60 * 60 * 1000 }, now), "max-hold");
   assert.equal(paperExitReason({ returnPct: 5, openedAt: now }, now), null);
+});
+
+test("paper entry fails closed without executable AMM output", () => {
+  const plan = planPaperEntry({
+    ...candidate,
+    marketSafety: { tokenPriceQuote: 2, baseToken: "0xtoken" },
+  }, { cash: 1000, openPositions: [] });
+  assert.equal(plan.approved, false);
+  assert.ok(plan.failures.includes("executable-fill-unavailable"));
 });
