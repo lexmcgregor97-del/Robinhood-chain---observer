@@ -38,8 +38,8 @@ const RPC_URLS = rpcUrlsFromEnv({
 });
 const CHAIN_ID = ROBINHOOD.chainId;
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 30_000);
-const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 400);
-const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
+const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
+const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 50);
 const BACKFILL = 20_000;
 const CHUNK = 500;
 const MAX_RECOVERY_LAG_BLOCKS = 300;
