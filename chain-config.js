@@ -19,10 +19,4 @@ export const ROBINHOOD = Object.freeze({
     { dex: "uniswap", version: "v2", address: "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f" },
     { dex: "uniswap", version: "v3", address: "0x1f7d7550b1b028f7571e69a784071f0205fd2efa" },
   ]),
-  approvedRouters: Object.freeze({
-    uniswapV2: "0x89e5db8b5aa49aa85ac63f691524311aeb649eba",
-    uniswapSwapRouter02: "0xcaf681a66d020601342297493863e78c959e5cb2",
-    pancakeV2: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-    pancakeInfinityUniversal: "0xE28c0e44F4016b073db20cF28971CAc6ce3664D3",
-  }),
 });
