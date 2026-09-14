@@ -13,6 +13,7 @@ export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
   if (!safety.buySimulationOk) failures.push("buy-simulation-failed");
   if (!safety.sellSimulationOk) failures.push("sell-simulation-failed");
   if (candidate.version === "v3" && !safety.tickBoundaryKnown) failures.push("v3-tick-boundary-unmeasured");
+  if (candidate.version === "v3" && safety.tickBoundaryKnown && !safety.staysWithinActiveTick) failures.push("v3-probe-crosses-tick");
   if (!Number.isFinite(safety.poolAgeBlocks) || safety.poolAgeBlocks < policy.minPoolAgeBlocks) failures.push("pool-too-new");
   if (!Number.isFinite(safety.priceImpactPct) || safety.priceImpactPct > policy.maxPriceImpactPct) failures.push("price-impact-too-high");
   if (!Number.isFinite(safety.roundTripLossPct) || safety.roundTripLossPct > policy.maxRoundTripLossPct) failures.push("round-trip-loss-too-high");
