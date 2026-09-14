@@ -12,6 +12,7 @@ const candidate = {
     baseToken: "0xtoken",
     baseTokenDecimals: 2,
     buyAmountOut: "4000",
+    plannedNotionalQuote: 100,
   },
 };
 
@@ -70,4 +71,13 @@ test("paper entry fails closed without executable AMM output", () => {
   }, { cash: 1000, openPositions: [] });
   assert.equal(plan.approved, false);
   assert.ok(plan.failures.includes("executable-fill-unavailable"));
+});
+
+test("paper entry rejects a fill simulated at a different size", () => {
+  const plan = planPaperEntry({
+    ...candidate,
+    marketSafety: { ...candidate.marketSafety, plannedNotionalQuote: 10 },
+  }, { cash: 1000, openPositions: [] });
+  assert.equal(plan.approved, false);
+  assert.ok(plan.failures.includes("fill-size-mismatch"));
 });
