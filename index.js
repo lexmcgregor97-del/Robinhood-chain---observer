@@ -25,6 +25,7 @@ import { LogDeduplicator } from "./log-deduplicator.js";
 import { PositionLiveness } from "./position-liveness.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { envFlag } from "./runtime-flags.js";
+import { assessLiveReadiness } from "./live-readiness.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -58,6 +59,7 @@ const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
+const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v2";
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -647,6 +649,7 @@ function poolFeeRate(pool) {
 
 function paperEntryAudit(candidate, feeRate) {
   return {
+    strategyVersion: PAPER_STRATEGY_VERSION,
     block: metrics.latestBlock,
     signal: candidate.signal?.state,
     version: candidate.version,
@@ -783,6 +786,7 @@ async function runPaperCycle() {
       const paperState = book.portfolio.serialize();
       const circuitFailures = paperCircuitFailures(analyzePaperTrades({
         initialCash: paperState.initialCash, trades: paperState.trades,
+        strategyVersion: PAPER_STRATEGY_VERSION,
       }), policy);
       if (circuitFailures.length) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
@@ -812,10 +816,16 @@ async function runPaperCycle() {
 
 function paperBookStatus(book) {
   const state = book.portfolio.serialize();
+  const currentAnalytics = analyzePaperTrades({
+    initialCash: state.initialCash, trades: state.trades,
+    strategyVersion: PAPER_STRATEGY_VERSION,
+  });
   return {
     quote: book.symbol,
     ...book.portfolio.snapshot(),
-    analytics: analyzePaperTrades({
+    strategyVersion: PAPER_STRATEGY_VERSION,
+    analytics: currentAnalytics,
+    legacyAnalytics: analyzePaperTrades({
       initialCash: state.initialCash, trades: state.trades,
     }),
     recentTrades: state.trades.slice(-20),
@@ -823,6 +833,12 @@ function paperBookStatus(book) {
 }
 
 function paperStatus() {
+  const books = Object.fromEntries([...paperBooks.values()].map((book) => [
+    book.symbol, paperBookStatus(book),
+  ]));
+  const shadow = shadowEvaluator.snapshot();
+  const escape = shadow.byRule?.["escape-activity"] || {};
+  const operational = snapshot().readiness;
   return {
     mode: "PAPER_ONLY",
     newEntriesPaused: PAPER_ENTRIES_PAUSED,
@@ -830,12 +846,18 @@ function paperStatus() {
       || (PAPER_ENTRIES_PAUSED ? "paper-ledger-review" : null),
     shadowRecordingPaused: SHADOW_RECORDING_PAUSED,
     automationBlockedReason: persistence.automationBlockedReason,
-    books: Object.fromEntries([...paperBooks.values()].map((book) => [
-      book.symbol, paperBookStatus(book),
-    ])),
+    books,
     automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
       lastCycleAt: lastPaperCycleAt || null },
-    shadow: shadowEvaluator.snapshot(),
+    shadow,
+    liveReadiness: assessLiveReadiness({
+      paper: books.WETH.analytics,
+      shadow: { uniquePools: escape.uniquePools, eligible: escape.promotion?.eligible },
+      sellProbeReady: false,
+      walletConfigured: false,
+      rpcEndpointCount: rpcTransport.snapshot().endpointCount,
+      operationalReady: operational.readyForPaper,
+    }),
   };
 }
 

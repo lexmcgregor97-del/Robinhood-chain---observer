@@ -36,6 +36,21 @@ test("groups outcomes by entry and exit context", () => {
   assert.equal(result.byExitReason["stop-loss"].losses, 1);
 });
 
+test("isolates a frozen paper strategy epoch from legacy trades", () => {
+  const trades = [
+    { type: "open", pool: "legacy", notional: 10, fee: 0.1, timestamp: 1 },
+    { type: "close", pool: "legacy", pnl: 10, fee: 0.1, timestamp: 2 },
+    { type: "open", pool: "current", notional: 10, fee: 0.2, timestamp: 3,
+      audit: { strategyVersion: "paper-v2" } },
+    { type: "close", pool: "current", pnl: -2, fee: 0.3, timestamp: 4 },
+  ];
+  const result = analyzePaperTrades({ initialCash: 100, trades, strategyVersion: "paper-v2" });
+  assert.equal(result.closedTrades, 1);
+  assert.equal(result.realizedPnl, -2);
+  assert.equal(result.feesPaid, 0.5);
+  assert.equal(result.maxRealizedDrawdownPct, 2);
+});
+
 test("ignores unmatched closes and counts open trades", () => {
   const result = analyzePaperTrades({
     initialCash: 10,

@@ -25,7 +25,7 @@ function grouped(records, field) {
   return Object.fromEntries([...buckets].map(([key, values]) => [key, summarize(values)]));
 }
 
-export function analyzePaperTrades({ initialCash, trades = [] }) {
+export function analyzePaperTrades({ initialCash, trades = [], strategyVersion = null }) {
   initialCash = finite(initialCash);
   const openByPool = new Map();
   const closed = [];
@@ -35,14 +35,17 @@ export function analyzePaperTrades({ initialCash, trades = [] }) {
   let maxDrawdownPct = 0;
 
   for (const trade of trades) {
-    feesPaid += Math.max(0, finite(trade.fee));
+    if (!strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
     if (trade.type === "open") {
+      if (strategyVersion && trade.audit?.strategyVersion !== strategyVersion) continue;
+      if (strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
       openByPool.set(trade.pool, trade);
       continue;
     }
     if (trade.type !== "close") continue;
     const entry = openByPool.get(trade.pool);
     if (!entry) continue;
+    if (strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
     openByPool.delete(trade.pool);
     const pnl = finite(trade.pnl);
     const notional = finite(entry.notional);
@@ -56,6 +59,7 @@ export function analyzePaperTrades({ initialCash, trades = [] }) {
       signal: entry.audit?.signal || "unknown",
       version: entry.audit?.version || "unknown",
       venue: entry.audit?.venue || "unknown",
+      strategyVersion: entry.audit?.strategyVersion || "legacy",
     };
     closed.push(record);
     equity += pnl;
