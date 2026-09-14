@@ -8,6 +8,7 @@ import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
+import { assessReadiness } from "./readiness.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
@@ -229,7 +230,11 @@ async function poll() {
     metrics.successfulPolls += 1;
     metrics.lastError = null;
     nextPollDelayMs = POLL_MS;
-    if (!metrics.backfill.active && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
+    const ready = assessReadiness({
+      latestBlock: metrics.latestBlock, cursor: metrics.cursor,
+      backfillActive: metrics.backfill.active, lastError: metrics.lastError,
+    });
+    if (ready.readyForPaper && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
       await runPaperCycle();
     }
     await persistState();
@@ -282,6 +287,10 @@ function snapshot() {
     active: metrics.backfill.active && metrics.cursor <= metrics.backfill.to,
     current: Math.min(metrics.backfill.current, metrics.backfill.to),
   };
+  const readiness = assessReadiness({
+    latestBlock: metrics.latestBlock, cursor: metrics.cursor,
+    backfillActive: backfill.active, lastError: metrics.lastError,
+  });
   return {
     mode: "OBSERVATION_ONLY_NO_PAPER_STRATEGY",
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
@@ -296,6 +305,7 @@ function snapshot() {
     venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
+    readiness,
     persistence,
   };
 }
@@ -414,7 +424,7 @@ async function dashboard() {
     cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${esc(pool.dex || "unknown")} · ${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
   }
   const s = snapshot();
-  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Robinhood Observer</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Robinhood Chain Observer</h1><p class="warn">OBSERVATION ONLY / NO PAPER STRATEGY YET<br>In-memory state resets on redeploy.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
+  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Robinhood Observer</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Robinhood Chain Observer</h1><p class="warn">OBSERVATION ONLY / NO PAPER STRATEGY YET<br>In-memory state resets on redeploy.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
 }
 
 const server = http.createServer(async (req, res) => {
