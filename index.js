@@ -622,17 +622,23 @@ async function paperExitQuote(pool, position) {
   const quoteToken = quoteIsToken0 ? pool.token0 : pool.token1;
   const quoteDecimals = quoteIsToken0 ? token0Meta.decimals : token1Meta.decimals;
   const baseDecimals = quoteIsToken0 ? token1Meta.decimals : token0Meta.decimals;
-  const baseAmountIn = humanToUnits(position.quantity, baseDecimals);
+  // Prefer the exact filled base units recorded at entry. The Number path throws
+  // for quantities above ~9e3 tokens at >=12 decimals (Number.isSafeInteger).
+  const baseAmountIn = typeof position.quantityUnits === "string"
+    ? BigInt(position.quantityUnits)
+    : humanToUnits(position.quantity, baseDecimals);
   let amountOut;
   let priceImpactPct = null;
+  let exitReserves = null;
   if (pool.version === "v2") {
     const { reserve0, reserve1 } = decodeV2Reserves(await rpc(
       "eth_call", [{ to: pool.address, data: "0x0902f1ac" }, "latest"],
     ));
     const reserveIn = quoteIsToken0 ? reserve1 : reserve0;
     const reserveOut = quoteIsToken0 ? reserve0 : reserve1;
+    exitReserves = { quote: reserveOut.toString(), token: reserveIn.toString() };
     if (reserveIn <= 0n || reserveOut <= 0n) {
-      return { quoteToken, liquidityZero: true };
+      return { quoteToken, liquidityZero: true, exitReserves };
     }
     const fill = quoteV2({
       reserveIn,
@@ -684,6 +690,8 @@ async function paperExitQuote(pool, position) {
     priceImpactPct,
     baseAmountIn: baseAmountIn.toString(),
     quoteAmountOut: amountOut.toString(),
+    exitReserves,
+    block: metrics.latestBlock,
   };
 }
 
@@ -744,6 +752,14 @@ function paperEntryAudit(candidate, feeRate) {
     spotVsLastSwapPct: candidate.marketSafety?.spotVsLastSwapPct,
     currentTick: candidate.marketSafety?.currentTick,
     boundaryTick: candidate.marketSafety?.boundaryTick,
+    entryReserves: {
+      quote: candidate.marketSafety?.reserveQuote ?? null,
+      token: candidate.marketSafety?.reserveToken ?? null,
+    },
+    quoteAmountIn: candidate.marketSafety?.quoteAmountIn ?? null,
+    buyAmountOut: candidate.marketSafety?.buyAmountOut ?? null,
+    baseTokenDecimals: candidate.marketSafety?.baseTokenDecimals ?? null,
+    lastSwapTransactionHash: candidate.lastSwap?.transactionHash ?? null,
     feeRate,
   };
 }
@@ -788,7 +804,9 @@ async function runPaperCycle() {
             proceeds: 0,
             fee: 0,
             reason: livenessReason,
-            audit: { block: metrics.latestBlock, reason: livenessReason },
+            measurementFailure: livenessReason === "price-unavailable-timeout",
+            audit: { block: metrics.latestBlock, reason: livenessReason,
+              exitReserves: exit?.exitReserves ?? null },
           });
           paperAutomation.exits += 1;
           rememberPaperDecision({
@@ -819,6 +837,8 @@ async function runPaperCycle() {
               peakReturnPct: marked.peakReturnPct,
               priceImpactPct: exit.priceImpactPct,
               quoteAmountOut: exit.quoteAmountOut,
+              baseAmountIn: exit.baseAmountIn,
+              exitReserves: exit.exitReserves,
             },
           });
           paperAutomation.exits += 1;
@@ -846,8 +866,9 @@ async function runPaperCycle() {
       marketSafety: await marketSafety(pool),
     })));
     if (!SHADOW_RECORDING_PAUSED) {
-      shadowEvaluator.resolve([...measured, ...pendingMeasurements]);
-      shadowEvaluator.record(measured);
+      const block = metrics.latestBlock;
+      shadowEvaluator.resolve([...measured, ...pendingMeasurements], Date.now(), { block });
+      shadowEvaluator.record(measured, Date.now(), { block });
     }
     if (PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;
@@ -873,7 +894,7 @@ async function runPaperCycle() {
           pool: candidate.address, reasons: circuitFailures });
         continue;
       }
-      const plan = planPaperEntry(candidate, paperState, policy);
+      const plan = planPaperEntry(candidate, paperState, policy, Date.now());
       if (!plan.approved) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
           pool: candidate.address, reasons: plan.failures });
