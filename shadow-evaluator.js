@@ -5,6 +5,10 @@ export const SHADOW_RULES = Object.freeze([
   { name: "escape-relaxed", signal: "escape-velocity", maxDeviationPct: 10 },
   { name: "escape-confirmed", signal: "escape-velocity", maxDeviationPct: 5,
     confirmationCycles: 2 },
+  { name: "steady-accumulation", signal: "active", minSwaps: 4,
+    minAcceleration: 0.75, maxAcceleration: 1.5, maxDeviationPct: 5 },
+  { name: "activity-baseline", signals: ["active", "breakout-watch", "escape-velocity"],
+    minSwaps: 3, maxDeviationPct: 5 },
   { name: "breakout-strict", signal: "breakout-watch", maxDeviationPct: 5 },
 ]);
 
@@ -18,7 +22,14 @@ export const DEFAULT_PROMOTION_POLICY = Object.freeze({
 
 export function shadowRuleMatches(candidate, rule) {
   const safety = candidate?.marketSafety || {};
-  return candidate?.signal?.state === rule.signal
+  const signal = candidate?.signal || {};
+  const acceptedSignals = rule.signals || [rule.signal];
+  return acceptedSignals.includes(signal.state)
+    && (!finite(rule.minSwaps) || Number(signal.swapsCurrentWindow) >= Number(rule.minSwaps))
+    && (!finite(rule.minAcceleration)
+      || Number(signal.acceleration) >= Number(rule.minAcceleration))
+    && (!finite(rule.maxAcceleration)
+      || Number(signal.acceleration) <= Number(rule.maxAcceleration))
     && safety.quoteTokenKnown === true
     && safety.liquidityKnown === true
     && safety.buySimulationOk === true

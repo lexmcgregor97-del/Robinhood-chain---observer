@@ -156,3 +156,30 @@ test("confirmed timing streak resets when the signal disappears", () => {
   assert.equal(evaluator.serialize().samples
     .filter((sample) => sample.rule === "escape-confirmed").length, 0);
 });
+
+test("steady accumulation is independent of escape velocity", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  const steady = candidate("active");
+  steady.signal.swapsCurrentWindow = 5;
+  steady.signal.acceleration = 1.2;
+  evaluator.record([steady], 1000);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "steady-accumulation").length, 1);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "escape-strict").length, 0);
+});
+
+test("steady accumulation rejects sparse or rapidly accelerating flow", () => {
+  const rule = {
+    signal: "active", minSwaps: 4, minAcceleration: 0.75,
+    maxAcceleration: 1.5, maxDeviationPct: 5,
+  };
+  const sparse = candidate("active");
+  sparse.signal.swapsCurrentWindow = 3;
+  sparse.signal.acceleration = 1;
+  assert.equal(shadowRuleMatches(sparse, rule), false);
+  const spiking = candidate("active");
+  spiking.signal.swapsCurrentWindow = 5;
+  spiking.signal.acceleration = 1.8;
+  assert.equal(shadowRuleMatches(spiking, rule), false);
+});
