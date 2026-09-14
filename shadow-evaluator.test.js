@@ -4,212 +4,163 @@ import {
   ShadowEvaluator, shadowRuleMatches, evaluateShadowPromotion,
 } from "./shadow-evaluator.js";
 
-function candidate(signal = "escape-velocity", price = 2, deviation = 4) {
+const escapeRule = { name: "escape-activity", signal: "escape-velocity", maxDeviationPct: 5 };
+
+function candidate(signal = "escape-velocity", price = 2, address = "0xpool") {
   return {
-    address: "0xpool", signal: { state: signal },
+    address,
+    signal: { state: signal, swapsCurrentWindow: 8, acceleration: 3 },
     marketSafety: {
-      quoteTokenKnown: true, quoteToken: "0xquote", liquidityKnown: true,
-      buySimulationOk: true, sellSimulationOk: true, priceAuditAvailable: true,
-      tokenPriceQuote: price, priceImpactPct: 1, roundTripLossPct: 2,
-      spotVsLastSwapPct: deviation,
+      quoteTokenKnown: true,
+      quoteToken: "0xquote",
+      liquidityKnown: true,
+      buySimulationOk: true,
+      sellSimulationOk: true,
+      priceAuditAvailable: true,
+      tokenPriceQuote: price,
+      priceImpactPct: 1,
+      executionCostPct: 2,
+      spotVsLastSwapPct: 1,
     },
   };
 }
 
-test("shadow rules fail closed on incomplete safety evidence", () => {
-  assert.equal(shadowRuleMatches(candidate(), {
-    signal: "escape-velocity", maxDeviationPct: 5,
-  }), true);
+test("shadow rules fail closed without executable cost evidence", () => {
+  assert.equal(shadowRuleMatches(candidate(), escapeRule), true);
   const unsafe = candidate();
-  unsafe.marketSafety.sellSimulationOk = false;
-  assert.equal(shadowRuleMatches(unsafe, {
-    signal: "escape-velocity", maxDeviationPct: 5,
-  }), false);
+  delete unsafe.marketSafety.executionCostPct;
+  assert.equal(shadowRuleMatches(unsafe, escapeRule), false);
 });
 
-test("records and resolves strategy samples without opening real positions", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.observe([candidate()], 1000);
-  evaluator.observe([candidate("escape-velocity", 3)], 1100);
+test("records and resolves one five-minute sample", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100, rules: [escapeRule] });
+  evaluator.observe([candidate()], 1_000);
+  evaluator.observe([candidate("escape-velocity", 3)], 1_100);
   const result = evaluator.snapshot();
-  assert.equal(result.byRule["escape-strict"].closedSamples, 1);
-  assert.equal(result.byRule["escape-strict"].averageReturnPct, 48);
-  assert.equal(result.byRule["escape-relaxed"].closedSamples, 1);
+  assert.deepEqual(result.horizonsMs, [100]);
+  assert.equal(result.byRule["escape-activity"].closedSamples, 1);
+  assert.equal(result.byRule["escape-activity"].averageReturnPct, 48);
 });
 
-test("keeps one unresolved sample per rule and pool", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.observe([candidate()], 1000);
-  evaluator.observe([candidate()], 1050);
-  assert.equal(evaluator.serialize().samples.length, 3);
+test("does not resample a pool while its signal episode remains active", () => {
+  const evaluator = new ShadowEvaluator({
+    horizonMs: 100, episodeGapMs: 500, rules: [escapeRule],
+  });
+  evaluator.observe([candidate()], 1_000);
+  evaluator.observe([candidate("escape-velocity", 3)], 1_100);
+  evaluator.observe([candidate("escape-velocity", 3)], 1_600);
+  assert.equal(evaluator.serialize().samples.length, 1);
 });
 
-test("promotion remains advisory until enough samples exist", () => {
+test("allows a new episode only after the pool leaves signal for the full gap", () => {
+  const evaluator = new ShadowEvaluator({
+    horizonMs: 100, episodeGapMs: 500, rules: [escapeRule],
+  });
+  evaluator.record([candidate()], 1_000);
+  evaluator.record([], 1_499);
+  evaluator.record([candidate()], 1_500);
+  assert.equal(evaluator.serialize().samples.length, 1);
+  evaluator.record([], 2_000);
+  evaluator.record([candidate()], 2_001);
+  assert.equal(evaluator.serialize().samples.length, 2);
+  assert.notEqual(
+    evaluator.serialize().samples[0].episodeId,
+    evaluator.serialize().samples[1].episodeId,
+  );
+});
+
+test("censors unavailable prices instead of manufacturing a total loss", () => {
+  const evaluator = new ShadowEvaluator({
+    horizonMs: 100, resolutionTimeoutMultiplier: 3, rules: [escapeRule],
+  });
+  evaluator.record([candidate()], 1_000);
+  evaluator.resolve([], 1_300);
+  const sample = evaluator.serialize().samples[0];
+  assert.equal(sample.censorReason, "price-unavailable");
+  assert.equal(sample.netReturnPct, undefined);
+  const summary = evaluator.snapshot().byRule["escape-activity"];
+  assert.equal(summary.censoredSamples, 1);
+  assert.equal(summary.closedSamples, 0);
+  assert.deepEqual(evaluator.pendingPoolAddresses(), []);
+});
+
+test("promotion counts unique pools rather than repeated observations", () => {
   const result = evaluateShadowPromotion({
-    closedSamples: 12, averageReturnPct: 10, medianReturnPct: 5,
-    winRatePct: 60, maxCumulativeDrawdownPct: 5,
+    closedSamples: 100,
+    uniquePools: 3,
+    medianReturnPct: 5,
+    meanCiLowerPct: 2,
   });
   assert.equal(result.status, "collecting");
-  assert.equal(result.remainingSamples, 18);
+  assert.equal(result.remainingUniquePools, 17);
 });
 
-test("promotion requires robust return and drawdown evidence", () => {
+test("promotion requires positive median and pool-bootstrap lower bound", () => {
   const promoted = evaluateShadowPromotion({
-    closedSamples: 30, averageReturnPct: 3, medianReturnPct: 1,
-    winRatePct: 50, maxCumulativeDrawdownPct: 20,
+    closedSamples: 20,
+    uniquePools: 20,
+    medianReturnPct: 2,
+    meanCiLowerPct: 1,
   });
-  assert.equal(promoted.status, "promotion-candidate");
   assert.equal(promoted.eligible, true);
-
   const rejected = evaluateShadowPromotion({
-    closedSamples: 30, averageReturnPct: 1, medianReturnPct: -1,
-    winRatePct: 40, maxCumulativeDrawdownPct: 30,
+    closedSamples: 20,
+    uniquePools: 20,
+    medianReturnPct: -1,
+    meanCiLowerPct: -2,
   });
-  assert.equal(rejected.status, "rejected");
   assert.deepEqual(rejected.failures, [
-    "average-return-too-low", "median-return-too-low",
-    "win-rate-too-low", "shadow-drawdown-too-high",
+    "median-return-too-low",
+    "mean-confidence-bound-too-low",
   ]);
 });
 
-test("resolves a pending pool after it drops from the ranked candidates", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.record([candidate()], 1000);
-  assert.deepEqual(evaluator.pendingPoolAddresses(), ["0xpool"]);
-  evaluator.resolve([{
-    address: "0xpool", marketSafety: { tokenPriceQuote: 1 },
-  }], 1100);
-  assert.equal(evaluator.snapshot().byRule["escape-strict"].averageReturnPct, -52);
-  assert.deepEqual(evaluator.pendingPoolAddresses(), []);
-});
-
-test("promotion metrics use net return after simulated execution cost", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.record([candidate("escape-velocity", 2)], 1000);
-  evaluator.resolve([{
-    address: "0xpool", marketSafety: { tokenPriceQuote: 2.1 },
-  }], 1100);
-  const sample = evaluator.serialize().samples[0];
-  assert.ok(Math.abs(sample.grossReturnPct - 5) < 1e-9);
-  assert.ok(Math.abs(sample.netReturnPct - 3) < 1e-9);
-  assert.ok(Math.abs(evaluator.snapshot().byRule["escape-strict"].averageReturnPct - 3) < 1e-9);
-});
-
-test("unpriceable samples become conservative losses after three horizons", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.record([candidate()], 1000);
-  evaluator.resolve([], 1299);
-  assert.equal(evaluator.pendingPoolAddresses().length, 1);
-  evaluator.resolve([], 1300);
-  const summary = evaluator.snapshot().byRule["escape-strict"];
-  assert.equal(summary.resolutionFailures, 1);
-  assert.equal(summary.averageReturnPct, -100);
-  assert.deepEqual(evaluator.pendingPoolAddresses(), []);
-});
-
-test("default evaluator records one, five and fifteen minute horizons", () => {
-  const evaluator = new ShadowEvaluator();
-  evaluator.record([candidate()], 1000);
-  const horizons = [...new Set(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-strict")
-    .map((sample) => sample.horizonMs))];
-  assert.deepEqual(horizons, [60_000, 300_000, 900_000]);
-  assert.deepEqual(evaluator.snapshot().horizonsMs, horizons);
-});
-
-test("each horizon resolves only when its own observation period elapses", () => {
-  const evaluator = new ShadowEvaluator({ horizonsMs: [100, 300] });
-  evaluator.record([candidate()], 1000);
-  evaluator.resolve([candidate("escape-velocity", 3)], 1100);
-  const samples = evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-strict");
-  assert.equal(samples.find((sample) => sample.horizonMs === 100).closedAt, 1100);
-  assert.equal(samples.find((sample) => sample.horizonMs === 300).closedAt, undefined);
-});
-
-test("restoring legacy state preserves samples without replacing configured horizons", () => {
-  const evaluator = new ShadowEvaluator();
-  evaluator.restore({
-    horizonMs: 300_000,
-    horizonsMs: [300_000],
-    samples: [{ rule: "escape-strict", pool: "0xold", openedAt: 1, entryPrice: 2 }],
-  });
-  assert.deepEqual(evaluator.snapshot().horizonsMs, [60_000, 300_000, 900_000]);
-  assert.equal(evaluator.serialize().samples[0].horizonMs, 300_000);
-});
-
-test("confirmed timing rule requires two consecutive qualifying cycles", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.record([candidate()], 1000);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-confirmed").length, 0);
-  evaluator.record([candidate()], 1050);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-confirmed").length, 1);
-});
-
-test("confirmed timing streak resets when the signal disappears", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  evaluator.record([candidate()], 1000);
-  evaluator.record([], 1050);
-  evaluator.record([candidate()], 1100);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-confirmed").length, 0);
-});
-
-test("steady accumulation is independent of escape velocity", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  const steady = candidate("active");
-  steady.signal.swapsCurrentWindow = 5;
-  steady.signal.acceleration = 1.2;
-  evaluator.record([steady], 1000);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "steady-accumulation").length, 1);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "escape-strict").length, 0);
-});
-
-test("steady accumulation rejects sparse or rapidly accelerating flow", () => {
-  const rule = {
-    signal: "active", minSwaps: 4, minAcceleration: 0.75,
-    maxAcceleration: 1.5, maxDeviationPct: 5,
+test("steady accumulation remains independent from escape activity", () => {
+  const steadyRule = {
+    name: "steady-accumulation",
+    signal: "active",
+    minSwaps: 4,
+    minAcceleration: 0.75,
+    maxAcceleration: 1.5,
+    maxDeviationPct: 5,
   };
-  const sparse = candidate("active");
-  sparse.signal.swapsCurrentWindow = 3;
-  sparse.signal.acceleration = 1;
-  assert.equal(shadowRuleMatches(sparse, rule), false);
-  const spiking = candidate("active");
-  spiking.signal.swapsCurrentWindow = 5;
-  spiking.signal.acceleration = 1.8;
-  assert.equal(shadowRuleMatches(spiking, rule), false);
+  const steady = candidate("active");
+  steady.signal.acceleration = 1.2;
+  assert.equal(shadowRuleMatches(steady, steadyRule), true);
+  assert.equal(shadowRuleMatches(steady, escapeRule), false);
 });
 
-test("activity pullback records after a controlled retracement", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+test("activity pullback records only after a controlled retracement", () => {
+  const pullbackRule = {
+    name: "activity-pullback",
+    signals: ["active"],
+    minSwaps: 3,
+    maxDeviationPct: 5,
+    pullbackMinPct: 2,
+    pullbackMaxPct: 12,
+    setupMaxAgeMs: 500,
+  };
+  const evaluator = new ShadowEvaluator({
+    horizonMs: 100, episodeGapMs: 500, rules: [pullbackRule],
+  });
   const first = candidate("active", 100);
-  first.signal.swapsCurrentWindow = 4;
   first.signal.acceleration = 1;
-  evaluator.record([first], 1000);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "activity-pullback").length, 0);
+  evaluator.record([first], 1_000);
+  assert.equal(evaluator.serialize().samples.length, 0);
   const retraced = candidate("active", 95);
-  retraced.signal.swapsCurrentWindow = 4;
   retraced.signal.acceleration = 1;
-  evaluator.record([retraced], 1050);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "activity-pullback").length, 1);
+  evaluator.record([retraced], 1_100);
+  assert.equal(evaluator.serialize().samples.length, 1);
 });
 
-test("activity pullback rejects a drop beyond the falling-knife limit", () => {
-  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
-  const first = candidate("active", 100);
-  first.signal.swapsCurrentWindow = 4;
-  first.signal.acceleration = 1;
-  evaluator.record([first], 1000);
-  const collapse = candidate("active", 80);
-  collapse.signal.swapsCurrentWindow = 4;
-  collapse.signal.acceleration = 1;
-  evaluator.record([collapse], 1050);
-  assert.equal(evaluator.serialize().samples
-    .filter((sample) => sample.rule === "activity-pullback").length, 0);
+test("legacy tuned samples are retained but excluded from the frozen rule version", () => {
+  const evaluator = new ShadowEvaluator({ rules: [escapeRule] });
+  evaluator.restore({
+    samples: [{
+      rule: "escape-activity", pool: "0xold", openedAt: 1,
+      closedAt: 2, netReturnPct: 100,
+    }],
+  });
+  assert.equal(evaluator.serialize().samples.length, 1);
+  assert.equal(evaluator.snapshot().byRule["escape-activity"].closedSamples, 0);
 });
