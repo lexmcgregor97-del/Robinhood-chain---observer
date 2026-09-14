@@ -3,7 +3,9 @@ const dayKey = (now) => new Date(now).toISOString().slice(0, 10);
 export class DailySpendLedger {
   constructor(state = {}) {
     this.day = state.day || null;
-    this.spentWei = BigInt(String(state.spentWei || "0"));
+    this.spent = new Map(Object.entries(state.spent || {}).map(
+      ([asset, amount]) => [asset, BigInt(String(amount))],
+    ));
     this.intentIds = new Set(state.intentIds || []);
   }
 
@@ -11,20 +13,21 @@ export class DailySpendLedger {
     const current = dayKey(now);
     if (this.day !== current) {
       this.day = current;
-      this.spentWei = 0n;
+      this.spent.clear();
       this.intentIds.clear();
     }
   }
 
-  record({ intentId, amountWei }, now = Date.now()) {
+  record({ intentId, asset, amount }, now = Date.now()) {
     this.roll(now);
     const id = String(intentId || "");
-    const amount = BigInt(String(amountWei));
+    const normalizedAsset = String(asset || "").toLowerCase();
+    const normalizedAmount = BigInt(String(amount));
     if (!id) throw new Error("invalid-intent-id");
-    if (amount < 0n) throw new Error("invalid-spend");
+    if (!normalizedAsset || normalizedAmount <= 0n) throw new Error("invalid-spend");
     if (this.intentIds.has(id)) throw new Error("duplicate-intent");
     this.intentIds.add(id);
-    this.spentWei += amount;
+    this.spent.set(normalizedAsset, (this.spent.get(normalizedAsset) || 0n) + normalizedAmount);
     return this.snapshot(now);
   }
 
@@ -32,7 +35,7 @@ export class DailySpendLedger {
     this.roll(now);
     return {
       day: this.day,
-      spentWei: this.spentWei.toString(),
+      spent: Object.fromEntries([...this.spent].map(([asset, amount]) => [asset, amount.toString()])),
       intentIds: [...this.intentIds],
     };
   }
