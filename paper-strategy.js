@@ -6,9 +6,24 @@ export const DEFAULT_PAPER_STRATEGY = Object.freeze({
   trailingActivationPct: 20,
   trailingDrawdownPct: 10,
   maxHoldMs: 6 * 60 * 60 * 1000,
+  maxRealizedDrawdownPct: 20,
 });
 
 const finite = (value) => Number.isFinite(Number(value));
+
+export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY) {
+  const failures = [];
+  const limit = Number(policy?.maxRealizedDrawdownPct);
+  if (!finite(limit) || limit <= 0 || limit > 100) {
+    failures.push("invalid-drawdown-policy");
+    return failures;
+  }
+  const drawdown = Number(analytics?.maxRealizedDrawdownPct);
+  if (finite(drawdown) && drawdown >= limit) {
+    failures.push("paper-drawdown-circuit-breaker");
+  }
+  return failures;
+}
 
 export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRATEGY) {
   const failures = [];
