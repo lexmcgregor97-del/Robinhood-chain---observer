@@ -30,7 +30,9 @@ export function normalizedV3Price({ sqrtPriceX96, token0Decimals, token1Decimals
   return price;
 }
 
-function swapWithinTick({ sqrtPriceX96, liquidity, amountIn, zeroForOne, feeBps }) {
+export function quoteV3WithinTick({
+  sqrtPriceX96, liquidity, amountIn, zeroForOne, feeBps,
+}) {
   const sqrt = positive(sqrtPriceX96, "sqrtPriceX96");
   const L = positive(liquidity, "liquidity");
   const input = positive(amountIn, "amountIn");
@@ -55,10 +57,10 @@ export function simulateV3RoundTrip({
   sqrtPriceX96, liquidity, quoteAmountIn, quoteIsToken0, feeBps,
 }) {
   const input = positive(quoteAmountIn, "quoteAmountIn");
-  const buy = swapWithinTick({
+  const buy = quoteV3WithinTick({
     sqrtPriceX96, liquidity, amountIn: input, zeroForOne: quoteIsToken0, feeBps,
   });
-  const sell = swapWithinTick({
+  const sell = quoteV3WithinTick({
     sqrtPriceX96: buy.nextSqrtPriceX96, liquidity, amountIn: buy.amountOut,
     zeroForOne: !quoteIsToken0, feeBps,
   });
