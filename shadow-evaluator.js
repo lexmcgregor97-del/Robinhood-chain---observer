@@ -30,7 +30,7 @@ export function shadowRuleMatches(candidate, rule) {
 }
 
 function summarizeSamples(samples) {
-  const returns = samples.map((sample) => Number(sample.returnPct))
+  const returns = samples.map((sample) => Number(sample.netReturnPct ?? sample.returnPct))
     .filter(Number.isFinite);
   const sorted = [...returns].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -102,7 +102,9 @@ export class ShadowEvaluator {
       if (!finite(exitPrice) || exitPrice <= 0) continue;
       sample.closedAt = now;
       sample.exitPrice = exitPrice;
-      sample.returnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
+      sample.grossReturnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
+      sample.netReturnPct = sample.grossReturnPct - Number(sample.executionCostPct || 0);
+      sample.returnPct = sample.netReturnPct;
     }
   }
 
@@ -118,6 +120,7 @@ export class ShadowEvaluator {
           pool: candidate.address,
           quoteToken: candidate.marketSafety.quoteToken,
           entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
+          executionCostPct: Number(candidate.marketSafety.roundTripLossPct),
           openedAt: now,
         });
       }
