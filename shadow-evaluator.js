@@ -231,10 +231,12 @@ export class ShadowEvaluator {
   }
 
   snapshot() {
+    const currentSamples = this.samples.filter(
+      (sample) => sample.ruleVersion === RULE_VERSION,
+    );
     const byRule = {};
     for (const rule of this.rules) {
-      const matching = this.samples.filter((sample) => sample.rule === rule.name
-        && sample.ruleVersion === RULE_VERSION);
+      const matching = currentSamples.filter((sample) => sample.rule === rule.name);
       const summary = summarizeSamples(matching);
       byRule[rule.name] = {
         openSamples: matching.filter((sample) => !sample.closedAt
@@ -250,8 +252,10 @@ export class ShadowEvaluator {
       horizonsMs: this.horizonsMs,
       episodeGapMs: this.episodeGapMs,
       promotionPolicy: DEFAULT_PROMOTION_POLICY,
+      currentSampleCount: currentSamples.length,
+      legacySampleCount: this.samples.length - currentSamples.length,
       byRule,
-      recentSamples: this.samples.slice(-50),
+      recentSamples: currentSamples.slice(-50),
     };
   }
 
