@@ -21,3 +21,13 @@ test("reports explicit startup and degraded reasons", () => {
   assert.equal(behind.lagBlocks, 10);
   assert.ok(behind.reasons.includes("scanner-behind"));
 });
+
+test("fails closed while cursor advances beyond the published head", () => {
+  const updating = assessReadiness({
+    latestBlock: 100, cursor: 101, backfillActive: false, lastError: null,
+  });
+  assert.equal(updating.synchronized, false);
+  assert.equal(updating.readyForPaper, false);
+  assert.equal(updating.lagBlocks, 0);
+  assert.ok(updating.reasons.includes("scanner-updating"));
+});
