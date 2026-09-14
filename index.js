@@ -19,7 +19,7 @@ import {
 } from "./tick-boundary.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
-import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
+import { isRpcThrottleError, nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
 import { createTokenMetadataLoader } from "./token-metadata.js";
 import { LogDeduplicator } from "./log-deduplicator.js";
 import { PositionLiveness } from "./position-liveness.js";
@@ -33,8 +33,8 @@ const RPC_URLS = rpcUrlsFromEnv({
   defaultUrl: ROBINHOOD.rpcUrl,
 });
 const CHAIN_ID = ROBINHOOD.chainId;
-const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 10_000);
-const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
+const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 30_000);
+const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 400);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
 const BACKFILL = 20_000;
 const CHUNK = 500;
@@ -51,7 +51,7 @@ const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 const PAPER_WETH_INITIAL_CASH = Number(process.env.PAPER_WETH_INITIAL_CASH || 0.1);
 const PAPER_WETH_MAX_ENTRY = Number(process.env.PAPER_WETH_MAX_ENTRY || 0.01);
 const PAPER_USDG_MAX_ENTRY = Number(process.env.PAPER_USDG_MAX_ENTRY || 100);
-const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
+const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 60_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
@@ -346,7 +346,7 @@ async function poll() {
   } catch (error) {
     metrics.failedPolls += 1;
     metrics.lastError = error instanceof Error ? error.message : String(error);
-    const rateLimited = metrics.lastError.includes("429");
+    const rateLimited = isRpcThrottleError(metrics.lastError);
     nextPollDelayMs = nextBackoffMs({
       currentMs: nextPollDelayMs, rateLimited, baseMs: POLL_MS,
     });

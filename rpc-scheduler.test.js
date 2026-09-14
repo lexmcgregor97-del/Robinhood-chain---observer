@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
+import { isRpcThrottleError, nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
+
+test("treats provider denials and rate limits as throttle errors", () => {
+  assert.equal(isRpcThrottleError("RPC endpoints unavailable: RPC HTTP 403"), true);
+  assert.equal(isRpcThrottleError(new Error("RPC HTTP 429")), true);
+  assert.equal(isRpcThrottleError("RPC HTTP 500"), false);
+});
 
 test("backoff distinguishes rate limits and ordinary errors", () => {
   assert.equal(nextBackoffMs({ currentMs: 5000, rateLimited: true }), 15000);

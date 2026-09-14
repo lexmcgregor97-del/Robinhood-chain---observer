@@ -7,6 +7,10 @@ export function nextBackoffMs({ currentMs, rateLimited, baseMs = 5_000 }) {
     : Math.min(Math.max(current * 2, baseMs), 30_000);
 }
 
+export function isRpcThrottleError(error) {
+  return /RPC HTTP (403|429)/.test(String(error?.message || error));
+}
+
 export class RpcScheduler {
   constructor({ minIntervalMs = 250, jitterMs = 100, random = Math.random } = {}) {
     this.minIntervalMs = Math.max(0, Number(minIntervalMs) || 0);
