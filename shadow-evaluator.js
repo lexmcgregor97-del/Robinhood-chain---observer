@@ -29,8 +29,8 @@ export function shadowRuleMatches(candidate, rule) {
       || Number(signal.acceleration) <= Number(rule.maxAcceleration))
     && safety.quoteTokenKnown === true
     && safety.liquidityKnown === true
-    && safety.buySimulationOk === true
-    && safety.sellSimulationOk === true
+    && safety.buyMathOk === true
+    && safety.sellMathOk === true
     && safety.priceAuditAvailable === true
     && finite(safety.tokenPriceQuote) && Number(safety.tokenPriceQuote) > 0
     && finite(safety.priceImpactPct) && Number(safety.priceImpactPct) <= 5

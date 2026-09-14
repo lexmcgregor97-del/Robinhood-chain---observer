@@ -470,7 +470,7 @@ async function marketSafety(pool) {
     quoteTokenKnown: quoteIsToken0 !== quoteIsToken1,
     quoteToken: quoteIsToken0 ? pool.token0 : quoteIsToken1 ? pool.token1 : null,
     baseToken: quoteIsToken0 ? pool.token1 : quoteIsToken1 ? pool.token0 : null,
-    liquidityKnown: false, buySimulationOk: false, sellSimulationOk: false,
+    liquidityKnown: false, buyMathOk: false, sellMathOk: false,
     poolAgeMs: null,
     priceImpactPct: null, roundTripLossPct: null,
   };

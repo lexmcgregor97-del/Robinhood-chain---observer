@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateRiskGate } from "./risk-gate.js";
+import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
 
 const measuredSafety = {
   quoteTokenKnown: true,
   liquidityKnown: true,
-  buySimulationOk: true,
-  sellSimulationOk: true,
+  buyMathOk: true,
+  sellMathOk: true,
   priceAuditAvailable: true,
   spotVsLastSwapPct: 1,
   poolAgeMs: 10 * 60_000,
@@ -17,7 +17,7 @@ const measuredSafety = {
 test("fails closed when safety data is unavailable", () => {
   const result = evaluateRiskGate({ signal: { state: "escape-velocity" } });
   assert.equal(result.eligibleForPaperEntry, false);
-  assert.ok(result.failures.includes("sell-simulation-failed"));
+  assert.ok(result.failures.includes("sell-math-failed"));
   assert.ok(result.failures.includes("liquidity-not-measured"));
 });
 
@@ -64,4 +64,15 @@ test("blocks weak signals and dislocated spot prices", () => {
   assert.equal(result.eligibleForPaperEntry, false);
   assert.ok(result.failures.includes("signal-not-ready"));
   assert.ok(result.failures.includes("spot-swap-price-dislocation"));
+});
+
+test("live policy fails closed without independent sell evidence", () => {
+  const candidate = {
+    signal: { state: "escape-velocity" }, marketSafety: measuredSafety,
+  };
+  const policy = { ...DEFAULT_PAPER_POLICY, requireSellProbe: true };
+  assert.ok(evaluateRiskGate(candidate, policy).failures.includes("sell-probe-required"));
+  assert.equal(evaluateRiskGate({
+    ...candidate, marketSafety: { ...measuredSafety, sellProbe: { passed: true } },
+  }, policy).eligibleForPaperEntry, true);
 });
