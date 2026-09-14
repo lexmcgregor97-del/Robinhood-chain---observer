@@ -1,5 +1,6 @@
 import { simulateV2RoundTrip } from "./v2-simulator.js";
 import { normalizedV3Price, simulateV3RoundTrip } from "./v3-simulator.js";
+import { staysWithinTickBoundary } from "./tick-boundary.js";
 
 const lower = (value) => String(value || "").toLowerCase();
 
@@ -53,7 +54,7 @@ export function evaluateV2MarketSafety(pool, options) {
       reserveQuote: reserveQuote.toString(),
       reserveToken: reserveToken.toString(),
       quoteAmountIn: quoteAmountIn.toString(),
-      buySimulationOk: simulation.buyAmountOut > 0n,
+      buySimulationOk: simulation.buyAmountOut > 0n && staysWithinActiveTick,
       sellSimulationOk: simulation.sellAmountOut > 0n,
       priceImpactPct: simulation.buyPriceImpactBps / 100,
       roundTripLossPct: simulation.roundTripLossBps / 100,
@@ -102,9 +103,19 @@ export function evaluateV3MarketSafety(pool, options) {
       quoteIsToken0: token0IsQuote,
       feeBps: Math.ceil(Number(pool.fee) / 100),
     });
+    const tickBoundaryKnown = Number.isInteger(options.boundaryTick);
+    const staysWithinActiveTick = tickBoundaryKnown && staysWithinTickBoundary({
+      startSqrtPriceX96: options.sqrtPriceX96,
+      endSqrtPriceX96: simulation.nextSqrtPriceX96,
+      boundaryTick: options.boundaryTick,
+      zeroForOne: token0IsQuote,
+    });
     return {
       ...base,
       tokenPriceQuote,
+      tickBoundaryKnown,
+      boundaryTick: tickBoundaryKnown ? options.boundaryTick : null,
+      staysWithinActiveTick,
       liquidityKnown: true,
       activeLiquidity: liquidity.toString(),
       currentTick: Number(options.currentTick),
