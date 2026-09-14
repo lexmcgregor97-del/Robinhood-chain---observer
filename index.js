@@ -8,7 +8,7 @@ import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
-import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord } from "./tick-boundary.js";
+import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord, findInitializedTickInWholeWord } from "./tick-boundary.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
@@ -371,10 +371,20 @@ async function marketSafety(pool) {
     const bitmapResult = await rpc("eth_call", [{
       to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
     }, "latest"]);
-    const boundaryTick = findInitializedTickInWord({
+    let boundaryTick = findInitializedTickInWord({
       bitmap: decodeUint(bitmapResult, "tick-bitmap"), wordPos, currentCompressedTick: compressedTick,
       tickSpacing, zeroForOne: quoteIsToken0,
     });
+    for (let offset = 1; boundaryTick === null && offset <= 8; offset += 1) {
+      const adjacentWordPos = wordPos + (quoteIsToken0 ? -offset : offset);
+      const adjacentResult = await rpc("eth_call", [{
+        to: pool.address, data: encodeInt16Call("0x5339c296", adjacentWordPos),
+      }, "latest"]);
+      boundaryTick = findInitializedTickInWholeWord({
+        bitmap: decodeUint(adjacentResult, "tick-bitmap"),
+        wordPos: adjacentWordPos, tickSpacing, zeroForOne: quoteIsToken0,
+      });
+    }
     return evaluateV3MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
       quoteTokens, sqrtPriceX96: slot0.sqrtPriceX96, currentTick: slot0.tick,
