@@ -50,7 +50,8 @@ const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
-const MEASUREMENT_REPAIR_ACTIVE = true;
+const SHADOW_RECORDING_PAUSED = false;
+const PAPER_ENTRIES_PAUSED = true;
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -367,7 +368,7 @@ function snapshot() {
     backfillActive: backfill.active, lastError: metrics.lastError,
   });
   return {
-    mode: "PAPER_MEASUREMENT_REPAIR",
+    mode: PAPER_ENTRIES_PAUSED ? "PAPER_ENTRIES_PAUSED" : "PAPER_ONLY",
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
     latestBlock: metrics.latestBlock, blockTimestamp: metrics.blockTimestamp,
     cursor: metrics.cursor, polling: {
@@ -742,7 +743,7 @@ async function runPaperCycle() {
       }
     }
 
-    if (MEASUREMENT_REPAIR_ACTIVE) {
+    if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;
       return;
     }
@@ -757,8 +758,14 @@ async function runPaperCycle() {
       address: pool.address,
       marketSafety: await marketSafety(pool),
     })));
-    shadowEvaluator.resolve([...measured, ...pendingMeasurements]);
-    shadowEvaluator.record(measured);
+    if (!SHADOW_RECORDING_PAUSED) {
+      shadowEvaluator.resolve([...measured, ...pendingMeasurements]);
+      shadowEvaluator.record(measured);
+    }
+    if (PAPER_ENTRIES_PAUSED) {
+      paperAutomation.lastError = null;
+      return;
+    }
     for (const candidate of measured) {
       const book = paperBooks.get(candidate.marketSafety.quoteToken);
       if (!book) {
@@ -814,9 +821,10 @@ function paperBookStatus(book) {
 function paperStatus() {
   return {
     mode: "PAPER_ONLY",
-    newEntriesPaused: MEASUREMENT_REPAIR_ACTIVE,
+    newEntriesPaused: PAPER_ENTRIES_PAUSED,
     pauseReason: persistence.automationBlockedReason
-      || (MEASUREMENT_REPAIR_ACTIVE ? "measurement-repair" : null),
+      || (PAPER_ENTRIES_PAUSED ? "paper-ledger-review" : null),
+    shadowRecordingPaused: SHADOW_RECORDING_PAUSED,
     automationBlockedReason: persistence.automationBlockedReason,
     books: Object.fromEntries([...paperBooks.values()].map((book) => [
       book.symbol, paperBookStatus(book),
