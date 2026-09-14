@@ -34,6 +34,9 @@ export class RpcTransport {
     const ordered = Array.from({ length: this.urls.length }, (_, offset) =>
       (this.activeIndex + offset) % this.urls.length);
     const ready = ordered.filter((index) => (this.cooldowns.get(index) || 0) <= now);
+    if (ready.includes(0) && this.activeIndex !== 0) {
+      return [0, ...ready.filter((index) => index !== 0)];
+    }
     return ready.length ? ready : [ordered.reduce((best, index) =>
       ((this.cooldowns.get(index) || 0) < (this.cooldowns.get(best) || 0) ? index : best))];
   }

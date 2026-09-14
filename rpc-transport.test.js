@@ -63,6 +63,26 @@ test("sticks to the healthy fallback while the failed endpoint cools down", asyn
   assert.deepEqual(calls, ["https://primary", "https://backup", "https://backup"]);
 });
 
+test("retries and restores the preferred endpoint after its cooldown", async () => {
+  let now = 1_000;
+  let primaryHealthy = false;
+  const calls = [];
+  const transport = new RpcTransport({
+    urls: ["https://primary", "https://backup"], cooldownMs: 60_000, now: () => now,
+    fetchImpl: async (url) => {
+      calls.push(url);
+      if (url.includes("primary") && !primaryHealthy) return response(401);
+      return response(200, { result: url });
+    },
+  });
+  assert.equal(await transport.request("first", []), "https://backup");
+  now += 60_001;
+  primaryHealthy = true;
+  assert.equal(await transport.request("second", []), "https://primary");
+  assert.deepEqual(calls, ["https://primary", "https://backup", "https://primary"]);
+  assert.equal(transport.snapshot().activeEndpoint, 1);
+});
+
 test("does not retry a JSON-RPC application error on another provider", async () => {
   let calls = 0;
   const transport = new RpcTransport({
