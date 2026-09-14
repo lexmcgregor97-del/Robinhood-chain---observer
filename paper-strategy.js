@@ -38,6 +38,10 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
   }
   if (!finite(portfolio?.cash) || portfolio.cash <= 0) failures.push("no-paper-cash");
   if ((portfolio?.openPositions || []).some((p) => p.pool === candidate?.address)) failures.push("position-already-open");
+  if (Number.isInteger(Number(portfolio?.maxPositions))
+      && (portfolio?.openPositions || []).length >= Number(portfolio.maxPositions)) {
+    failures.push("position-limit-reached");
+  }
   const entryPct = Number(policy.entryCashPct);
   const cap = Number(policy.maxEntryNotional);
   if (!finite(entryPct) || entryPct <= 0 || entryPct > 100 || !finite(cap) || cap <= 0) {

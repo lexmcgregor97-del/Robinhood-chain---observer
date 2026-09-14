@@ -56,14 +56,14 @@ const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 const PAPER_WETH_INITIAL_CASH = Number(process.env.PAPER_WETH_INITIAL_CASH || 0.1);
 const PAPER_WETH_MAX_ENTRY = Number(process.env.PAPER_WETH_MAX_ENTRY || 0.01);
 const PAPER_USDG_MAX_ENTRY = Number(process.env.PAPER_USDG_MAX_ENTRY || 100);
-const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 60_000);
+const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 10_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
-const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v3-steady-accumulation";
+const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v4-v2-fast-exit";
 const QUALIFYING_PAPER_STRATEGY = Object.freeze({
   ...DEFAULT_PAPER_STRATEGY,
   maxHoldMs: 30 * 60_000,
@@ -104,6 +104,7 @@ let candidateCache = null;
 let candidatePromise = null;
 const paperAutomation = { cycles: 0, entries: 0, exits: 0, lastError: null, recentDecisions: [] };
 const shadowEvaluator = new ShadowEvaluator();
+let paperArchives = [];
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
   recoverySkippedBlocks: 0,
@@ -153,6 +154,8 @@ function persistedState() {
     paperBooks: Object.fromEntries([...paperBooks].map(([quoteToken, book]) => [
       quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
     ])),
+    paperStrategyVersion: PAPER_STRATEGY_VERSION,
+    paperArchives,
     paperAutomation,
     shadow: shadowEvaluator.serialize(),
     processedLogs: logDeduplicator.serialize(),
@@ -179,16 +182,37 @@ async function restoreState() {
     metrics.v2Pools = [...pools.values()].filter((pool) => pool.version === "v2").length;
     metrics.v3Pools = [...pools.values()].filter((pool) => pool.version === "v3").length;
     metrics.swaps = [...pools.values()].reduce((sum, pool) => sum + (Number(pool.swapCount) || 0), 0);
-    if (state.paperBooks) {
+    paperArchives = Array.isArray(state.paperArchives) ? state.paperArchives.slice(-4) : [];
+    const inferredPaperVersion = Object.values(state.paperBooks || {})
+      .flatMap((book) => book?.state?.trades || [])
+      .map((trade) => trade?.audit?.strategyVersion)
+      .filter(Boolean)
+      .at(-1);
+    const savedPaperVersion = state.paperStrategyVersion
+      || inferredPaperVersion || "legacy-paper-cohort";
+    const samePaperEpoch = savedPaperVersion === PAPER_STRATEGY_VERSION;
+    if (state.paperBooks && samePaperEpoch) {
       for (const [quoteToken, saved] of Object.entries(state.paperBooks)) {
         const book = paperBooks.get(quoteToken.toLowerCase());
         if (book && saved?.state) book.portfolio.restore(saved.state);
       }
+    } else if (state.paperBooks) {
+      paperArchives.push({
+        version: savedPaperVersion,
+        archivedAt: Date.now(),
+        books: state.paperBooks,
+        automation: state.paperAutomation || null,
+      });
+      paperArchives = paperArchives.slice(-5);
     }
-    if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
+    if (state.paperAutomation && samePaperEpoch) {
+      Object.assign(paperAutomation, state.paperAutomation);
+    }
     if (state.shadow) shadowEvaluator.restore(state.shadow);
     logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
-    positionLiveness = new PositionLiveness({ state: state.positionLiveness || {} });
+    positionLiveness = new PositionLiveness({
+      state: samePaperEpoch ? (state.positionLiveness || {}) : {},
+    });
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
@@ -668,7 +692,8 @@ async function measureCandidates(limit) {
     (token) => token.address.toLowerCase(),
   ));
   const ranked = signals(25).filter((pool) => (
-    quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
+    pool.version === "v2"
+      && quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
   )).slice(0, limit);
   return Promise.all(ranked.map(async (pool) => {
     const measured = { ...pool, marketSafety: await marketSafety(pool) };
@@ -848,7 +873,7 @@ async function runPaperCycle() {
           pool: candidate.address, reasons: circuitFailures });
         continue;
       }
-      const plan = planPaperEntry(candidate, book.portfolio.snapshot(), policy);
+      const plan = planPaperEntry(candidate, paperState, policy);
       if (!plan.approved) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
           pool: candidate.address, reasons: plan.failures });
@@ -902,6 +927,13 @@ function paperStatus() {
     shadowRecordingPaused: SHADOW_RECORDING_PAUSED,
     automationBlockedReason: persistence.automationBlockedReason,
     books,
+    archives: paperArchives.map((archive) => ({
+      version: archive.version,
+      archivedAt: archive.archivedAt,
+      trades: Object.values(archive.books || {}).reduce(
+        (total, book) => total + Number(book?.state?.trades?.length || 0), 0,
+      ),
+    })),
     automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
       lastCycleAt: lastPaperCycleAt || null },
     shadow,

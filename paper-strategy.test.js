@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  planPaperEntry, paperExitReason, paperCircuitFailures,
+  DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
 
 const candidate = {
@@ -38,6 +38,27 @@ test("prevents duplicate pool positions", () => {
   const plan = planPaperEntry(candidate, { cash: 1000, openPositions: [{ pool: "0xpool" }] });
   assert.equal(plan.approved, false);
   assert.ok(plan.failures.includes("position-already-open"));
+});
+
+test("treats a full paper book as a normal rejected entry", () => {
+  const candidate = {
+    address: "0xnew",
+    riskGate: { eligibleForPaperEntry: true },
+    marketSafety: {
+      tokenPriceQuote: 1,
+      baseToken: "0xtoken",
+      baseTokenDecimals: 0,
+      buyAmountOut: "10",
+      plannedNotionalQuote: 10,
+    },
+  };
+  const plan = planPaperEntry(candidate, {
+    cash: 100,
+    maxPositions: 1,
+    openPositions: [{ pool: "0xexisting" }],
+  }, { ...DEFAULT_PAPER_STRATEGY, entryCashPct: 10, maxEntryNotional: 10 });
+  assert.equal(plan.approved, false);
+  assert.ok(plan.failures.includes("position-limit-reached"));
 });
 
 test("blocks new entries at the realized drawdown limit", () => {
