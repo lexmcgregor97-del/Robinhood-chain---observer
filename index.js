@@ -5,6 +5,7 @@ import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import { DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason } from "./paper-strategy.js";
+import { analyzePaperTrades } from "./paper-analytics.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
@@ -475,6 +476,8 @@ function paperEntryAudit(candidate, feeRate) {
   return {
     block: metrics.latestBlock,
     signal: candidate.signal?.state,
+    version: candidate.version,
+    venue: candidate.dex,
     score: candidate.signal?.score,
     recentSwaps: candidate.signal?.swapsCurrentWindow,
     acceleration: candidate.signal?.acceleration,
@@ -559,6 +562,9 @@ function paperBookStatus(book) {
   return {
     quote: book.symbol,
     ...book.portfolio.snapshot(),
+    analytics: analyzePaperTrades({
+      initialCash: state.initialCash, trades: state.trades,
+    }),
     recentTrades: state.trades.slice(-20),
   };
 }
