@@ -164,3 +164,21 @@ test("legacy tuned samples are retained but excluded from the frozen rule versio
   assert.equal(evaluator.serialize().samples.length, 1);
   assert.equal(evaluator.snapshot().byRule["escape-activity"].closedSamples, 0);
 });
+
+
+test("snapshot separates legacy samples from the current measurement epoch", () => {
+  const evaluator = new ShadowEvaluator({ rules: [escapeRule], horizonMs: 60_000 });
+  evaluator.restore({
+    samples: [{
+      rule: "escape-activity", ruleVersion: "legacy", pool: "0xold",
+      openedAt: 1, closedAt: 2, netReturnPct: 10,
+    }],
+  });
+  evaluator.record([candidate()], 10_000);
+
+  const snapshot = evaluator.snapshot();
+  assert.equal(snapshot.legacySampleCount, 1);
+  assert.equal(snapshot.currentSampleCount, 1);
+  assert.equal(snapshot.recentSamples.length, 1);
+  assert.equal(snapshot.recentSamples[0].pool, "0xpool");
+});
