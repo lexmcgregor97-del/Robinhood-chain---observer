@@ -55,6 +55,13 @@ export function findInitializedTickInWord({
   return (Number(wordPos) * 256 + selectedBit) * Number(tickSpacing);
 }
 
+export function findInitializedTickInWholeWord({ bitmap, wordPos, tickSpacing, zeroForOne }) {
+  bitmap = BigInt(bitmap);
+  if (bitmap === 0n) return null;
+  const selectedBit = zeroForOne ? highestBit(bitmap) : lowestBit(bitmap);
+  return (Number(wordPos) * 256 + selectedBit) * Number(tickSpacing);
+}
+
 export function approximateSqrtRatioAtTick(tick) {
   tick = Number(tick);
   if (!Number.isInteger(tick) || tick < -887272 || tick > 887272) throw new Error("tick-out-of-range");
