@@ -2,7 +2,6 @@ import http from "node:http";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
-import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
   DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
@@ -68,20 +67,12 @@ const paperBooks = new Map([
   [ROBINHOOD.weth.toLowerCase(), { symbol: "WETH", portfolio: wethPaperPortfolio }],
 ]);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
-let pollRunning = false;
 let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
 let candidateCache = null;
 let candidatePromise = null;
 const paperAutomation = { cycles: 0, entries: 0, exits: 0, lastError: null, recentDecisions: [] };
 const shadowEvaluator = new ShadowEvaluator();
-let executionConfig;
-try { executionConfig = loadExecutionConfig(); }
-catch (error) {
-  console.error(`Wallet configuration rejected: ${error instanceof Error ? error.message : String(error)}`);
-  executionConfig = { armed: false, account: null,
-    publicStatus: { armed: false, walletConfigured: false, address: null } };
-}
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
   successfulPolls: 0, failedPolls: 0, lastError: null,
@@ -99,7 +90,6 @@ function persistedState() {
   return {
     cursor: metrics.cursor,
     pools: [...pools.values()],
-    paper: paperPortfolio.serialize(),
     paperBooks: Object.fromEntries([...paperBooks].map(([quoteToken, book]) => [
       quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
     ])),
@@ -132,7 +122,7 @@ async function restoreState() {
         const book = paperBooks.get(quoteToken.toLowerCase());
         if (book && saved?.state) book.portfolio.restore(saved.state);
       }
-    } else if (state.paper) paperPortfolio.restore(state.paper);
+    }
     if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
     if (state.shadow) shadowEvaluator.restore(state.shadow);
     persistence.restored = true;
@@ -320,11 +310,6 @@ async function bootstrap(latest) {
 }
 
 async function poll() {
-  if (pollRunning) {
-    setTimeout(poll, POLL_MS);
-    return;
-  }
-  pollRunning = true;
   try {
     const latest = intHex(await rpc("eth_blockNumber", []));
     if (!metrics.cursor) await bootstrap(latest);
@@ -353,7 +338,6 @@ async function poll() {
     });
   } finally {
     await persistState();
-    pollRunning = false;
     setTimeout(poll, nextPollDelayMs);
   }
 }
@@ -373,7 +357,7 @@ function snapshot() {
     backfillActive: backfill.active, lastError: metrics.lastError,
   });
   return {
-    mode: "OBSERVATION_ONLY_NO_PAPER_STRATEGY",
+    mode: "PAPER_MEASUREMENT_REPAIR",
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
     latestBlock: metrics.latestBlock, blockTimestamp: metrics.blockTimestamp,
     cursor: metrics.cursor, polling: {
@@ -389,7 +373,6 @@ function snapshot() {
     rpcScheduler: rpcScheduler.snapshot(),
     v3BoundarySearch: {
       cachedWords: v3BoundaryCache.size,
-      unresolved: 0,
       method: "current-word-conservative-edge",
     },
     readiness,
@@ -799,7 +782,7 @@ async function dashboard() {
     cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${esc(pool.dex || "unknown")} · ${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
   }
   const s = snapshot();
-  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Robinhood Observer</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Robinhood Chain Observer</h1><p class="warn">OBSERVATION ONLY / NO PAPER STRATEGY YET<br>In-memory state resets on redeploy.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
+  return `<!doctype html><meta name="viewport" content="width=device-width"><title>Robinhood Observer</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Robinhood Chain Observer</h1><p class="warn">PAPER MEASUREMENT REPAIR<br>New entries are paused; state persistence is monitored.</p><section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -810,7 +793,6 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/pools") return json(res, { total: pools.size, pools: [...pools.values()].slice(0, 100) });
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
     if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: await candidates() });
-    if (req.url === "/api/wallet") return json(res, executionConfig.publicStatus);
     if (req.url === "/api/paper") return json(res, paperStatus());
     if (req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(await dashboard()); return; }
     res.writeHead(404).end("Not Found");
@@ -826,10 +808,14 @@ await restoreState();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
 
+let shuttingDown = false;
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   await persistState(true);
+  server.closeAllConnections?.();
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 5_000).unref();
+  setTimeout(() => process.exit(0), 5_000).unref();
 }
 process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);
