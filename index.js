@@ -41,6 +41,7 @@ const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
+const MEASUREMENT_REPAIR_ACTIVE = true;
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -542,6 +543,11 @@ async function runPaperCycle() {
       }
     }
 
+    if (MEASUREMENT_REPAIR_ACTIVE) {
+      paperAutomation.lastError = null;
+      return;
+    }
+
     const measured = await candidates(10);
     const rankedAddresses = new Set(measured.map((candidate) => candidate.address));
     const pendingPools = shadowEvaluator.pendingPoolAddresses()
@@ -609,6 +615,8 @@ function paperBookStatus(book) {
 function paperStatus() {
   return {
     mode: "PAPER_ONLY",
+    newEntriesPaused: MEASUREMENT_REPAIR_ACTIVE,
+    pauseReason: MEASUREMENT_REPAIR_ACTIVE ? "measurement-repair" : null,
     books: Object.fromEntries([...paperBooks.values()].map((book) => [
       book.symbol, paperBookStatus(book),
     ])),
