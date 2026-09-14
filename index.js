@@ -319,6 +319,14 @@ function snapshot() {
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
     rpcScheduler: rpcScheduler.snapshot(),
+    v3BoundarySearch: {
+      tracked: v3BoundaryCache.size,
+      resolved: [...v3BoundaryCache.values()].filter((entry) => entry.boundaryTick !== null).length,
+      unresolved: [...v3BoundaryCache.values()].filter((entry) => entry.boundaryTick === null).length,
+      furthestOffset: Math.max(0, ...[...v3BoundaryCache.values()]
+        .filter((entry) => entry.boundaryTick === null)
+        .map((entry) => entry.nextOffset - 1)),
+    },
     readiness,
     persistence,
   };
