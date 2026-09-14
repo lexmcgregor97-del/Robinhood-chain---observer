@@ -35,6 +35,7 @@ const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BITMAP_WORDS_PER_LOOKUP = Number(process.env.V3_BITMAP_WORDS_PER_LOOKUP || 8);
 const V3_BITMAP_MAX_OFFSET = Number(process.env.V3_BITMAP_MAX_OFFSET || 256);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 300_000);
+const V3_BOUNDARY_MISS_CACHE_MS = Number(process.env.V3_BOUNDARY_MISS_CACHE_MS || 30_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -367,7 +368,8 @@ async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
   const nextOffset = lastOffset >= V3_BITMAP_MAX_OFFSET ? 1 : lastOffset + 1;
   v3BoundaryCache.set(key, {
     boundaryTick, originWordPos: wordPos, nextOffset,
-    expiresAt: Date.now() + V3_BOUNDARY_CACHE_MS,
+    expiresAt: Date.now() + (boundaryTick === null
+      ? V3_BOUNDARY_MISS_CACHE_MS : V3_BOUNDARY_CACHE_MS),
   });
   return boundaryTick;
 }
