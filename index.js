@@ -23,9 +23,14 @@ import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
 import { createTokenMetadataLoader } from "./token-metadata.js";
 import { LogDeduplicator } from "./log-deduplicator.js";
 import { PositionLiveness } from "./position-liveness.js";
+import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 
 const PORT = Number(process.env.PORT || 3000);
-const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
+const RPC_URLS = rpcUrlsFromEnv({
+  primary: process.env.RPC_URL,
+  fallbacks: process.env.RPC_FALLBACK_URLS,
+  defaultUrl: ROBINHOOD.rpcUrl,
+});
 const CHAIN_ID = ROBINHOOD.chainId;
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 10_000);
 const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
@@ -70,6 +75,7 @@ const paperBooks = new Map([
   [ROBINHOOD.weth.toLowerCase(), { symbol: "WETH", portfolio: wethPaperPortfolio }],
 ]);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
+const rpcTransport = new RpcTransport({ urls: RPC_URLS });
 let logDeduplicator = new LogDeduplicator();
 let positionLiveness = new PositionLiveness();
 let nextPollDelayMs = POLL_MS;
@@ -163,17 +169,11 @@ async function persistState(force = false) {
 async function rpc(method, params) {
   return rpcScheduler.schedule(async () => {
     const started = Date.now();
-    const response = await fetch(RPC_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-      signal: AbortSignal.timeout(12_000),
-    });
-    metrics.rpcLatencyMs = Date.now() - started;
-    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
-    const body = await response.json();
-    if (body.error) throw new Error(`RPC: ${body.error.message}`);
-    return body.result;
+    try {
+      return await rpcTransport.request(method, params);
+    } finally {
+      metrics.rpcLatencyMs = Date.now() - started;
+    }
   });
 }
 
@@ -382,6 +382,7 @@ function snapshot() {
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
     rpcScheduler: rpcScheduler.snapshot(),
+    rpcTransport: rpcTransport.snapshot(),
     v3BoundarySearch: {
       cachedWords: v3BoundaryCache.size,
       method: "current-word-conservative-edge",

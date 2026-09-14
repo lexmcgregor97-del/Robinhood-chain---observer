@@ -55,7 +55,7 @@ See `.env.example` for configuration. WETH (18 decimals) and USDG (6 decimals) a
 
 ## RPC reliability
 
-All JSON-RPC calls pass through a serialized scheduler. The default spacing is 250–350 ms, with a shared cooldown on HTTP 429 responses and adaptive poll backoff.
+All JSON-RPC calls pass through a serialized scheduler. The default spacing is 250–350 ms, with a shared cooldown on HTTP 429 responses and adaptive poll backoff. `RPC_FALLBACK_URLS` accepts comma- or whitespace-separated backup providers; Atlas cools down and bypasses endpoints that time out or return HTTP 403/408/429/5xx. Health output reports only endpoint indexes and counts so provider API keys cannot leak.
 
 ## Reuse policy
 
