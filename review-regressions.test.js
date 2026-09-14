@@ -97,6 +97,16 @@ test("H-2: genuinely unmeasurable prices are still censored", () => {
   assert.equal(shadow.samples[0].censorReason, "price-unavailable");
 });
 
+test("W-4: V3 zero active liquidity is censored, not booked as a total loss", () => {
+  const shadow = new ShadowEvaluator();
+  shadow.samples.push({ rule: "escape-activity", ruleVersion: "x", episodeId: "e",
+    pool: "0xv3", entryPrice: 1, executionCostPct: 1, openedAt: 0 });
+  shadow.resolve([{ address: "0xv3", marketSafety: { activeLiquidityZero: true } }],
+    6 * 60_000, { block: 10 });
+  assert.equal(shadow.samples[0].censorReason, "active-liquidity-zero");
+  assert.equal(shadow.samples[0].netReturnPct, undefined);
+});
+
 test("H-3: same-pool re-entry is blocked inside the cooldown window", () => {
   const candidate = { address: "0xpool", riskGate: { eligibleForPaperEntry: true },
     marketSafety: { tokenPriceQuote: 1, baseTokenDecimals: 18,

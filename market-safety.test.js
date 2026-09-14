@@ -65,6 +65,7 @@ test("identifies confirmed zero V3 active liquidity instead of treating it as un
     liquidity: 0n, quoteAmountIn: 1n, token0Decimals: 18, token1Decimals: 18,
     currentTick: 0,
   });
-  assert.equal(safety.liquidityZero, true);
+  assert.equal(safety.activeLiquidityZero, true);
+  assert.equal(safety.liquidityZero, undefined);
   assert.equal(safety.liquidityKnown, false);
 });

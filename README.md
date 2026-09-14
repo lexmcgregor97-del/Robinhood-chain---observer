@@ -53,10 +53,17 @@ Changing `PAPER_INITIAL_CASH` or `PAPER_WETH_INITIAL_CASH` during an epoch will
 trip the ledger invariant on restart. Treat initial cash as part of the frozen
 epoch configuration.
 
-Gas constants are accepted as qualifying evidence only when
-`PAPER_GAS_MEASUREMENT_TX` identifies the recent on-chain V2 swap used to derive
-them and `PAPER_GAS_MEASURED_AT` is within the configured maximum age. Until
-those fields are supplied, gas remains unverified and the entry gate stays closed.
+Gas constants are accepted as qualifying evidence only after Atlas reads the
+receipt for `PAPER_GAS_MEASUREMENT_TX`, verifies a successful recent transaction
+to a router in `PAPER_V2_ROUTER_ADDRESSES`, includes the receipt's L1 component,
+and confirms `PAPER_WETH_GAS_PER_SIDE` is no lower than the observed cost. The
+public status reports the derived cost but deliberately omits the transaction
+hash. Until every check passes, the entry gate stays closed.
+
+Turnkey read-only verification requires that the API user is outside the root
+quorum, owns the configured API key, has zero applicable `EFFECT_ALLOW`
+policies, and is covered by the configured `EFFECT_DENY` policy. Conditions are
+not interpreted as a safety allowlist: any applicable ALLOW fails closed.
 
 ## Run
 

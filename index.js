@@ -35,7 +35,7 @@ import {
 import { Turnkey } from "@turnkey/sdk-server";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
-import { gasMeasurementFromEnv } from "./gas-measurement.js";
+import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -77,7 +77,11 @@ const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
 const EVIDENCE_FILE = EVIDENCE_DIR
   ? join(EVIDENCE_DIR, `${PAPER_STRATEGY_VERSION}.jsonl`) : "";
-const GAS_MEASUREMENT = gasMeasurementFromEnv(process.env);
+const GAS_MEASUREMENT_CONFIG = gasMeasurementFromEnv(process.env);
+let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, receiptBlock: null,
+  router: null, observedCostWei: null, observedCostWeth: null,
+  configuredWethPerSide: GAS_MEASUREMENT_CONFIG.configuredWethPerSide,
+  failures: [...GAS_MEASUREMENT_CONFIG.failures] };
 const QUALIFYING_PAPER_STRATEGY = Object.freeze({
   ...DEFAULT_PAPER_STRATEGY,
   maxHoldMs: 30 * 60_000,
@@ -139,7 +143,7 @@ const persistence = {
   enabled: Boolean(STATE_FILE), restored: false, restoredCursor: null, restoredPoolCount: 0,
   lastSavedAt: null, lastAttemptAt: 0, lastError: null,
   writeBlocked: false, automationBlockedReason: null,
-  stateFile: STATE_FILE ? "configured" : null,
+  stateFile: STATE_FILE ? "configured" : null, restoredAt: null, restartDowntimeMs: null,
 };
 const turnkeyEnvironment = turnkeyConfigFromEnv(process.env);
 const turnkeyStatus = {
@@ -149,7 +153,8 @@ const turnkeyStatus = {
   policyId: turnkeyEnvironment.config.policyId || null,
   readOnlyAttested: turnkeyEnvironment.readOnlyAttested,
   readOnlyVerified: false, apiKeyOwned: false, rootQuorumMember: null,
-  attestedPolicyVisible: false, signingAllowPolicyCount: null, policyFailures: [],
+  attestedPolicyVisible: false, attestedDenyPolicyValid: false,
+  applicableAllowPolicyCount: null, policyFailures: [],
   checked: false, authenticated: false, walletVisible: false, addressMatch: false,
   walletAccountId: null, accountCount: 0, lastError: null,
 };
@@ -205,6 +210,13 @@ async function verifyTurnkeyConfiguration() {
     turnkeyStatus.lastError = "turnkey-verification-failed";
     console.error("Turnkey read-only verification failed");
   }
+}
+
+async function verifyConfiguredGasMeasurement() {
+  GAS_MEASUREMENT = await verifyGasMeasurement({ config: GAS_MEASUREMENT_CONFIG,
+    getReceipt: (transactionHash) => rpc("eth_getTransactionReceipt", [transactionHash]),
+    getBlock: (blockNumber) => rpc("eth_getBlockByNumber", [blockNumber, false]),
+  });
 }
 
 function persistedState() {
@@ -288,6 +300,9 @@ async function restoreState() {
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
     persistence.lastSavedAt = state.savedAt;
+    persistence.restoredAt = Date.now();
+    persistence.restartDowntimeMs = Number.isFinite(Number(state.savedAt))
+      ? Math.max(0, persistence.restoredAt - Number(state.savedAt)) : null;
     firstRestoredPollPending = true;
   } catch (error) {
     persistence.lastError = error instanceof Error ? error.message : String(error);
@@ -629,7 +644,8 @@ function withGasEstimate(safety, quoteAddress, plannedNotionalQuote) {
   const executionCostPct = Number(safety.executionCostPct);
   return {
     ...safety,
-    gasEstimateAvailable: GAS_MEASUREMENT.verifiedInput,
+    gasEstimateAvailable: GAS_MEASUREMENT.verifiedInput
+      && quoteAddress === ROBINHOOD.weth.toLowerCase(),
     gasCostQuotePerSide: gasCost,
     roundTripGasCostPct,
     executionCostPct: Number.isFinite(executionCostPct)
@@ -1198,6 +1214,7 @@ function json(res, value) {
 
 await initializeEvidenceJournal();
 await restoreState();
+await verifyConfiguredGasMeasurement();
 await verifyTurnkeyConfiguration();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();

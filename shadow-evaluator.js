@@ -171,6 +171,12 @@ export class ShadowEvaluator {
       if (sample.closedAt || sample.censoredAt
           || now - sample.openedAt < this.horizonMs) continue;
       const safety = measurements.get(sample.pool);
+      if (safety?.activeLiquidityZero === true) {
+        sample.censoredAt = now;
+        sample.exitBlock = block;
+        sample.censorReason = "active-liquidity-zero";
+        continue;
+      }
       if (safety?.liquidityZero === true) {
         sample.closedAt = now;
         sample.exitBlock = block;

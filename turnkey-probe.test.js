@@ -37,7 +37,7 @@ test("verifies a non-root API user with no applicable signing allow", () => {
   assert.equal(result.readOnlyVerified, true);
 });
 
-test("rejects root-quorum users and applicable signing allow policies", () => {
+test("rejects root-quorum users and every applicable allow policy", () => {
   const input = policyInputs();
   input.organizationConfigs.configs.quorum.userIds = [userId];
   input.policies.policies.push({ policyId: "allow", effect: "EFFECT_ALLOW",
@@ -46,7 +46,28 @@ test("rejects root-quorum users and applicable signing allow policies", () => {
   const result = assessTurnkeyReadOnly(input);
   assert.equal(result.readOnlyVerified, false);
   assert.ok(result.failures.includes("turnkey-api-user-in-root-quorum"));
-  assert.ok(result.failures.includes("turnkey-signing-allow-policy-present"));
+  assert.ok(result.failures.includes("turnkey-applicable-allow-policy-present"));
+});
+
+test("rejects allow-everything and privilege-escalating allow policies", () => {
+  for (const condition of ["true",
+    "activity.type == 'ACTIVITY_TYPE_UPDATE_ROOT_QUORUM'",
+    "activity.type == 'ACTIVITY_TYPE_CREATE_READ_WRITE_SESSION_V2'"]) {
+    const input = policyInputs();
+    input.policies.policies.push({ policyId: "allow", effect: "EFFECT_ALLOW",
+      consensus: "", condition });
+    const result = assessTurnkeyReadOnly(input);
+    assert.equal(result.readOnlyVerified, false, condition);
+    assert.equal(result.applicableAllowPolicyCount, 1);
+  }
+});
+
+test("requires the attested policy to be an applicable deny policy", () => {
+  const input = policyInputs();
+  input.policies.policies[0].effect = "EFFECT_ALLOW";
+  const result = assessTurnkeyReadOnly(input);
+  assert.equal(result.readOnlyVerified, false);
+  assert.ok(result.failures.includes("turnkey-attested-deny-policy-invalid"));
 });
 
 test("policy probe binds whoami, organization quorum, policies, and API-key ownership", async () => {

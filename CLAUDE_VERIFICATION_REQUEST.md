@@ -1,4 +1,4 @@
-# Atlas V5 Integrity Hardening — Third Verification Review
+# Atlas V5 Integrity Hardening — Fourth Verification Review
 
 Review branch: `peer-review/v2-integrity-fixes`
 
@@ -6,7 +6,8 @@ Please verify the implementation against the findings in
 `CLAUDE_REVIEW_PACKET.md`. This branch includes the original review snapshot,
 the first integrity patch, and the additional fresh-epoch requirements.
 
-This revision responds to the second review's V-1 through V-8 findings.
+This revision responds to the third review's W-1 through W-5 findings while
+retaining all prior integrity fixes.
 
 ## Implemented
 
@@ -45,19 +46,24 @@ This revision responds to the second review's V-1 through V-8 findings.
 - Marked drawdown is persisted as a running maximum per paper book and updated
   immediately after every mark; current and maximum marked drawdown are separate.
 - Paper return percentages now use cost basis (notional plus entry gas).
-- V3 zero active liquidity is labelled rather than censored, though V3 remains
-  ineligible for paper entry without its other safeguards.
+- V3 zero active liquidity is explicitly censored as `active-liquidity-zero`;
+  it is no longer misclassified as a drained pool or a -100% outcome.
 - Turnkey now queries `getWhoami`, organization quorum configuration, policies,
   and the API user's keys. Readiness requires both operator attestation and API
-  verification that the credential belongs to a non-root user with no applicable
-  sensitive-operation ALLOW policy.
-- Gas constants no longer qualify merely by existing. A recent on-chain V2 swap
-  transaction reference and measurement timestamp are required; otherwise the
-  gas-estimate gate remains closed.
+  verification that the credential belongs to a non-root user with zero
+  applicable ALLOW policies and an applicable attested DENY policy. No activity
+  denylist or condition parser is used.
+- Gas constants qualify only after Atlas fetches a successful recent receipt,
+  verifies its destination against an explicit V2-router allowlist, includes a
+  receipt-provided L1 fee component, and confirms the WETH constant is at least
+  the observed cost. Public status omits the transaction hash.
+- Restore status publishes restart downtime. Crash-after-journal-before-state
+  recovery remains deliberately fail-closed and its quarantine/new-epoch
+  procedure is documented; automatic replay is not enabled.
 
 ## Validation
 
-- `npm test`: 164 passed, 0 failed
+- `npm test`: 169 passed, 0 failed
 - `npm run check`: passed
 - `git diff --check`: passed
 - Embedded-secret pattern scan: no match
@@ -71,13 +77,16 @@ credential ownership, root quorum, and policies at startup; the human attestatio
 remains an additional requirement.
 
 A real Robinhood Chain V2 swap receipt must still be measured for total gas cost.
-Set `PAPER_WETH_GAS_PER_SIDE`, `PAPER_USDG_GAS_PER_SIDE`,
-`PAPER_GAS_MEASUREMENT_TX`, and `PAPER_GAS_MEASURED_AT` from that measurement.
-Until then fresh-epoch entries fail closed with `gas-estimate-required`.
+Set `PAPER_WETH_GAS_PER_SIDE`, `PAPER_GAS_MEASUREMENT_TX`, and the independently
+confirmed `PAPER_V2_ROUTER_ADDRESSES` allowlist. The receipt's block timestamp is
+the measurement time; an operator-supplied timestamp is not trusted. If the
+receipt lacks a verifiable L1 fee component, Atlas remains blocked. USDG gas is
+not treated as verified by a WETH receipt. Until then fresh-epoch entries fail
+closed with `gas-estimate-required`.
 
 ## Requested verdict
 
-1. Confirm whether V-1 through V-8 are adequately resolved or safely blocked.
+1. Confirm whether W-1 through W-5 are adequately resolved or safely blocked.
 2. Re-audit the evidence journal/state checkpoint protocol for crash windows,
    truncation, replay, concurrency, and information exposure.
 3. Audit gas accounting and marked drawdown for double counting or omissions.

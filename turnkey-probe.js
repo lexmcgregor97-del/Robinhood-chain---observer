@@ -36,7 +36,6 @@ export async function probeTurnkeyWallet({ config, getWalletAccounts }) {
   };
 }
 
-const SENSITIVE_ACTIVITY = /(?:SIGN|TRANSACTION|PRIVATE_KEY|EXPORT|IMPORT|CREATE_API_KEY|UPDATE_USER|CREATE_POLICY|UPDATE_POLICY|DELETE_POLICY)/i;
 const UUID_IN_EXPRESSION = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 
 function consensusMayIncludeUser(consensus, userId, userTags = []) {
@@ -58,26 +57,27 @@ export function assessTurnkeyReadOnly({ config, whoami, organizationConfigs, pol
   const rootUserIds = organizationConfigs?.configs?.quorum?.userIds || [];
   const rootQuorumMember = rootUserIds.includes(userId);
   const listedPolicies = Array.isArray(policies?.policies) ? policies.policies : [];
-  const attestedPolicyVisible = listedPolicies.some(
-    (policy) => policy.policyId === config?.policyId,
-  );
-  const signingAllowPolicies = listedPolicies.filter((policy) =>
+  const attestedPolicy = listedPolicies.find((policy) => policy.policyId === config?.policyId);
+  const attestedPolicyVisible = Boolean(attestedPolicy);
+  const attestedDenyPolicyValid = attestedPolicy?.effect === "EFFECT_DENY"
+    && consensusMayIncludeUser(attestedPolicy.consensus, userId, userTags);
+  const applicableAllowPolicies = listedPolicies.filter((policy) =>
     policy?.effect === "EFFECT_ALLOW"
-      && (!String(policy.condition || "").trim()
-        || SENSITIVE_ACTIVITY.test(String(policy.condition)))
       && consensusMayIncludeUser(policy.consensus, userId, userTags));
   const failures = [];
   if (!userId) failures.push("turnkey-user-unresolved");
   if (!apiKeyOwned) failures.push("turnkey-api-key-ownership-unverified");
   if (rootQuorumMember) failures.push("turnkey-api-user-in-root-quorum");
   if (!attestedPolicyVisible) failures.push("turnkey-policy-not-visible");
-  if (signingAllowPolicies.length) failures.push("turnkey-signing-allow-policy-present");
+  if (attestedPolicyVisible && !attestedDenyPolicyValid) failures.push("turnkey-attested-deny-policy-invalid");
+  if (applicableAllowPolicies.length) failures.push("turnkey-applicable-allow-policy-present");
   return {
     readOnlyVerified: failures.length === 0,
     apiKeyOwned,
     rootQuorumMember,
     attestedPolicyVisible,
-    signingAllowPolicyCount: signingAllowPolicies.length,
+    attestedDenyPolicyValid,
+    applicableAllowPolicyCount: applicableAllowPolicies.length,
     failures,
   };
 }
