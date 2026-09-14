@@ -194,7 +194,7 @@ export class ShadowEvaluator {
           if (pullbackPct < Number(rule.pullbackMinPct)) continue;
         }
         const episode = this.episodes.get(key);
-        if (episode && now - episode.lastQualifiedAt < this.episodeGapMs) {
+        if (episode) {
           episode.lastQualifiedAt = now;
           continue;
         }
