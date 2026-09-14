@@ -6,6 +6,14 @@ export const SHADOW_RULES = Object.freeze([
   { name: "breakout-strict", signal: "breakout-watch", maxDeviationPct: 5 },
 ]);
 
+export const DEFAULT_PROMOTION_POLICY = Object.freeze({
+  minClosedSamples: 30,
+  minAverageReturnPct: 2,
+  minMedianReturnPct: 0,
+  minWinRatePct: 45,
+  maxCumulativeDrawdownPct: 25,
+});
+
 export function shadowRuleMatches(candidate, rule) {
   const safety = candidate?.marketSafety || {};
   return candidate?.signal?.state === rule.signal
@@ -19,6 +27,56 @@ export function shadowRuleMatches(candidate, rule) {
     && finite(safety.roundTripLossPct) && Number(safety.roundTripLossPct) <= 15
     && finite(safety.spotVsLastSwapPct)
     && Number(safety.spotVsLastSwapPct) <= rule.maxDeviationPct;
+}
+
+function summarizeSamples(samples) {
+  const returns = samples.map((sample) => Number(sample.returnPct))
+    .filter(Number.isFinite);
+  const sorted = [...returns].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const medianReturnPct = sorted.length
+    ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : 0;
+  let cumulative = 0;
+  let peak = 0;
+  let maxCumulativeDrawdownPct = 0;
+  for (const value of returns) {
+    cumulative += value;
+    peak = Math.max(peak, cumulative);
+    maxCumulativeDrawdownPct = Math.max(maxCumulativeDrawdownPct, peak - cumulative);
+  }
+  const wins = returns.filter((value) => value > 0).length;
+  return {
+    closedSamples: returns.length,
+    winRatePct: returns.length ? wins / returns.length * 100 : 0,
+    averageReturnPct: returns.length
+      ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0,
+    medianReturnPct,
+    maxCumulativeDrawdownPct,
+  };
+}
+
+export function evaluateShadowPromotion(summary, policy = DEFAULT_PROMOTION_POLICY) {
+  if (summary.closedSamples < policy.minClosedSamples) {
+    return {
+      status: "collecting",
+      eligible: false,
+      remainingSamples: policy.minClosedSamples - summary.closedSamples,
+      failures: ["insufficient-samples"],
+    };
+  }
+  const failures = [];
+  if (summary.averageReturnPct < policy.minAverageReturnPct) failures.push("average-return-too-low");
+  if (summary.medianReturnPct < policy.minMedianReturnPct) failures.push("median-return-too-low");
+  if (summary.winRatePct < policy.minWinRatePct) failures.push("win-rate-too-low");
+  if (summary.maxCumulativeDrawdownPct > policy.maxCumulativeDrawdownPct) {
+    failures.push("shadow-drawdown-too-high");
+  }
+  return {
+    status: failures.length ? "rejected" : "promotion-candidate",
+    eligible: failures.length === 0,
+    remainingSamples: 0,
+    failures,
+  };
 }
 
 export class ShadowEvaluator {
@@ -63,16 +121,15 @@ export class ShadowEvaluator {
     const byRule = {};
     for (const rule of this.rules) {
       const closed = this.samples.filter((sample) => sample.rule === rule.name && sample.closedAt);
-      const wins = closed.filter((sample) => sample.returnPct > 0).length;
+      const summary = summarizeSamples(closed);
       byRule[rule.name] = {
         openSamples: this.samples.filter((sample) => sample.rule === rule.name && !sample.closedAt).length,
-        closedSamples: closed.length,
-        winRatePct: closed.length ? wins / closed.length * 100 : 0,
-        averageReturnPct: closed.length
-          ? closed.reduce((sum, sample) => sum + sample.returnPct, 0) / closed.length : 0,
+        ...summary,
+        promotion: evaluateShadowPromotion(summary),
       };
     }
-    return { mode: "SHADOW_ONLY", horizonMs: this.horizonMs, byRule,
+    return { mode: "SHADOW_ONLY", horizonMs: this.horizonMs,
+      promotionPolicy: DEFAULT_PROMOTION_POLICY, byRule,
       recentSamples: this.samples.slice(-50) };
   }
 
