@@ -34,7 +34,13 @@ export function evaluateV2MarketSafety(pool, options) {
   if (pool.version !== "v2" || !quoteTokenKnown) return base;
   const reserveQuote = token0IsQuote ? BigInt(options.reserve0) : BigInt(options.reserve1);
   const reserveToken = token0IsQuote ? BigInt(options.reserve1) : BigInt(options.reserve0);
-  if (reserveQuote <= 0n || reserveToken <= 0n || quoteAmountIn <= 0n) return base;
+  if (reserveQuote <= 0n || reserveToken <= 0n) {
+    // Distinguish "pool drained" from "not measured": a shadow sample or paper
+    // position in a drained pool is a realized total loss, not a censored one.
+    return { ...base, liquidityZero: true,
+      reserveQuote: reserveQuote.toString(), reserveToken: reserveToken.toString() };
+  }
+  if (quoteAmountIn <= 0n) return base;
   try {
     const simulation = simulateV2RoundTrip({
       reserveQuote,
