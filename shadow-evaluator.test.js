@@ -33,7 +33,7 @@ test("records and resolves strategy samples without opening real positions", () 
   evaluator.observe([candidate("escape-velocity", 3)], 1100);
   const result = evaluator.snapshot();
   assert.equal(result.byRule["escape-strict"].closedSamples, 1);
-  assert.equal(result.byRule["escape-strict"].averageReturnPct, 50);
+  assert.equal(result.byRule["escape-strict"].averageReturnPct, 48);
   assert.equal(result.byRule["escape-relaxed"].closedSamples, 1);
 });
 
@@ -79,6 +79,18 @@ test("resolves a pending pool after it drops from the ranked candidates", () => 
   evaluator.resolve([{
     address: "0xpool", marketSafety: { tokenPriceQuote: 1 },
   }], 1100);
-  assert.equal(evaluator.snapshot().byRule["escape-strict"].averageReturnPct, -50);
+  assert.equal(evaluator.snapshot().byRule["escape-strict"].averageReturnPct, -52);
   assert.deepEqual(evaluator.pendingPoolAddresses(), []);
+});
+
+test("promotion metrics use net return after simulated execution cost", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  evaluator.record([candidate("escape-velocity", 2)], 1000);
+  evaluator.resolve([{
+    address: "0xpool", marketSafety: { tokenPriceQuote: 2.1 },
+  }], 1100);
+  const sample = evaluator.serialize().samples[0];
+  assert.ok(Math.abs(sample.grossReturnPct - 5) < 1e-9);
+  assert.ok(Math.abs(sample.netReturnPct - 3) < 1e-9);
+  assert.ok(Math.abs(evaluator.snapshot().byRule["escape-strict"].averageReturnPct - 3) < 1e-9);
 });
