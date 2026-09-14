@@ -12,7 +12,7 @@ test("splits an oversized block range without skipping blocks", async () => {
     return [{ blockNumber: filter.fromBlock }];
   };
   const logs = await fetchLogsAdaptive({
-    request, from: 10, to: 13, address: ["0x1", "0x2"], topics: ["0xtopic"],
+    request, from: 10, to: 13, address: "0x1", topics: ["0xtopic"],
   });
   assert.deepEqual(ranges, [[10, 13], [10, 11], [12, 13]]);
   assert.deepEqual(logs.map((log) => log.blockNumber), ["0xa", "0xc"]);
