@@ -548,7 +548,8 @@ async function marketSafety(pool) {
         token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
         quoteAmountIn,
       });
-      return { ...safety, plannedNotionalQuote, ...auditSwapPrice({
+      return { ...base, ...safety, poolAgeMs: base.poolAgeMs,
+        plannedNotionalQuote, ...auditSwapPrice({
         spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
         token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       }) };
@@ -576,7 +577,8 @@ async function marketSafety(pool) {
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       quoteAmountIn,
     });
-    return { ...safety, plannedNotionalQuote, ...auditSwapPrice({
+    return { ...base, ...safety, poolAgeMs: base.poolAgeMs,
+      plannedNotionalQuote, ...auditSwapPrice({
       spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
     }) };
