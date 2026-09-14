@@ -12,8 +12,12 @@ import { ShadowEvaluator } from "./shadow-evaluator.js";
 import { auditSwapPrice } from "./price-audit.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
-import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
-import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord } from "./tick-boundary.js";
+import { decodeUint, decodeV3Slot0, quoteV3WithinTick } from "./v3-simulator.js";
+import { quoteV2 } from "./v2-simulator.js";
+import {
+  bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord,
+  staysWithinTickBoundary,
+} from "./tick-boundary.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
@@ -464,8 +468,14 @@ function plannedPaperNotional(quoteAddress) {
 function humanToUnits(value, decimals) {
   const precision = Math.min(Number(decimals), 12);
   const scaled = Math.floor(Number(value) * (10 ** precision));
-  if (!Number.isSafeInteger(scaled) || scaled <= 0) throw new Error("invalid-planned-notional");
+  if (!Number.isSafeInteger(scaled) || scaled <= 0) throw new Error("invalid-token-amount");
   return BigInt(scaled) * (10n ** BigInt(Number(decimals) - precision));
+}
+
+function unitsToHuman(value, decimals) {
+  const human = Number(BigInt(value)) / (10 ** Number(decimals));
+  if (!Number.isFinite(human) || human <= 0) throw new Error("invalid-quote-output");
+  return human;
 }
 
 async function marketSafety(pool) {
@@ -542,6 +552,76 @@ async function marketSafety(pool) {
   }
 }
 
+async function paperExitQuote(pool, position) {
+  const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg].map((address) => address.toLowerCase());
+  const quoteIsToken0 = quoteTokens.includes(pool.token0);
+  const quoteIsToken1 = quoteTokens.includes(pool.token1);
+  if (quoteIsToken0 === quoteIsToken1) throw new Error("unknown-quote-token");
+  const [token0Meta, token1Meta] = await Promise.all([
+    tokenMeta(pool.token0), tokenMeta(pool.token1),
+  ]);
+  const quoteToken = quoteIsToken0 ? pool.token0 : pool.token1;
+  const quoteDecimals = quoteIsToken0 ? token0Meta.decimals : token1Meta.decimals;
+  const baseDecimals = quoteIsToken0 ? token1Meta.decimals : token0Meta.decimals;
+  const baseAmountIn = humanToUnits(position.quantity, baseDecimals);
+  let amountOut;
+  let priceImpactPct = null;
+  if (pool.version === "v2") {
+    const { reserve0, reserve1 } = decodeV2Reserves(await rpc(
+      "eth_call", [{ to: pool.address, data: "0x0902f1ac" }, "latest"],
+    ));
+    const fill = quoteV2({
+      reserveIn: quoteIsToken0 ? reserve1 : reserve0,
+      reserveOut: quoteIsToken0 ? reserve0 : reserve1,
+      amountIn: baseAmountIn,
+      feeBps: pool.dex === "pancakeswap" ? 25 : 30,
+    });
+    amountOut = fill.amountOut;
+    priceImpactPct = fill.priceImpactBps / 100;
+  } else {
+    const [slot0Result, liquidityResult] = await Promise.all([
+      rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
+      rpc("eth_call", [{ to: pool.address, data: "0x1a686502" }, "latest"]),
+    ]);
+    const slot0 = decodeV3Slot0(slot0Result);
+    const liquidity = decodeUint(liquidityResult, "liquidity");
+    let tickSpacing = Number(pool.tickSpacing);
+    if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) {
+      tickSpacing = Number(decodeUint(await rpc("eth_call", [{
+        to: pool.address, data: "0xd0c93a7c",
+      }, "latest"]), "tick-spacing"));
+      pool.tickSpacing = tickSpacing;
+    }
+    const zeroForOne = !quoteIsToken0;
+    const boundaryTick = await resolveV3Boundary(
+      pool, slot0.tick, tickSpacing, zeroForOne,
+    );
+    const fill = quoteV3WithinTick({
+      sqrtPriceX96: slot0.sqrtPriceX96,
+      liquidity,
+      amountIn: baseAmountIn,
+      zeroForOne,
+      feeBps: Math.ceil(Number(pool.fee) / 100),
+    });
+    if (!staysWithinTickBoundary({
+      startSqrtPriceX96: slot0.sqrtPriceX96,
+      endSqrtPriceX96: fill.nextSqrtPriceX96,
+      boundaryTick,
+      zeroForOne,
+    })) throw new Error("v3-exit-crosses-tick-boundary");
+    amountOut = fill.amountOut;
+  }
+  const proceeds = unitsToHuman(amountOut, quoteDecimals);
+  return {
+    quoteToken,
+    proceeds,
+    executionPrice: proceeds / Number(position.quantity),
+    priceImpactPct,
+    baseAmountIn: baseAmountIn.toString(),
+    quoteAmountOut: amountOut.toString(),
+  };
+}
+
 async function measureCandidates(limit) {
   const ranked = signals(limit);
   return Promise.all(ranked.map(async (pool) => {
@@ -608,24 +688,33 @@ async function runPaperCycle() {
       for (const position of book.portfolio.snapshot().openPositions) {
         const pool = pools.get(position.pool);
         if (!pool) continue;
-        const safety = await marketSafety(pool);
-        if (safety.quoteToken !== quoteToken || !Number.isFinite(safety.tokenPriceQuote)) continue;
-        const marked = book.portfolio.mark(position.pool, safety.tokenPriceQuote);
+        const exit = await paperExitQuote(pool, position);
+        if (exit.quoteToken !== quoteToken || !Number.isFinite(exit.executionPrice)) continue;
+        const marked = book.portfolio.mark(position.pool, exit.executionPrice);
         const reason = paperExitReason(marked);
         if (reason) {
           const feeRate = poolFeeRate(pool);
-          const fee = marked.marketValue * feeRate;
+          const fee = exit.proceeds * feeRate;
           book.portfolio.close({
-            pool: position.pool, price: safety.tokenPriceQuote, fee, reason,
+            pool: position.pool,
+            price: exit.executionPrice,
+            proceeds: exit.proceeds,
+            fee,
+            reason,
             audit: {
-              block: metrics.latestBlock, reason, feeRate,
-              returnPct: marked.returnPct, peakReturnPct: marked.peakReturnPct,
+              block: metrics.latestBlock,
+              reason,
+              feeRate,
+              returnPct: marked.returnPct,
+              peakReturnPct: marked.peakReturnPct,
+              priceImpactPct: exit.priceImpactPct,
+              quoteAmountOut: exit.quoteAmountOut,
             },
           });
           paperAutomation.exits += 1;
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
-            reason, price: safety.tokenPriceQuote,
+            reason, price: exit.executionPrice, proceeds: exit.proceeds,
           });
         }
       }

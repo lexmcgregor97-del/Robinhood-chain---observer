@@ -68,3 +68,14 @@ test("uses an explicit simulated fill quantity without subtracting the fee twice
   assert.equal(position.costBasis, 20);
   assert.equal(book.snapshot().cash, 80);
 });
+
+test("credits explicit simulated exit proceeds without subtracting fees twice", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "exit-fill", token: "TOK", price: 2, quantity: 10, notional: 20 });
+  const trade = book.close({
+    pool: "exit-fill", price: 1.8, proceeds: 18, fee: 0.04,
+  });
+  assert.equal(trade.proceeds, 18);
+  assert.equal(trade.pnl, -2);
+  assert.equal(book.snapshot().equity, 98);
+});

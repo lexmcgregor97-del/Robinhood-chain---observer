@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  decodeUint, decodeV3Slot0, normalizedV3Price, simulateV3RoundTrip,
+  decodeUint, decodeV3Slot0, normalizedV3Price, quoteV3WithinTick, simulateV3RoundTrip,
 } from "./v3-simulator.js";
 
 const word = (n) => BigInt(n).toString(16).padStart(64, "0");
@@ -34,4 +34,16 @@ test("simulates a bounded same-tick round trip", () => {
   assert.ok(result.sellAmountOut > 0n);
   assert.ok(result.priceImpactBps >= 0);
   assert.ok(result.roundTripLossBps >= 0);
+});
+
+test("quotes a single executable V3 exit leg", () => {
+  const fill = quoteV3WithinTick({
+    sqrtPriceX96: 1n << 96n,
+    liquidity: 1_000_000_000_000_000_000_000n,
+    amountIn: 1_000_000_000_000_000n,
+    zeroForOne: false,
+    feeBps: 30,
+  });
+  assert.ok(fill.amountOut > 0n);
+  assert.ok(fill.nextSqrtPriceX96 > (1n << 96n));
 });
