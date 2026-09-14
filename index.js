@@ -29,9 +29,13 @@ import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { fetchLogsAdaptive } from "./rpc-log-query.js";
 import { envFlag } from "./runtime-flags.js";
 import { assessLiveReadiness } from "./live-readiness.js";
-import { probeTurnkeyWallet, turnkeyConfigFromEnv } from "./turnkey-probe.js";
+import {
+  probeTurnkeyPolicy, probeTurnkeyWallet, turnkeyConfigFromEnv,
+} from "./turnkey-probe.js";
 import { Turnkey } from "@turnkey/sdk-server";
 import { EvidenceJournal } from "./evidence-journal.js";
+import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
+import { gasMeasurementFromEnv } from "./gas-measurement.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -73,6 +77,7 @@ const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
 const EVIDENCE_FILE = EVIDENCE_DIR
   ? join(EVIDENCE_DIR, `${PAPER_STRATEGY_VERSION}.jsonl`) : "";
+const GAS_MEASUREMENT = gasMeasurementFromEnv(process.env);
 const QUALIFYING_PAPER_STRATEGY = Object.freeze({
   ...DEFAULT_PAPER_STRATEGY,
   maxHoldMs: 30 * 60_000,
@@ -114,8 +119,10 @@ let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
 let candidateCache = null;
 let candidatePromise = null;
+let firstRestoredPollPending = false;
 const paperAutomation = {
   cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
+  maxMarkedDrawdownPctByQuote: {},
   firstCycleAt: null, lastCycleAt: null, lastError: null, recentDecisions: [],
 };
 const shadowEvaluator = new ShadowEvaluator();
@@ -141,6 +148,8 @@ const turnkeyStatus = {
   missing: turnkeyEnvironment.missing,
   policyId: turnkeyEnvironment.config.policyId || null,
   readOnlyAttested: turnkeyEnvironment.readOnlyAttested,
+  readOnlyVerified: false, apiKeyOwned: false, rootQuorumMember: null,
+  attestedPolicyVisible: false, signingAllowPolicyCount: null, policyFailures: [],
   checked: false, authenticated: false, walletVisible: false, addressMatch: false,
   walletAccountId: null, accountCount: 0, lastError: null,
 };
@@ -164,6 +173,7 @@ async function appendEvidenceBatch(payloads) {
   } catch (error) {
     persistence.automationBlockedReason = "evidence-journal-failed";
     persistence.lastError = error instanceof Error ? error.message : String(error);
+    persistence.writeBlocked = true;
     throw error;
   }
 }
@@ -178,8 +188,17 @@ async function verifyTurnkeyConfiguration() {
       apiPublicKey: config.apiPublicKey,
       apiPrivateKey: config.apiPrivateKey,
     }).apiClient();
-    Object.assign(turnkeyStatus, await probeTurnkeyWallet({ config,
-      getWalletAccounts: (request) => client.getWalletAccounts(request) }),
+    const [wallet, policy] = await Promise.all([
+      probeTurnkeyWallet({ config,
+        getWalletAccounts: (request) => client.getWalletAccounts(request) }),
+      probeTurnkeyPolicy({ config,
+        getWhoami: (request) => client.getWhoami(request),
+        getOrganizationConfigs: (request) => client.getOrganizationConfigs(request),
+        getPolicies: (request) => client.getPolicies(request),
+        getUser: (request) => client.getUser(request),
+      }),
+    ]);
+    Object.assign(turnkeyStatus, wallet, policy,
     { checked: true, lastError: null });
   } catch {
     turnkeyStatus.checked = true;
@@ -202,6 +221,7 @@ function persistedState() {
     processedLogs: logDeduplicator.serialize(),
     positionLiveness: positionLiveness.serialize(),
     evidenceSequence: evidenceJournal.snapshot().sequence,
+    evidenceLastHash: evidenceJournal.snapshot().lastHash,
   };
 }
 
@@ -239,10 +259,9 @@ async function restoreState() {
     if (!samePaperEpoch && evidenceJournal.snapshot().sequence > 0) {
       throw new Error("evidence-state-divergence");
     }
-    if (samePaperEpoch
-        && Number(state.evidenceSequence || 0) !== evidenceJournal.snapshot().sequence) {
-      throw new Error("evidence-state-divergence");
-    }
+    if (samePaperEpoch) validateEvidenceCheckpoint({
+      state, journal: evidenceJournal.snapshot(),
+    });
     if (state.paperBooks && samePaperEpoch) {
       for (const [quoteToken, saved] of Object.entries(state.paperBooks)) {
         const book = paperBooks.get(quoteToken.toLowerCase());
@@ -269,6 +288,7 @@ async function restoreState() {
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
     persistence.lastSavedAt = state.savedAt;
+    firstRestoredPollPending = true;
   } catch (error) {
     persistence.lastError = error instanceof Error ? error.message : String(error);
     persistence.writeBlocked = true;
@@ -284,6 +304,7 @@ async function initializeEvidenceJournal() {
   } catch (error) {
     persistence.automationBlockedReason = "evidence-journal-failed";
     persistence.lastError = error instanceof Error ? error.message : String(error);
+    persistence.writeBlocked = true;
   }
 }
 
@@ -455,13 +476,15 @@ async function poll() {
     else if (latest > metrics.cursor) {
       caughtUp = false;
       const lag = latest - metrics.cursor;
-      if (lag > MAX_RECOVERY_LAG_BLOCKS) {
-        const skipped = lag - MAX_RECOVERY_LAG_BLOCKS;
+      const recoveryLimit = firstRestoredPollPending ? BACKFILL : MAX_RECOVERY_LAG_BLOCKS;
+      if (lag > recoveryLimit) {
+        const skipped = lag - recoveryLimit;
         metrics.recoverySkippedBlocks += skipped;
         paperAutomation.recoverySkippedBlocks += skipped;
-        metrics.cursor = latest - MAX_RECOVERY_LAG_BLOCKS;
+        metrics.cursor = latest - recoveryLimit;
       }
       await scanRange(metrics.cursor + 1, latest);
+      firstRestoredPollPending = false;
     }
     const block = await rpc("eth_getBlockByNumber", [hexBlock(latest), false]);
     metrics.blockTimestamp = intHex(block?.timestamp);
@@ -531,6 +554,7 @@ function snapshot() {
     readiness,
     persistence,
     evidence: evidenceJournal.snapshot(),
+    gasMeasurement: GAS_MEASUREMENT,
     turnkey: turnkeyStatus,
   };
 }
@@ -605,7 +629,7 @@ function withGasEstimate(safety, quoteAddress, plannedNotionalQuote) {
   const executionCostPct = Number(safety.executionCostPct);
   return {
     ...safety,
-    gasEstimateAvailable: true,
+    gasEstimateAvailable: GAS_MEASUREMENT.verifiedInput,
     gasCostQuotePerSide: gasCost,
     roundTripGasCostPct,
     executionCostPct: Number.isFinite(executionCostPct)
@@ -862,6 +886,26 @@ function rememberPaperDecision(decision) {
   if (paperAutomation.recentDecisions.length > 50) paperAutomation.recentDecisions.shift();
 }
 
+function updateMarkedDrawdownHistory() {
+  if (!paperAutomation.maxMarkedDrawdownPctByQuote
+      || typeof paperAutomation.maxMarkedDrawdownPctByQuote !== "object") {
+    paperAutomation.maxMarkedDrawdownPctByQuote = {};
+  }
+  for (const book of paperBooks.values()) {
+    const state = book.portfolio.serialize();
+    const analytics = analyzePaperTrades({
+      initialCash: state.initialCash,
+      trades: state.trades,
+      openPositions: state.openPositions,
+      strategyVersion: PAPER_STRATEGY_VERSION,
+      priorMaxMarkedDrawdownPct:
+        paperAutomation.maxMarkedDrawdownPctByQuote[book.symbol] || 0,
+    });
+    paperAutomation.maxMarkedDrawdownPctByQuote[book.symbol]
+      = analytics.maxMarkedDrawdownPct;
+  }
+}
+
 async function runPaperCycle() {
   lastPaperCycleAt = Date.now();
   if (!paperAutomation.firstCycleAt) paperAutomation.firstCycleAt = lastPaperCycleAt;
@@ -915,6 +959,7 @@ async function runPaperCycle() {
             || exit.quoteToken !== quoteToken
             || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
+        updateMarkedDrawdownHistory();
         const reason = paperExitReason(marked, Date.now(), QUALIFYING_PAPER_STRATEGY);
         if (reason) {
           const feeRate = poolFeeRate(pool);
@@ -950,6 +995,8 @@ async function runPaperCycle() {
       }
     }
 
+    updateMarkedDrawdownHistory();
+
     if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;
       return;
@@ -973,9 +1020,11 @@ async function runPaperCycle() {
       const block = metrics.latestBlock;
       shadowEvaluator.resolve([...measured, ...pendingMeasurements], Date.now(), { block });
       shadowEvaluator.record(measured, Date.now(), { block });
+      const currentShadowRuleVersion = shadowEvaluator.snapshot().ruleVersion;
       const evidenceEvents = [];
       for (let index = 0; index < shadowEvaluator.samples.length; index += 1) {
         const sample = shadowEvaluator.samples[index];
+        if (sample.ruleVersion !== currentShadowRuleVersion) continue;
         if (index >= previousCount) {
           evidenceEvents.push({ type: "shadow-open", sample: structuredClone(sample) });
           continue;
@@ -1007,6 +1056,8 @@ async function runPaperCycle() {
         initialCash: paperState.initialCash, trades: paperState.trades,
         openPositions: paperState.openPositions,
         strategyVersion: PAPER_STRATEGY_VERSION,
+        priorMaxMarkedDrawdownPct:
+          paperAutomation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
       }), policy);
       if (circuitFailures.length) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
@@ -1030,6 +1081,7 @@ async function runPaperCycle() {
       rememberPaperDecision({ type: "entry", quote: book.symbol, pool: candidate.address,
         price: plan.order.price, notional: plan.order.notional, fee });
     }
+    updateMarkedDrawdownHistory();
     paperAutomation.lastError = null;
   } catch (error) {
     paperAutomation.lastError = error instanceof Error ? error.message : String(error);
@@ -1042,6 +1094,8 @@ function paperBookStatus(book) {
     initialCash: state.initialCash, trades: state.trades,
     openPositions: state.openPositions,
     strategyVersion: PAPER_STRATEGY_VERSION,
+    priorMaxMarkedDrawdownPct:
+      paperAutomation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
   });
   return {
     quote: book.symbol,
@@ -1085,6 +1139,7 @@ function paperStatus() {
           / (paperAutomation.cycles - 1) : null,
       lastCycleAt: lastPaperCycleAt || null },
     evidence: evidenceJournal.snapshot(),
+    gasMeasurement: GAS_MEASUREMENT,
     shadow,
     liveReadiness: assessLiveReadiness({
       paper: books.WETH.analytics,
@@ -1092,6 +1147,7 @@ function paperStatus() {
       sellProbeReady: false,
       walletConfigured: turnkeyStatus.authenticated && turnkeyStatus.addressMatch,
       turnkeyPolicyAttested: turnkeyStatus.readOnlyAttested === true,
+      turnkeyPolicyVerified: turnkeyStatus.readOnlyVerified === true,
       rpcEndpointCount: rpcTransport.snapshot().endpointCount,
       operationalReady: operational.readyForPaper,
       evidenceJournalReady: evidenceJournal.snapshot().healthy,

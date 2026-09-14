@@ -97,7 +97,8 @@ export function evaluateV3MarketSafety(pool, options) {
   try {
     const liquidity = BigInt(options.liquidity);
     const quoteAmountIn = BigInt(options.quoteAmountIn);
-    if (liquidity <= 0n || quoteAmountIn <= 0n) return base;
+    if (liquidity <= 0n) return { ...base, liquidityZero: true, activeLiquidity: "0" };
+    if (quoteAmountIn <= 0n) return base;
     const tokenPriceQuote = normalizedV3Price({
       sqrtPriceX96: options.sqrtPriceX96,
       token0Decimals: options.token0Decimals,

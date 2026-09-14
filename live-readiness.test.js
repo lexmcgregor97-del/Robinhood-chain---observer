@@ -6,7 +6,7 @@ const passing = {
   paper: { closedTrades: 50, expectancyPerTrade: 0.01, maxRealizedDrawdownPct: 5 },
   shadow: { uniquePools: 46, eligible: true },
   sellProbeReady: true, walletConfigured: true, rpcEndpointCount: 2, operationalReady: true,
-  turnkeyPolicyAttested: true, evidenceJournalReady: true,
+  turnkeyPolicyAttested: true, turnkeyPolicyVerified: true, evidenceJournalReady: true,
 };
 
 test("promotes only a fully qualified micro-mainnet configuration", () => {
@@ -19,7 +19,8 @@ test("reports every unresolved live boundary", () => {
   assert.deepEqual(result.failures, [
     "paper-sample-too-small", "paper-expectancy-not-positive",
     "shadow-evidence-insufficient", "sell-probe-not-ready", "wallet-not-configured",
-    "turnkey-policy-not-attested", "rpc-redundancy-required", "runtime-not-ready",
+    "turnkey-policy-not-attested", "turnkey-policy-not-verified",
+    "rpc-redundancy-required", "runtime-not-ready",
     "evidence-journal-not-ready",
   ]);
   assert.equal(result.progress.paperTradesRemaining, 50);

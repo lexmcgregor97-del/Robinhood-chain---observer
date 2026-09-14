@@ -18,6 +18,8 @@ test("appends and restores a hash-chained evidence journal", async () => {
   await restored.initialize();
   assert.equal(restored.snapshot().sequence, 2);
   assert.equal(restored.snapshot().lastHash, second.hash);
+  assert.deepEqual(restored.snapshot().typeCounts,
+    { "paper-open": 1, "paper-close": 1 });
 });
 
 test("rejects a modified evidence chain", async () => {

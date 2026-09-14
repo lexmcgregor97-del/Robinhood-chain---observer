@@ -35,3 +35,64 @@ export async function probeTurnkeyWallet({ config, getWalletAccounts }) {
     accountCount: accounts.length,
   };
 }
+
+const SENSITIVE_ACTIVITY = /(?:SIGN|TRANSACTION|PRIVATE_KEY|EXPORT|IMPORT|CREATE_API_KEY|UPDATE_USER|CREATE_POLICY|UPDATE_POLICY|DELETE_POLICY)/i;
+const UUID_IN_EXPRESSION = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
+
+function consensusMayIncludeUser(consensus, userId, userTags = []) {
+  const expression = String(consensus || "");
+  if (!expression.trim()) return true;
+  if (expression.includes(userId)
+      || userTags.some((tag) => expression.includes(String(tag)))) return true;
+  const explicitIds = expression.match(UUID_IN_EXPRESSION) || [];
+  return explicitIds.length === 0;
+}
+
+export function assessTurnkeyReadOnly({ config, whoami, organizationConfigs, policies, user }) {
+  const userId = String(whoami?.userId || "");
+  const apiKeys = Array.isArray(user?.apiKeys) ? user.apiKeys : [];
+  const userTags = Array.isArray(user?.userTags) ? user.userTags : [];
+  const apiKeyOwned = apiKeys.some((key) =>
+    String(key?.credential?.publicKey || "").toLowerCase()
+      === String(config?.apiPublicKey || "").toLowerCase());
+  const rootUserIds = organizationConfigs?.configs?.quorum?.userIds || [];
+  const rootQuorumMember = rootUserIds.includes(userId);
+  const listedPolicies = Array.isArray(policies?.policies) ? policies.policies : [];
+  const attestedPolicyVisible = listedPolicies.some(
+    (policy) => policy.policyId === config?.policyId,
+  );
+  const signingAllowPolicies = listedPolicies.filter((policy) =>
+    policy?.effect === "EFFECT_ALLOW"
+      && (!String(policy.condition || "").trim()
+        || SENSITIVE_ACTIVITY.test(String(policy.condition)))
+      && consensusMayIncludeUser(policy.consensus, userId, userTags));
+  const failures = [];
+  if (!userId) failures.push("turnkey-user-unresolved");
+  if (!apiKeyOwned) failures.push("turnkey-api-key-ownership-unverified");
+  if (rootQuorumMember) failures.push("turnkey-api-user-in-root-quorum");
+  if (!attestedPolicyVisible) failures.push("turnkey-policy-not-visible");
+  if (signingAllowPolicies.length) failures.push("turnkey-signing-allow-policy-present");
+  return {
+    readOnlyVerified: failures.length === 0,
+    apiKeyOwned,
+    rootQuorumMember,
+    attestedPolicyVisible,
+    signingAllowPolicyCount: signingAllowPolicies.length,
+    failures,
+  };
+}
+
+export async function probeTurnkeyPolicy({
+  config, getWhoami, getOrganizationConfigs, getPolicies, getUser,
+}) {
+  if (![getWhoami, getOrganizationConfigs, getPolicies, getUser]
+    .every((fn) => typeof fn === "function")) throw new Error("turnkey-policy-client-required");
+  const whoami = await getWhoami({ organizationId: config.organizationId });
+  const [organizationConfigs, policies, user] = await Promise.all([
+    getOrganizationConfigs({ organizationId: config.organizationId }),
+    getPolicies({ organizationId: config.organizationId }),
+    getUser({ organizationId: config.organizationId, userId: whoami.userId }),
+  ]);
+  return assessTurnkeyReadOnly({ config, whoami, organizationConfigs, policies,
+    user: user?.user || user });
+}

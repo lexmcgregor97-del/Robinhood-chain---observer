@@ -38,6 +38,25 @@ Paper and shadow evidence is also appended to a SHA-256 chained JSONL journal
 at `/data/evidence/<epoch>.jsonl`. Journal corruption, unavailability, or an
 unconfigured journal blocks automation and live readiness. The immutable chain
 is exposed read-only at `/api/evidence`; the mutable state file remains a cache.
+Each append is flushed with `fsync`; state checkpoints bind the journal sequence,
+terminal hash, and paper-record count to the ledger. A mismatch blocks startup.
+Streaming clients should discard an incomplete trailing line if they read while
+an append is in progress.
+
+If a crash occurs after a journal append but before its state checkpoint, preserve
+both files and do not hand-edit either one. The epoch is quarantined by the
+checkpoint mismatch. Archive the journal and state for review, bump the epoch
+identifier, and begin a new clean cohort; automatic replay is intentionally not
+enabled yet.
+
+Changing `PAPER_INITIAL_CASH` or `PAPER_WETH_INITIAL_CASH` during an epoch will
+trip the ledger invariant on restart. Treat initial cash as part of the frozen
+epoch configuration.
+
+Gas constants are accepted as qualifying evidence only when
+`PAPER_GAS_MEASUREMENT_TX` identifies the recent on-chain V2 swap used to derive
+them and `PAPER_GAS_MEASURED_AT` is within the configured maximum age. Until
+those fields are supplied, gas remains unverified and the entry gate stays closed.
 
 ## Run
 

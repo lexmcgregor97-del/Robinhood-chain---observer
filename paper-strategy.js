@@ -21,7 +21,8 @@ export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY)
   }
   const drawdown = Math.max(
     Number(analytics?.maxRealizedDrawdownPct || 0),
-    Number(analytics?.markToMarketDrawdownPct || 0),
+    Number(analytics?.maxMarkedDrawdownPct
+      ?? analytics?.markToMarketDrawdownPct ?? 0),
   );
   if (finite(drawdown) && drawdown >= limit) {
     failures.push("paper-drawdown-circuit-breaker");

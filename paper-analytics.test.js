@@ -78,3 +78,16 @@ test("reports mark-to-market drawdown and gas separately", () => {
   assert.ok(Math.abs(result.markToMarketDrawdownPct - 5) < 1e-12);
   assert.equal(result.maxRealizedDrawdownPct, 0);
 });
+
+test("retains the running maximum marked drawdown after an open position recovers", () => {
+  const trades = [{ type: "open", pool: "a", notional: 10, timestamp: 1,
+    audit: { strategyVersion: "v" } }];
+  const deep = analyzePaperTrades({ initialCash: 100, trades, strategyVersion: "v",
+    openPositions: [{ unrealizedPnl: -5 }] });
+  const recovered = analyzePaperTrades({ initialCash: 100, trades, strategyVersion: "v",
+    openPositions: [{ unrealizedPnl: 0 }],
+    priorMaxMarkedDrawdownPct: deep.maxMarkedDrawdownPct });
+  assert.equal(deep.currentMarkedDrawdownPct, 5);
+  assert.equal(recovered.currentMarkedDrawdownPct, 0);
+  assert.equal(recovered.maxMarkedDrawdownPct, 5);
+});

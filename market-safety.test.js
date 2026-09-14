@@ -56,3 +56,15 @@ test("measures V3 state but preserves the tick-boundary guard", () => {
   assert.equal(safety.staysWithinActiveTick, false);
   assert.equal(safety.simulationScope, "same-tick-only");
 });
+
+test("identifies confirmed zero V3 active liquidity instead of treating it as unmeasured", () => {
+  const safety = evaluateV3MarketSafety({
+    version: "v3", fee: 3000, token0: "0xquote", token1: "0xtoken", discoveryBlock: 1,
+  }, {
+    latestBlock: 2, quoteTokens: ["0xquote"], sqrtPriceX96: 1n << 96n,
+    liquidity: 0n, quoteAmountIn: 1n, token0Decimals: 18, token1Decimals: 18,
+    currentTick: 0,
+  });
+  assert.equal(safety.liquidityZero, true);
+  assert.equal(safety.liquidityKnown, false);
+});

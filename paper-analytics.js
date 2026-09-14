@@ -27,6 +27,7 @@ function grouped(records, field) {
 
 export function analyzePaperTrades({
   initialCash, trades = [], strategyVersion = null, openPositions = [],
+  priorMaxMarkedDrawdownPct = 0,
 }) {
   initialCash = finite(initialCash);
   const openByPool = new Map();
@@ -50,12 +51,12 @@ export function analyzePaperTrades({
     if (strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
     openByPool.delete(trade.pool);
     const pnl = finite(trade.pnl);
-    const notional = finite(entry.notional);
+    const costBasis = finite(entry.notional) + Math.max(0, finite(entry.gasCost));
     const record = {
       pool: trade.pool,
       token: trade.token || entry.token,
       pnl,
-      returnPct: notional > 0 ? (pnl / notional) * 100 : 0,
+      returnPct: costBasis > 0 ? (pnl / costBasis) * 100 : 0,
       holdMs: Math.max(0, finite(trade.timestamp) - finite(entry.timestamp)),
       reason: trade.reason || "unknown",
       signal: entry.audit?.signal || "unknown",
@@ -81,9 +82,12 @@ export function analyzePaperTrades({
     (sum, position) => sum + finite(position?.unrealizedPnl), 0,
   );
   const currentMarkedEquity = equity + unrealizedPnl;
-  const markToMarketDrawdownPct = peakEquity > 0
+  const currentMarkedDrawdownPct = peakEquity > 0
     ? Math.max(maxDrawdownPct, ((peakEquity - currentMarkedEquity) / peakEquity) * 100)
     : maxDrawdownPct;
+  const maxMarkedDrawdownPct = Math.max(
+    Math.max(0, finite(priorMaxMarkedDrawdownPct)), currentMarkedDrawdownPct,
+  );
   return {
     closedTrades: total.trades,
     wins: total.wins,
@@ -96,7 +100,9 @@ export function analyzePaperTrades({
     averageHoldMs: closed.length
       ? closed.reduce((sum, record) => sum + record.holdMs, 0) / closed.length : 0,
     maxRealizedDrawdownPct: maxDrawdownPct,
-    markToMarketDrawdownPct,
+    currentMarkedDrawdownPct,
+    maxMarkedDrawdownPct,
+    markToMarketDrawdownPct: maxMarkedDrawdownPct,
     currentMarkedEquity,
     unrealizedPnl,
     // Closes booked at zero because the exit could not be measured (RPC or

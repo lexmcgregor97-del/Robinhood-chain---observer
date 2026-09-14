@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const ZERO_HASH = "0".repeat(64);
@@ -17,6 +17,7 @@ export class EvidenceJournal {
     this.enabled = Boolean(this.path);
     this.sequence = 0;
     this.lastHash = ZERO_HASH;
+    this.typeCounts = {};
     this.initialized = false;
     this.healthy = this.enabled;
     this.lastError = this.enabled ? null : "evidence-journal-disabled";
@@ -27,7 +28,8 @@ export class EvidenceJournal {
     if (!this.enabled) return false;
     try {
       await mkdir(dirname(this.path), { recursive: true });
-      await appendFile(this.path, "", { encoding: "utf8", mode: 0o600 });
+      const initializer = await open(this.path, "a", 0o600);
+      await initializer.close();
       let raw = "";
       try {
         raw = await readFile(this.path, "utf8");
@@ -36,6 +38,7 @@ export class EvidenceJournal {
       }
       let expectedPrevious = ZERO_HASH;
       let expectedSequence = 1;
+      const typeCounts = {};
       for (const line of raw.split("\n").filter(Boolean)) {
         const record = JSON.parse(line);
         if (record.sequence !== expectedSequence
@@ -47,9 +50,12 @@ export class EvidenceJournal {
         if (record.hash !== expectedHash) throw new Error("invalid-evidence-chain");
         expectedPrevious = record.hash;
         expectedSequence += 1;
+        const type = String(record.payload?.type || "unknown");
+        typeCounts[type] = Number(typeCounts[type] || 0) + 1;
       }
       this.sequence = expectedSequence - 1;
       this.lastHash = expectedPrevious;
+      this.typeCounts = typeCounts;
       this.initialized = true;
       this.healthy = true;
       this.lastError = null;
@@ -81,11 +87,20 @@ export class EvidenceJournal {
         return record;
       });
       try {
-        await appendFile(this.path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, {
-          encoding: "utf8", mode: 0o600,
-        });
+        const handle = await open(this.path, "a", 0o600);
+        try {
+          await handle.writeFile(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+            { encoding: "utf8" });
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         this.sequence = records.at(-1).sequence;
         this.lastHash = records.at(-1).hash;
+        for (const record of records) {
+          const type = String(record.payload?.type || "unknown");
+          this.typeCounts[type] = Number(this.typeCounts[type] || 0) + 1;
+        }
         this.healthy = true;
         this.lastError = null;
         return structuredClone(records);
@@ -110,6 +125,7 @@ export class EvidenceJournal {
       healthy: this.healthy,
       sequence: this.sequence,
       lastHash: this.lastHash,
+      typeCounts: { ...this.typeCounts },
       lastError: this.lastError,
       path: this.enabled ? "configured" : null,
     };
