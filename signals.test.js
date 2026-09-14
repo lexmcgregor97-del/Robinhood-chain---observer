@@ -31,9 +31,9 @@ test("keeps thin activity quiet", () => {
 
 test("stationary rates do not fabricate acceleration when busy", () => {
   const recentBlocks = [];
-  for (let secondsAgo = 0; secondsAgo < 360; secondsAgo += 1) {
+  for (let secondsAgo = 0.5; secondsAgo < 360; secondsAgo += 1) {
     recentBlocks.push({
-      blockNumber: 10_000 - secondsAgo,
+      blockNumber: 10_000 - Math.floor(secondsAgo),
       timestampMs: 10 * minute - secondsAgo * 1_000,
       count: 3,
     });
