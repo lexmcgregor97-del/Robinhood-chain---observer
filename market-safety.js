@@ -54,7 +54,7 @@ export function evaluateV2MarketSafety(pool, options) {
       reserveQuote: reserveQuote.toString(),
       reserveToken: reserveToken.toString(),
       quoteAmountIn: quoteAmountIn.toString(),
-      buySimulationOk: simulation.buyAmountOut > 0n && staysWithinActiveTick,
+      buySimulationOk: simulation.buyAmountOut > 0n,
       sellSimulationOk: simulation.sellAmountOut > 0n,
       priceImpactPct: simulation.buyPriceImpactBps / 100,
       roundTripLossPct: simulation.roundTripLossBps / 100,
@@ -64,7 +64,6 @@ export function evaluateV2MarketSafety(pool, options) {
       simulationError: error instanceof Error ? error.message : String(error) };
   }
 }
-
 
 export function evaluateV3MarketSafety(pool, options) {
   const quoteTokens = new Set(options.quoteTokens.map(lower));
@@ -120,7 +119,7 @@ export function evaluateV3MarketSafety(pool, options) {
       activeLiquidity: liquidity.toString(),
       currentTick: Number(options.currentTick),
       quoteAmountIn: quoteAmountIn.toString(),
-      buySimulationOk: simulation.buyAmountOut > 0n,
+      buySimulationOk: simulation.buyAmountOut > 0n && staysWithinActiveTick,
       sellSimulationOk: simulation.sellAmountOut > 0n,
       priceImpactPct: simulation.priceImpactBps / 100,
       roundTripLossPct: simulation.roundTripLossBps / 100,
