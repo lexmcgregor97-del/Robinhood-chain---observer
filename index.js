@@ -32,7 +32,8 @@ const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10"
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
-const V3_BITMAP_MAX_WORDS = Number(process.env.V3_BITMAP_MAX_WORDS || 32);
+const V3_BITMAP_WORDS_PER_LOOKUP = Number(process.env.V3_BITMAP_WORDS_PER_LOOKUP || 8);
+const V3_BITMAP_MAX_OFFSET = Number(process.env.V3_BITMAP_MAX_OFFSET || 256);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 300_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
@@ -331,15 +332,15 @@ function signals(limit = 25) {
 
 async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
   const key = `${pool.address}:${zeroForOne ? "down" : "up"}`;
+  const compressedTick = compressTick(currentTick, tickSpacing);
+  const { wordPos } = bitmapPosition(compressedTick);
   const cached = v3BoundaryCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.originWordPos === wordPos && cached.expiresAt > Date.now()) {
     const stillAhead = cached.boundaryTick === null
       || (zeroForOne ? cached.boundaryTick <= currentTick : cached.boundaryTick > currentTick);
     if (stillAhead) return cached.boundaryTick;
   }
 
-  const compressedTick = compressTick(currentTick, tickSpacing);
-  const { wordPos } = bitmapPosition(compressedTick);
   const currentBitmap = decodeUint(await rpc("eth_call", [{
     to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
   }, "latest"]), "tick-bitmap");
@@ -348,7 +349,12 @@ async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
     tickSpacing, zeroForOne,
   });
 
-  for (let offset = 1; boundaryTick === null && offset <= V3_BITMAP_MAX_WORDS; offset += 1) {
+  const firstOffset = cached?.originWordPos === wordPos && cached.boundaryTick === null
+    ? cached.nextOffset : 1;
+  const lastOffset = Math.min(
+    V3_BITMAP_MAX_OFFSET, firstOffset + V3_BITMAP_WORDS_PER_LOOKUP - 1,
+  );
+  for (let offset = firstOffset; boundaryTick === null && offset <= lastOffset; offset += 1) {
     const adjacentWordPos = wordPos + (zeroForOne ? -offset : offset);
     const adjacentBitmap = decodeUint(await rpc("eth_call", [{
       to: pool.address, data: encodeInt16Call("0x5339c296", adjacentWordPos),
@@ -358,7 +364,11 @@ async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
     });
   }
 
-  v3BoundaryCache.set(key, { boundaryTick, expiresAt: Date.now() + V3_BOUNDARY_CACHE_MS });
+  const nextOffset = lastOffset >= V3_BITMAP_MAX_OFFSET ? 1 : lastOffset + 1;
+  v3BoundaryCache.set(key, {
+    boundaryTick, originWordPos: wordPos, nextOffset,
+    expiresAt: Date.now() + V3_BOUNDARY_CACHE_MS,
+  });
   return boundaryTick;
 }
 
