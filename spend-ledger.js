@@ -25,7 +25,7 @@ export class DailySpendLedger {
     if (this.intentIds.has(id)) throw new Error("duplicate-intent");
     this.intentIds.add(id);
     this.spentWei += amount;
-    return this.snapshot();
+    return this.snapshot(now);
   }
 
   snapshot(now = Date.now()) {
