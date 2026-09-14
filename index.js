@@ -9,11 +9,14 @@ import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
+import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
 const CHAIN_ID = ROBINHOOD.chainId;
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
+const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
+const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
 const BACKFILL = 20_000;
 const CHUNK = 500;
 const MAX_POOLS = 5_000;
@@ -37,6 +40,7 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 const pools = new Map();
 const tokenCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
+const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 let pollRunning = false;
 let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
@@ -104,18 +108,20 @@ async function persistState(force = false) {
 }
 
 async function rpc(method, params) {
-  const started = Date.now();
-  const response = await fetch(RPC_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: AbortSignal.timeout(12_000),
+  return rpcScheduler.schedule(async () => {
+    const started = Date.now();
+    const response = await fetch(RPC_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    metrics.rpcLatencyMs = Date.now() - started;
+    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+    const body = await response.json();
+    if (body.error) throw new Error(`RPC: ${body.error.message}`);
+    return body.result;
   });
-  metrics.rpcLatencyMs = Date.now() - started;
-  if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
-  const body = await response.json();
-  if (body.error) throw new Error(`RPC: ${body.error.message}`);
-  return body.result;
 }
 
 const hexBlock = (n) => `0x${n.toString(16)}`;
@@ -242,9 +248,9 @@ async function poll() {
     metrics.failedPolls += 1;
     metrics.lastError = error instanceof Error ? error.message : String(error);
     const rateLimited = metrics.lastError.includes("429");
-    nextPollDelayMs = rateLimited
-      ? Math.min(Math.max(nextPollDelayMs * 2, 15_000), 120_000)
-      : Math.min(Math.max(nextPollDelayMs * 2, POLL_MS), 30_000);
+    nextPollDelayMs = nextBackoffMs({
+      currentMs: nextPollDelayMs, rateLimited, baseMs: POLL_MS,
+    });
   } finally {
     await persistState();
     pollRunning = false;
@@ -305,6 +311,7 @@ function snapshot() {
     venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
+    rpcScheduler: rpcScheduler.snapshot(),
     readiness,
     persistence,
   };
