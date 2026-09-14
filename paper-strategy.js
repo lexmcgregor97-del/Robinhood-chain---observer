@@ -44,6 +44,11 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
     failures.push("invalid-entry-policy");
   }
   const notional = failures.length ? 0 : Math.min(portfolio.cash * entryPct / 100, cap);
+  const measuredNotional = Number(candidate?.marketSafety?.plannedNotionalQuote);
+  if (!failures.length && (!finite(measuredNotional)
+      || Math.abs(measuredNotional - notional) > Math.max(1e-12, notional * 1e-9))) {
+    failures.push("fill-size-mismatch");
+  }
   let quantity = 0;
   if (!failures.length) {
     try {
