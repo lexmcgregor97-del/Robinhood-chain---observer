@@ -29,7 +29,7 @@ export function decodeSwapEvent(log, version) {
   }
   if (amount0 === 0n || amount1 === 0n) throw new Error("Swap has a zero token leg");
   return {
-    protocol: version === "v2" ? "pancakeswap-v2" : decoded.eventName === "Swap" ? "v3" : "unknown",
+    protocol: version === "v2" ? "amm-v2" : "amm-v3",
     direction: amount0 > 0n ? "token0-to-token1" : "token1-to-token0",
     amount0: amount0.toString(),
     amount1: amount1.toString(),
@@ -41,9 +41,3 @@ export function decodeSwapEvent(log, version) {
   };
 }
 
-export function normalizedExecutionPrice(decoded, decimals0, decimals1) {
-  const amount0 = Number(decoded.absoluteAmount0) / (10 ** decimals0);
-  const amount1 = Number(decoded.absoluteAmount1) / (10 ** decimals1);
-  if (!Number.isFinite(amount0) || !Number.isFinite(amount1) || amount0 <= 0 || amount1 <= 0) return null;
-  return amount1 / amount0;
-}
