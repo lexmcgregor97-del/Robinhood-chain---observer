@@ -11,9 +11,10 @@ test("fails closed when safety data is unavailable", () => {
 
 test("allows a fully measured paper candidate", () => {
   const result = evaluateRiskGate({
-    signal: { state: "breakout-watch" },
+    signal: { state: "escape-velocity" },
     marketSafety: { quoteTokenKnown: true, liquidityKnown: true, buySimulationOk: true,
-      sellSimulationOk: true, poolAgeBlocks: 50, priceImpactPct: 2, roundTripLossPct: 6 },
+      sellSimulationOk: true, priceAuditAvailable: true, spotVsLastSwapPct: 1,
+      poolAgeBlocks: 50, priceImpactPct: 2, roundTripLossPct: 6 },
   });
   assert.equal(result.eligibleForPaperEntry, true);
   assert.deepEqual(result.failures, []);
@@ -38,4 +39,20 @@ test("V3 candidates fail closed until tick boundaries are measured", () => {
   });
   assert.equal(result.eligibleForPaperEntry, false);
   assert.ok(result.failures.includes("v3-tick-boundary-unmeasured"));
+});
+
+test("blocks weak signals and dislocated spot prices", () => {
+  const base = {
+    marketSafety: {
+      quoteTokenKnown: true, liquidityKnown: true, buySimulationOk: true,
+      sellSimulationOk: true, priceAuditAvailable: true, spotVsLastSwapPct: 9,
+      poolAgeBlocks: 50, priceImpactPct: 1, roundTripLossPct: 2,
+    },
+  };
+  const result = evaluateRiskGate({
+    ...base, signal: { state: "breakout-watch" },
+  });
+  assert.equal(result.eligibleForPaperEntry, false);
+  assert.ok(result.failures.includes("signal-not-ready"));
+  assert.ok(result.failures.includes("spot-swap-price-dislocation"));
 });
