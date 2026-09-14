@@ -11,8 +11,7 @@ const intent = {
 const policy = {
   walletAddress: wallet,
   allowedChainIds: [4663],
-  allowedRouters: [router],
-  allowedSelectors: ["0x12345678"],
+  allowedCalls: { [router]: ["0x12345678"] },
   maxValueWei: "200",
   maxDailySpendWei: "500",
   maxExpiryMs: 60_000,
