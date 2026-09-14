@@ -4,7 +4,9 @@ import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
-import { DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason } from "./paper-strategy.js";
+import {
+  DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
+} from "./paper-strategy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { auditSwapPrice } from "./price-audit.js";
 import { ROBINHOOD } from "./chain-config.js";
@@ -547,6 +549,15 @@ async function runPaperCycle() {
       const policy = book.symbol === "WETH"
         ? { ...DEFAULT_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
         : DEFAULT_PAPER_STRATEGY;
+      const paperState = book.portfolio.serialize();
+      const circuitFailures = paperCircuitFailures(analyzePaperTrades({
+        initialCash: paperState.initialCash, trades: paperState.trades,
+      }), policy);
+      if (circuitFailures.length) {
+        rememberPaperDecision({ type: "reject", quote: book.symbol,
+          pool: candidate.address, reasons: circuitFailures });
+        continue;
+      }
       const plan = planPaperEntry(candidate, book.portfolio.snapshot(), policy);
       if (!plan.approved) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
