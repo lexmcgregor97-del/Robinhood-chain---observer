@@ -40,3 +40,20 @@ test("tracks peak return for trailing exits", () => {
   assert.equal(marked.peakPrice, 15);
   assert.equal(marked.peakReturnPct, 50);
 });
+
+test("preserves compact entry and exit audit metadata", () => {
+  const book = new PaperPortfolio({ initialCash: 10 });
+  book.open({
+    pool: "audit-pool", token: "TOK", price: 2, notional: 2,
+    audit: { block: 12, signal: "escape-velocity" },
+  });
+  assert.deepEqual(book.snapshot().openPositions[0].entryAudit,
+    { block: 12, signal: "escape-velocity" });
+  const trade = book.close({
+    pool: "audit-pool", price: 2.5,
+    audit: { block: 13, reason: "take-profit" },
+  });
+  assert.deepEqual(trade.audit, { block: 13, reason: "take-profit" });
+  const restored = new PaperPortfolio({ initialCash: 10, state: book.serialize() });
+  assert.deepEqual(restored.serialize(), book.serialize());
+});
