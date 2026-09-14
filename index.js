@@ -543,7 +543,17 @@ async function runPaperCycle() {
     }
 
     const measured = await candidates(10);
-    shadowEvaluator.observe(measured);
+    const rankedAddresses = new Set(measured.map((candidate) => candidate.address));
+    const pendingPools = shadowEvaluator.pendingPoolAddresses()
+      .filter((address) => !rankedAddresses.has(address))
+      .map((address) => pools.get(address))
+      .filter(Boolean);
+    const pendingMeasurements = await Promise.all(pendingPools.map(async (pool) => ({
+      address: pool.address,
+      marketSafety: await marketSafety(pool),
+    })));
+    shadowEvaluator.resolve([...measured, ...pendingMeasurements]);
+    shadowEvaluator.record(measured);
     for (const candidate of measured) {
       const book = paperBooks.get(candidate.marketSafety.quoteToken);
       if (!book) {
