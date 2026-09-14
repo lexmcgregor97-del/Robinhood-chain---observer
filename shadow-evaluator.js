@@ -1,6 +1,9 @@
 const finite = (value) => Number.isFinite(Number(value));
 const FIVE_MINUTES = 5 * 60_000;
-const RULE_VERSION = "2026-09-14-measurement-v2";
+const RULE_VERSION = "2026-09-14-measurement-v3-integrity";
+const BOOTSTRAP_SEED = 0x5eed1234;
+const BOOTSTRAP_ITERATIONS = 1000;
+const BOOTSTRAP_LOWER_QUANTILE = 0.025;
 
 export const SHADOW_RULES = Object.freeze([
   { name: "escape-activity", signal: "escape-velocity", maxDeviationPct: 5 },
@@ -56,7 +59,7 @@ function seededRandom(seed) {
   };
 }
 
-function poolBootstrapLower(samples, iterations = 1000) {
+function poolBootstrapLower(samples, iterations = BOOTSTRAP_ITERATIONS) {
   const byPool = new Map();
   for (const sample of samples) {
     const values = byPool.get(sample.pool) || [];
@@ -65,7 +68,7 @@ function poolBootstrapLower(samples, iterations = 1000) {
   }
   const pools = [...byPool.values()];
   if (pools.length < 2) return null;
-  const random = seededRandom(0x5eed1234);
+  const random = seededRandom(BOOTSTRAP_SEED);
   const means = [];
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     const values = [];
@@ -76,7 +79,13 @@ function poolBootstrapLower(samples, iterations = 1000) {
     means.push(values.reduce((sum, value) => sum + value, 0) / values.length);
   }
   means.sort((a, b) => a - b);
-  return means[Math.floor(means.length * 0.025)];
+  return means[Math.floor(means.length * BOOTSTRAP_LOWER_QUANTILE)];
+}
+
+function percentile(values, quantile) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))];
 }
 
 function summarizeSamples(samples) {
@@ -85,6 +94,9 @@ function summarizeSamples(samples) {
   const returns = resolved.map((sample) => Number(sample.netReturnPct));
   const uniquePools = new Set(resolved.map((sample) => sample.pool)).size;
   const wins = returns.filter((value) => value > 0).length;
+  const holdTimesMs = resolved.map((sample) => Math.max(
+    0, Number(sample.closedAt) - Number(sample.openedAt),
+  ));
   return {
     closedSamples: returns.length,
     uniquePools,
@@ -94,6 +106,12 @@ function summarizeSamples(samples) {
       ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0,
     medianReturnPct: median(returns),
     meanCiLowerPct: poolBootstrapLower(resolved),
+    holdTimeMs: {
+      min: holdTimesMs.length ? Math.min(...holdTimesMs) : 0,
+      median: percentile(holdTimesMs, 0.5),
+      p95: percentile(holdTimesMs, 0.95),
+      max: holdTimesMs.length ? Math.max(...holdTimesMs) : 0,
+    },
   };
 }
 
@@ -273,6 +291,12 @@ export class ShadowEvaluator {
       horizonsMs: this.horizonsMs,
       episodeGapMs: this.episodeGapMs,
       promotionPolicy: DEFAULT_PROMOTION_POLICY,
+      bootstrap: {
+        seed: BOOTSTRAP_SEED,
+        iterations: BOOTSTRAP_ITERATIONS,
+        lowerQuantile: BOOTSTRAP_LOWER_QUANTILE,
+        unit: "pool-cluster",
+      },
       currentSampleCount: currentSamples.length,
       legacySampleCount: this.samples.length - currentSamples.length,
       byRule,

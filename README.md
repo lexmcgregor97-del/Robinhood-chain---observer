@@ -4,8 +4,10 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 
 ## Safety boundary
 
-- No wallet, private key, signer, transaction construction, or write RPC exists.
-- No transaction can be signed or broadcast.
+- No signer is wired into the observer runtime and no transaction can currently
+  be signed or broadcast. A policy-restricted Turnkey API credential is held
+  only for wallet-account verification; its policy must deny signing and
+  activity creation, and Atlas fails live readiness without explicit attestation.
 - Every HTTP endpoint is GET-only.
 - Paper and shadow sampling run continuously by default. Explicit environment
   flags provide emergency brakes when either measurement path must be quarantined.
@@ -20,7 +22,7 @@ Swap activity is stored as timestamped per-block counts. Signals compare a 60-se
 
 Candidate safety is measured at the paper book's actual intended notional. V2 and bounded same-tick V3 quotes determine acquired quantity, execution price, sell proceeds, fees, and price impact. These fields are explicitly named `buyMathOk` and `sellMathOk`: they are AMM arithmetic, not a honeypot or transfer-tax simulation. Any future live-entry policy must set `requireSellProbe`; without independently supplied sell evidence, the risk gate fails closed.
 
-Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Missing prices are censored rather than recorded as losses. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
+Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Confirmed zero liquidity is recorded as a total loss; genuinely unavailable measurements are censored and reported. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
 
 ## Persistence
 
@@ -31,6 +33,11 @@ STATE_FILE=/data/observer-state.json
 ```
 
 State is written atomically. A missing file starts cleanly. Corrupt, unsupported, or unreadable state blocks paper automation and all subsequent writes while leaving scanner health visible, preserving the original file for recovery.
+
+Paper and shadow evidence is also appended to a SHA-256 chained JSONL journal
+at `/data/evidence/<epoch>.jsonl`. Journal corruption, unavailability, or an
+unconfigured journal blocks automation and live readiness. The immutable chain
+is exposed read-only at `/api/evidence`; the mutable state file remains a cache.
 
 ## Run
 
@@ -53,10 +60,11 @@ See `.env.example` for configuration. WETH (18 decimals) and USDG (6 decimals) a
 - `/api/signals`
 - `/api/candidates`
 - `/api/paper`
+- `/api/evidence`
 
 ## RPC reliability
 
-All JSON-RPC calls pass through a serialized scheduler. The default spacing is 400–500 ms, with adaptive poll backoff on HTTP 403/429 responses. The scanner polls every 30 seconds and the paper/shadow evaluator runs every 60 seconds; block-range scanning still captures every intervening event. `RPC_FALLBACK_URLS` accepts comma- or whitespace-separated backup providers; Atlas cools down and bypasses endpoints that time out or return HTTP 403/408/429/5xx. Health output reports only endpoint indexes and counts so provider API keys cannot leak.
+All JSON-RPC calls pass through a serialized scheduler. The configured poll interval is 30 seconds when caught up, while recovery work reschedules after one second; observed cadence is therefore workload-dependent and is published in health metrics. The paper/shadow evaluator is eligible to run every 10 seconds while the scanner is ready. Block-range scanning captures intervening events, and any recovery-skipped blocks are published as a data-quality signal. `RPC_FALLBACK_URLS` accepts comma- or whitespace-separated backup providers; Atlas cools down and bypasses endpoints that time out or return HTTP 401/403/408/429/5xx. Health output reports only endpoint indexes and counts so provider API keys cannot leak.
 
 ## Reuse policy
 

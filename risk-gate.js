@@ -28,6 +28,9 @@ export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
   if (!safety.liquidityKnown) failures.push("liquidity-not-measured");
   if (!safety.buyMathOk) failures.push("buy-math-failed");
   if (!safety.sellMathOk) failures.push("sell-math-failed");
+  if (policy.requireGasEstimate && safety.gasEstimateAvailable !== true) {
+    failures.push("gas-estimate-required");
+  }
   if (policy.requireSellProbe && safety.sellProbe?.passed !== true) {
     failures.push("sell-probe-required");
   }

@@ -89,3 +89,21 @@ test("can realize a confirmed worthless position at zero", () => {
   assert.equal(trade.pnl, -20);
   assert.equal(book.snapshot().equity, 80);
 });
+
+test("charges gas on both paper entry and exit", () => {
+  const book = new PaperPortfolio({ initialCash: 1 });
+  book.open({ pool: "gas", token: "token", price: 1, quantity: 0.1,
+    notional: 0.1, gasCost: 0.01 });
+  assert.ok(Math.abs(book.snapshot().cash - 0.89) < 1e-12);
+  const closed = book.close({ pool: "gas", price: 1, proceeds: 0.1, gasCost: 0.01 });
+  assert.ok(Math.abs(closed.pnl + 0.02) < 1e-12);
+  assert.ok(Math.abs(book.snapshot().cash - 0.98) < 1e-12);
+});
+
+test("restore rejects a broken paper ledger invariant", () => {
+  const book = new PaperPortfolio({ initialCash: 1 });
+  const state = book.serialize();
+  state.cash = 0.5;
+  assert.throws(() => new PaperPortfolio({ initialCash: 1, state }),
+    /paper-ledger-invariant-failed/);
+});

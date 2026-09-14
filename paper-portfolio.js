@@ -23,15 +23,17 @@ export class PaperPortfolio {
 
   open({
     pool, token, price, quantity: filledQuantity, quantityUnits = null,
-    notional, fee = 0, timestamp = Date.now(), audit = null,
+    notional, fee = 0, gasCost = 0, timestamp = Date.now(), audit = null,
   }) {
     if (this.positions.has(pool)) throw new Error("position-already-open");
     if (this.positions.size >= this.maxPositions) throw new Error("position-limit-reached");
     price = finitePositive(price, "price");
     notional = finitePositive(notional, "notional");
     fee = Number(fee);
+    gasCost = Number(gasCost);
     if (!Number.isFinite(fee) || fee < 0 || fee >= notional) throw new Error("invalid-fee");
-    if (notional > this.cash) throw new Error("insufficient-paper-cash");
+    if (!Number.isFinite(gasCost) || gasCost < 0) throw new Error("invalid-gas-cost");
+    if (notional + gasCost > this.cash) throw new Error("insufficient-paper-cash");
     const quantity = filledQuantity === undefined
       ? (notional - fee) / price
       : finitePositive(filledQuantity, "quantity");
@@ -42,11 +44,13 @@ export class PaperPortfolio {
           || BigInt(quantityUnits) <= 0n) throw new Error("invalid-quantity-units");
     }
     const position = { pool, token, quantity, quantityUnits, entryPrice: price, markPrice: price,
-      costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price,
+      costBasis: notional + gasCost, entryNotional: notional, entryFee: fee,
+      entryGasCost: gasCost, openedAt: timestamp, peakPrice: price,
       entryAudit: audit ? structuredClone(audit) : null };
-    this.cash -= notional;
+    this.cash -= notional + gasCost;
     this.positions.set(pool, position);
-    this.trades.push({ type: "open", pool, token, price, quantity, quantityUnits, notional, fee, timestamp,
+    this.trades.push({ type: "open", pool, token, price, quantity, quantityUnits, notional,
+      gasCost, fee, timestamp,
       audit: audit ? structuredClone(audit) : null });
     return { ...position };
   }
@@ -61,7 +65,7 @@ export class PaperPortfolio {
 
   close({
     pool, price, proceeds: filledProceeds,
-    fee = 0, timestamp = Date.now(), reason = "manual", audit = null,
+    fee = 0, gasCost = 0, timestamp = Date.now(), reason = "manual", audit = null,
     measurementFailure = false,
   }) {
     const position = this.positions.get(pool);
@@ -70,16 +74,19 @@ export class PaperPortfolio {
       ? finitePositive(price, "price")
       : finiteNonNegative(price, "price");
     fee = Number(fee);
+    gasCost = Number(gasCost);
     if (!Number.isFinite(fee) || fee < 0) throw new Error("invalid-fee");
-    const proceeds = filledProceeds === undefined
+    if (!Number.isFinite(gasCost) || gasCost < 0) throw new Error("invalid-gas-cost");
+    const grossProceeds = filledProceeds === undefined
       ? position.quantity * price - fee
       : finiteNonNegative(filledProceeds, "proceeds");
+    const proceeds = Math.max(0, grossProceeds - gasCost);
     const pnl = proceeds - position.costBasis;
     this.cash += proceeds;
     this.realizedPnl += pnl;
     this.positions.delete(pool);
     const trade = { type: "close", pool, token: position.token, price,
-      quantity: position.quantity, proceeds, fee, pnl, reason, timestamp,
+      quantity: position.quantity, grossProceeds, proceeds, gasCost, fee, pnl, reason, timestamp,
       measurementFailure: measurementFailure === true,
       audit: audit ? structuredClone(audit) : null };
     this.trades.push(trade);
@@ -87,11 +94,15 @@ export class PaperPortfolio {
   }
 
   positionSnapshot(position) {
-    const marketValue = position.quantity * position.markPrice;
+    const expectedExitGasCost = Number(position.entryGasCost || 0);
+    const marketValue = Math.max(0,
+      position.quantity * position.markPrice - expectedExitGasCost);
     const returnPct = ((marketValue / position.costBasis) - 1) * 100;
-    const peakMarketValue = position.quantity * (position.peakPrice || position.markPrice);
+    const peakMarketValue = Math.max(0,
+      position.quantity * (position.peakPrice || position.markPrice) - expectedExitGasCost);
     const peakReturnPct = ((peakMarketValue / position.costBasis) - 1) * 100;
-    return { ...position, marketValue, unrealizedPnl: marketValue - position.costBasis,
+    return { ...position, marketValue, expectedExitGasCost,
+      unrealizedPnl: marketValue - position.costBasis,
       returnPct, peakReturnPct };
   }
 
@@ -118,10 +129,20 @@ export class PaperPortfolio {
       quantityUnits: typeof position.quantityUnits === "string" && /^[0-9]+$/.test(position.quantityUnits)
         ? position.quantityUnits : null,
       entryPrice: Number(position.entryPrice), markPrice: Number(position.markPrice),
-      costBasis: Number(position.costBasis), entryFee: Number(position.entryFee), openedAt: position.openedAt,
+      costBasis: Number(position.costBasis), entryNotional: Number(position.entryNotional
+        ?? (Number(position.costBasis) - Number(position.entryGasCost || 0))),
+      entryFee: Number(position.entryFee), entryGasCost: Number(position.entryGasCost || 0),
+      openedAt: position.openedAt,
       peakPrice: Number(position.peakPrice || position.markPrice),
       entryAudit: position.entryAudit ? structuredClone(position.entryAudit) : null,
     }]));
-    if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [p.quantity, p.entryPrice, p.markPrice, p.costBasis])].every(Number.isFinite)) throw new Error("invalid-paper-state");
+    if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [
+      p.quantity, p.entryPrice, p.markPrice, p.costBasis, p.entryNotional, p.entryGasCost,
+    ])].every(Number.isFinite)) throw new Error("invalid-paper-state");
+    const accounted = this.cash + [...this.positions.values()]
+      .reduce((sum, position) => sum + position.costBasis, 0);
+    const expected = this.initialCash + this.realizedPnl;
+    const tolerance = Math.max(1e-12, Math.abs(expected) * 1e-9);
+    if (Math.abs(accounted - expected) > tolerance) throw new Error("paper-ledger-invariant-failed");
   }
 }

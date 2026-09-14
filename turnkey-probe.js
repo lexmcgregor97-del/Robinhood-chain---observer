@@ -8,12 +8,15 @@ export function turnkeyConfigFromEnv(env = process.env) {
     walletAddress: String(env.TURNKEY_WALLET_ADDRESS || "").toLowerCase(),
     apiPublicKey: String(env.TURNKEY_API_PUBLIC_KEY || ""),
     apiPrivateKey: String(env.TURNKEY_API_PRIVATE_KEY || ""),
+    policyId: String(env.TURNKEY_POLICY_ID || ""),
   };
   const missing = Object.entries(config).filter(([, value]) => !value).map(([key]) => key);
+  const readOnlyAttested = String(env.TURNKEY_READ_ONLY_ATTESTED || "").toLowerCase() === "true";
+  if (!readOnlyAttested) missing.push("readOnlyAttested");
   return {
-    config, configured: missing.length === 0, missing,
+    config, configured: missing.length === 0, missing, readOnlyAttested,
     identifiersValid: UUID.test(config.organizationId) && UUID.test(config.walletId)
-      && ADDRESS.test(config.walletAddress),
+      && UUID.test(config.policyId) && ADDRESS.test(config.walletAddress),
   };
 }
 

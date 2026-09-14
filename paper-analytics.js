@@ -25,7 +25,9 @@ function grouped(records, field) {
   return Object.fromEntries([...buckets].map(([key, values]) => [key, summarize(values)]));
 }
 
-export function analyzePaperTrades({ initialCash, trades = [], strategyVersion = null }) {
+export function analyzePaperTrades({
+  initialCash, trades = [], strategyVersion = null, openPositions = [],
+}) {
   initialCash = finite(initialCash);
   const openByPool = new Map();
   const closed = [];
@@ -60,6 +62,7 @@ export function analyzePaperTrades({ initialCash, trades = [], strategyVersion =
       version: entry.audit?.version || "unknown",
       venue: entry.audit?.venue || "unknown",
       strategyVersion: entry.audit?.strategyVersion || "legacy",
+      gasCost: finite(entry.gasCost) + finite(trade.gasCost),
       measurementFailure: trade.measurementFailure === true
         || trade.reason === "price-unavailable-timeout",
     };
@@ -74,6 +77,13 @@ export function analyzePaperTrades({ initialCash, trades = [], strategyVersion =
   const wins = closed.filter((record) => record.pnl > 0);
   const losses = closed.filter((record) => record.pnl < 0);
   const total = summarize(closed);
+  const unrealizedPnl = (openPositions || []).reduce(
+    (sum, position) => sum + finite(position?.unrealizedPnl), 0,
+  );
+  const currentMarkedEquity = equity + unrealizedPnl;
+  const markToMarketDrawdownPct = peakEquity > 0
+    ? Math.max(maxDrawdownPct, ((peakEquity - currentMarkedEquity) / peakEquity) * 100)
+    : maxDrawdownPct;
   return {
     closedTrades: total.trades,
     wins: total.wins,
@@ -86,12 +96,17 @@ export function analyzePaperTrades({ initialCash, trades = [], strategyVersion =
     averageHoldMs: closed.length
       ? closed.reduce((sum, record) => sum + record.holdMs, 0) / closed.length : 0,
     maxRealizedDrawdownPct: maxDrawdownPct,
+    markToMarketDrawdownPct,
+    currentMarkedEquity,
+    unrealizedPnl,
     // Closes booked at zero because the exit could not be measured (RPC or
     // conversion failure), not because the market went to zero. They stay in
     // the P&L (conservative) but any non-zero count invalidates the cohort.
     measurementFailures: closed.filter((record) => record.measurementFailure).length,
     uniquePools: new Set(closed.map((record) => record.pool)).size,
     feesPaid,
+    estimatedLpFees: feesPaid,
+    gasPaid: closed.reduce((sum, record) => sum + record.gasCost, 0),
     openTrades: openByPool.size,
     bySignal: grouped(closed, "signal"),
     byVersion: grouped(closed, "version"),

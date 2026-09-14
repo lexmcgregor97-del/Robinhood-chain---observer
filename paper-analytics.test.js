@@ -63,3 +63,18 @@ test("ignores unmatched closes and counts open trades", () => {
   assert.equal(result.openTrades, 1);
   assert.equal(result.feesPaid, 1.01);
 });
+
+test("reports mark-to-market drawdown and gas separately", () => {
+  const result = analyzePaperTrades({
+    initialCash: 1,
+    trades: [
+      { type: "open", pool: "a", notional: 0.1, gasCost: 0.01,
+        timestamp: 1, audit: { strategyVersion: "v" } },
+    ],
+    openPositions: [{ pool: "a", unrealizedPnl: -0.05 }],
+    strategyVersion: "v",
+  });
+  assert.equal(result.openTrades, 1);
+  assert.ok(Math.abs(result.markToMarketDrawdownPct - 5) < 1e-12);
+  assert.equal(result.maxRealizedDrawdownPct, 0);
+});

@@ -19,7 +19,10 @@ export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY)
     failures.push("invalid-drawdown-policy");
     return failures;
   }
-  const drawdown = Number(analytics?.maxRealizedDrawdownPct);
+  const drawdown = Math.max(
+    Number(analytics?.maxRealizedDrawdownPct || 0),
+    Number(analytics?.markToMarketDrawdownPct || 0),
+  );
   if (finite(drawdown) && drawdown >= limit) {
     failures.push("paper-drawdown-circuit-breaker");
   }
@@ -29,6 +32,7 @@ export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY)
 export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRATEGY, now = Date.now()) {
   const failures = [];
   const midPrice = Number(candidate?.marketSafety?.tokenPriceQuote);
+  const gasCost = Number(candidate?.marketSafety?.gasCostQuotePerSide || 0);
   const baseTokenDecimals = Number(candidate?.marketSafety?.baseTokenDecimals);
   const buyAmountOut = candidate?.marketSafety?.buyAmountOut;
   if (!candidate?.riskGate?.eligibleForPaperEntry) failures.push("risk-gate-rejected");
@@ -38,6 +42,7 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
     failures.push("executable-fill-unavailable");
   }
   if (!finite(portfolio?.cash) || portfolio.cash <= 0) failures.push("no-paper-cash");
+  if (!finite(gasCost) || gasCost < 0) failures.push("invalid-gas-cost");
   if ((portfolio?.openPositions || []).some((p) => p.pool === candidate?.address)) failures.push("position-already-open");
   const cooldownMs = Number(policy.reentryCooldownMs);
   if (finite(cooldownMs) && cooldownMs > 0) {
@@ -57,6 +62,7 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
     failures.push("invalid-entry-policy");
   }
   const notional = failures.length ? 0 : Math.min(portfolio.cash * entryPct / 100, cap);
+  if (!failures.length && notional + gasCost > portfolio.cash) failures.push("insufficient-paper-cash");
   const measuredNotional = Number(candidate?.marketSafety?.plannedNotionalQuote);
   if (!failures.length && (!finite(measuredNotional)
       || Math.abs(measuredNotional - notional) > Math.max(1e-12, notional * 1e-9))) {
@@ -83,6 +89,7 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
       quantity,
       quantityUnits: String(BigInt(buyAmountOut)),
       notional,
+      gasCost,
     },
   };
 }

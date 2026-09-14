@@ -100,3 +100,12 @@ test("live policy fails closed without independent sell evidence", () => {
     ...candidate, marketSafety: { ...measuredSafety, sellProbe: { passed: true } },
   }, policy).eligibleForPaperEntry, true);
 });
+
+test("requires a gas estimate when the qualifying policy requests one", () => {
+  const candidate = { signal: { state: "escape-velocity" },
+    marketSafety: { ...measuredSafety, gasEstimateAvailable: false } };
+  const result = evaluateRiskGate(candidate, {
+    ...DEFAULT_PAPER_POLICY, requireGasEstimate: true,
+  });
+  assert.ok(result.failures.includes("gas-estimate-required"));
+});
