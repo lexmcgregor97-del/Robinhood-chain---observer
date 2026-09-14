@@ -53,7 +53,7 @@ export class RpcTransport {
           signal: AbortSignal.timeout(this.timeoutMs),
         });
         if (!response.ok) {
-          const error = new Error(`RPC HTTP ${response.status}`);
+          const error = new Error(`RPC HTTP ${response.status} (${method})`);
           error.retryable = retryableStatus(response.status);
           throw error;
         }

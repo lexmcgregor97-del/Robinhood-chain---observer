@@ -24,6 +24,7 @@ import { createTokenMetadataLoader } from "./token-metadata.js";
 import { LogDeduplicator } from "./log-deduplicator.js";
 import { PositionLiveness } from "./position-liveness.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
+import { fetchLogsAdaptive } from "./rpc-log-query.js";
 import { envFlag } from "./runtime-flags.js";
 import { assessLiveReadiness } from "./live-readiness.js";
 import { probeTurnkeyWallet, turnkeyConfigFromEnv } from "./turnkey-probe.js";
@@ -224,9 +225,7 @@ const dataWord = (data, index) => String(data).slice(2 + index * 64, 66 + index 
 const wordAddress = (data, index) => `0x${dataWord(data, index).slice(-40)}`.toLowerCase();
 
 async function getLogs(from, to, address, topics) {
-  const result = await rpc("eth_getLogs", [{
-    fromBlock: hexBlock(from), toBlock: hexBlock(to), address, topics,
-  }]);
+  const result = await fetchLogsAdaptive({ request: rpc, from, to, address, topics });
   return (result || []).map((log) => ({ ...log, blockNumber: intHex(log.blockNumber) }));
 }
 
