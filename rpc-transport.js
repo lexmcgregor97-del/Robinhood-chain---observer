@@ -3,7 +3,7 @@ function normalizeUrls(urls) {
 }
 
 function retryableStatus(status) {
-  return status === 403 || status === 408 || status === 429 || status >= 500;
+  return status === 401 || status === 403 || status === 408 || status === 429 || status >= 500;
 }
 
 export function rpcUrlsFromEnv({ primary, fallbacks = "", defaultUrl }) {

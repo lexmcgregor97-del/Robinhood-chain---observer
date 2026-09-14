@@ -32,6 +32,23 @@ test("fails over on provider HTTP failure without exposing endpoint URLs", async
   });
 });
 
+test("fails over when the primary provider rejects its credential", async () => {
+  const calls = [];
+  const transport = new RpcTransport({
+    urls: ["https://primary/key", "https://backup"], cooldownMs: 60_000,
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return url.includes("primary") ? response(401) : response(200);
+    },
+  });
+  assert.equal(await transport.request("eth_blockNumber", []), "0x1237");
+  assert.deepEqual(calls, ["https://primary/key", "https://backup"]);
+  assert.deepEqual(transport.snapshot(), {
+    endpointCount: 2, activeEndpoint: 2, requestCount: 1,
+    failureCount: 1, failoverCount: 1, coolingDown: 1,
+  });
+});
+
 test("sticks to the healthy fallback while the failed endpoint cools down", async () => {
   const calls = [];
   const transport = new RpcTransport({
