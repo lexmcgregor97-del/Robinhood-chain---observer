@@ -1,8 +1,19 @@
 const blockHex = (value) => `0x${Number(value).toString(16)}`;
 
 const isProviderLimit = (error) => /RPC HTTP 400(?:\s|\(|$)/.test(String(error?.message || error));
+const MAX_FREE_TIER_BLOCK_RANGE = 10;
 
 export async function fetchLogsAdaptive({ request, from, to, address, topics }) {
+  if (to - from + 1 > MAX_FREE_TIER_BLOCK_RANGE) {
+    const logs = [];
+    for (let chunkFrom = from; chunkFrom <= to; chunkFrom += MAX_FREE_TIER_BLOCK_RANGE) {
+      const chunkTo = Math.min(to, chunkFrom + MAX_FREE_TIER_BLOCK_RANGE - 1);
+      logs.push(...await fetchLogsAdaptive({
+        request, from: chunkFrom, to: chunkTo, address, topics,
+      }));
+    }
+    return logs;
+  }
   try {
     const requestAddress = Array.isArray(address) && address.length === 1 ? address[0] : address;
     return await request("eth_getLogs", [{

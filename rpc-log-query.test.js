@@ -42,6 +42,24 @@ test("normalizes a singleton address batch to a scalar filter", async () => {
   assert.equal(observedAddress, "0x1");
 });
 
+test("proactively chunks log queries to the Alchemy free-tier block limit", async () => {
+  const ranges = [];
+  const request = async (_method, [filter]) => {
+    const from = Number.parseInt(filter.fromBlock, 16);
+    const to = Number.parseInt(filter.toBlock, 16);
+    ranges.push([from, to]);
+    assert.ok(to - from + 1 <= 10);
+    return [{ blockNumber: filter.fromBlock }];
+  };
+
+  const logs = await fetchLogsAdaptive({
+    request, from: 100, to: 124, address: ["0x1", "0x2"], topics: [],
+  });
+
+  assert.deepEqual(ranges, [[100, 109], [110, 119], [120, 124]]);
+  assert.equal(logs.length, 3);
+});
+
 test("fails closed when a single-block single-address query is rejected", async () => {
   const request = async () => {
     throw new Error("RPC endpoints unavailable: RPC HTTP 400 (eth_getLogs)");
