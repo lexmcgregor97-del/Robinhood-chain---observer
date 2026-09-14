@@ -18,8 +18,8 @@ test("measures a quote-token V2 round trip", () => {
   });
   assert.equal(safety.quoteTokenKnown, true);
   assert.equal(safety.liquidityKnown, true);
-  assert.equal(safety.buySimulationOk, true);
-  assert.equal(safety.sellSimulationOk, true);
+  assert.equal(safety.buyMathOk, true);
+  assert.equal(safety.sellMathOk, true);
   assert.equal(safety.poolAgeBlocks, 100);
   assert.equal(safety.tokenPriceQuote, 0.5);
   assert.equal(safety.baseToken, "0xtoken");
@@ -37,7 +37,7 @@ test("fails closed when neither side is an approved quote token", () => {
   });
   assert.equal(safety.quoteTokenKnown, false);
   assert.equal(safety.liquidityKnown, false);
-  assert.equal(safety.buySimulationOk, false);
+  assert.equal(safety.buyMathOk, false);
 });
 
 
@@ -51,7 +51,7 @@ test("measures V3 state but preserves the tick-boundary guard", () => {
   });
   assert.equal(safety.liquidityKnown, true);
   assert.equal(safety.tokenPriceQuote, 1);
-  assert.equal(safety.buySimulationOk, false);
+  assert.equal(safety.buyMathOk, false);
   assert.equal(safety.tickBoundaryKnown, false);
   assert.equal(safety.staysWithinActiveTick, false);
   assert.equal(safety.simulationScope, "same-tick-only");
