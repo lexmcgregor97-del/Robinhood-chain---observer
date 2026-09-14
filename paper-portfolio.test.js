@@ -57,3 +57,14 @@ test("preserves compact entry and exit audit metadata", () => {
   const restored = new PaperPortfolio({ initialCash: 10, state: book.serialize() });
   assert.deepEqual(restored.serialize(), book.serialize());
 });
+
+test("uses an explicit simulated fill quantity without subtracting the fee twice", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  const position = book.open({
+    pool: "simulated", token: "TOK", price: 2.5, quantity: 8,
+    notional: 20, fee: 0.05,
+  });
+  assert.equal(position.quantity, 8);
+  assert.equal(position.costBasis, 20);
+  assert.equal(book.snapshot().cash, 80);
+});
