@@ -91,3 +91,10 @@ Set `STATE_FILE=/data/observer-state.json` after mounting a Railway volume at `/
 The service atomically checkpoints its cursor, bounded pool history, paper portfolio,
 trades, and automation state every 30 seconds and again during graceful shutdown.
 Without a mounted volume, persistence remains disabled and the scanner continues safely in memory.
+
+## RPC reliability
+
+All JSON-RPC calls pass through a shared serialized scheduler. The default spacing is
+250–350 ms, with a shared 15-second cooldown on HTTP 429 responses and adaptive poll
+backoff. Override with `RPC_MIN_INTERVAL_MS` and `RPC_JITTER_MS` only after measuring
+the configured provider's published limits.
