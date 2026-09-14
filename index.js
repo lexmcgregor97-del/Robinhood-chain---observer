@@ -8,7 +8,7 @@ import { DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason } from "./paper
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
-import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord, findInitializedTickInWholeWord } from "./tick-boundary.js";
+import { bitmapPosition, compressTick, encodeInt16Call, findInitializedTickInWord } from "./tick-boundary.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
@@ -34,10 +34,7 @@ const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10"
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
-const V3_BITMAP_WORDS_PER_LOOKUP = Number(process.env.V3_BITMAP_WORDS_PER_LOOKUP || 8);
-const V3_BITMAP_MAX_OFFSET = Number(process.env.V3_BITMAP_MAX_OFFSET || 256);
-const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 300_000);
-const V3_BOUNDARY_MISS_CACHE_MS = Number(process.env.V3_BOUNDARY_MISS_CACHE_MS || 30_000);
+const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
@@ -340,12 +337,9 @@ function snapshot() {
     rpcLatencyMs: metrics.rpcLatencyMs,
     rpcScheduler: rpcScheduler.snapshot(),
     v3BoundarySearch: {
-      tracked: v3BoundaryCache.size,
-      resolved: [...v3BoundaryCache.values()].filter((entry) => entry.boundaryTick !== null).length,
-      unresolved: [...v3BoundaryCache.values()].filter((entry) => entry.boundaryTick === null).length,
-      furthestOffset: Math.max(0, ...[...v3BoundaryCache.values()]
-        .filter((entry) => entry.boundaryTick === null)
-        .map((entry) => entry.nextOffset - 1)),
+      cachedWords: v3BoundaryCache.size,
+      unresolved: 0,
+      method: "current-word-conservative-edge",
     },
     readiness,
     persistence,
@@ -360,44 +354,25 @@ function signals(limit = 25) {
 }
 
 async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
-  const key = `${pool.address}:${zeroForOne ? "down" : "up"}`;
   const compressedTick = compressTick(currentTick, tickSpacing);
   const { wordPos } = bitmapPosition(compressedTick);
+  const key = `${pool.address}:${zeroForOne ? "down" : "up"}:${wordPos}`;
   const cached = v3BoundaryCache.get(key);
-  if (cached && cached.originWordPos === wordPos && cached.expiresAt > Date.now()) {
-    const stillAhead = cached.boundaryTick === null
-      || (zeroForOne ? cached.boundaryTick <= currentTick : cached.boundaryTick > currentTick);
-    if (stillAhead) return cached.boundaryTick;
-  }
+  if (cached && cached.expiresAt > Date.now()) return cached.boundaryTick;
 
   const currentBitmap = decodeUint(await rpc("eth_call", [{
     to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
   }, "latest"]), "tick-bitmap");
-  let boundaryTick = findInitializedTickInWord({
+  const initializedTick = findInitializedTickInWord({
     bitmap: currentBitmap, wordPos, currentCompressedTick: compressedTick,
     tickSpacing, zeroForOne,
   });
-
-  const firstOffset = cached?.originWordPos === wordPos && cached.boundaryTick === null
-    ? cached.nextOffset : 1;
-  const lastOffset = Math.min(
-    V3_BITMAP_MAX_OFFSET, firstOffset + V3_BITMAP_WORDS_PER_LOOKUP - 1,
-  );
-  for (let offset = firstOffset; boundaryTick === null && offset <= lastOffset; offset += 1) {
-    const adjacentWordPos = wordPos + (zeroForOne ? -offset : offset);
-    const adjacentBitmap = decodeUint(await rpc("eth_call", [{
-      to: pool.address, data: encodeInt16Call("0x5339c296", adjacentWordPos),
-    }, "latest"]), "tick-bitmap");
-    boundaryTick = findInitializedTickInWholeWord({
-      bitmap: adjacentBitmap, wordPos: adjacentWordPos, tickSpacing, zeroForOne,
-    });
-  }
-
-  const nextOffset = lastOffset >= V3_BITMAP_MAX_OFFSET ? 1 : lastOffset + 1;
+  const conservativeWordEdge = (
+    zeroForOne ? wordPos * 256 : (wordPos + 1) * 256
+  ) * tickSpacing;
+  const boundaryTick = initializedTick ?? conservativeWordEdge;
   v3BoundaryCache.set(key, {
-    boundaryTick, originWordPos: wordPos, nextOffset,
-    expiresAt: Date.now() + (boundaryTick === null
-      ? V3_BOUNDARY_MISS_CACHE_MS : V3_BOUNDARY_CACHE_MS),
+    boundaryTick, expiresAt: Date.now() + V3_BOUNDARY_CACHE_MS,
   });
   return boundaryTick;
 }
