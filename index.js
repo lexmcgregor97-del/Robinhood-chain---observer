@@ -8,6 +8,7 @@ import {
   DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
+import { ShadowEvaluator } from "./shadow-evaluator.js";
 import { auditSwapPrice } from "./price-audit.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
@@ -65,6 +66,7 @@ let lastPaperCycleAt = 0;
 let candidateCache = null;
 let candidatePromise = null;
 const paperAutomation = { cycles: 0, entries: 0, exits: 0, lastError: null, recentDecisions: [] };
+const shadowEvaluator = new ShadowEvaluator();
 let executionConfig;
 try { executionConfig = loadExecutionConfig(); }
 catch (error) {
@@ -92,6 +94,7 @@ function persistedState() {
       quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
     ])),
     paperAutomation,
+    shadow: shadowEvaluator.serialize(),
   };
 }
 
@@ -112,6 +115,7 @@ async function restoreState() {
       }
     } else if (state.paper) paperPortfolio.restore(state.paper);
     if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
+    if (state.shadow) shadowEvaluator.restore(state.shadow);
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
@@ -539,6 +543,7 @@ async function runPaperCycle() {
     }
 
     const measured = await candidates(10);
+    shadowEvaluator.observe(measured);
     for (const candidate of measured) {
       const book = paperBooks.get(candidate.marketSafety.quoteToken);
       if (!book) {
@@ -599,6 +604,7 @@ function paperStatus() {
     ])),
     automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
       lastCycleAt: lastPaperCycleAt || null },
+    shadow: shadowEvaluator.snapshot(),
   };
 }
 
