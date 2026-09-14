@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decodeV2Reserves, evaluateV2MarketSafety } from "./market-safety.js";
+import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 
 const word = (n) => BigInt(n).toString(16).padStart(64, "0");
 
@@ -36,4 +36,20 @@ test("fails closed when neither side is an approved quote token", () => {
   assert.equal(safety.quoteTokenKnown, false);
   assert.equal(safety.liquidityKnown, false);
   assert.equal(safety.buySimulationOk, false);
+});
+
+
+test("measures V3 state but preserves the tick-boundary guard", () => {
+  const safety = evaluateV3MarketSafety({
+    version: "v3", fee: 3000, token0: "0xquote", token1: "0xtoken", discoveryBlock: 100,
+  }, {
+    latestBlock: 200, quoteTokens: ["0xquote"], sqrtPriceX96: 1n << 96n,
+    liquidity: 1_000_000_000_000_000_000_000n, quoteAmountIn: 1_000_000_000_000_000n,
+    token0Decimals: 18, token1Decimals: 18, currentTick: 0,
+  });
+  assert.equal(safety.liquidityKnown, true);
+  assert.equal(safety.tokenPriceQuote, 1);
+  assert.equal(safety.buySimulationOk, true);
+  assert.equal(safety.tickBoundaryKnown, false);
+  assert.equal(safety.simulationScope, "same-tick-only");
 });
