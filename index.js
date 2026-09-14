@@ -16,7 +16,7 @@ import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
 const CHAIN_ID = ROBINHOOD.chainId;
-const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
+const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 10_000);
 const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 100);
 const BACKFILL = 20_000;
@@ -410,13 +410,19 @@ async function marketSafety(pool) {
         quoteAmountIn,
       });
     }
-    const [slot0Result, liquidityResult, tickSpacingResult] = await Promise.all([
+    const [slot0Result, liquidityResult] = await Promise.all([
       rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
       rpc("eth_call", [{ to: pool.address, data: "0x1a686502" }, "latest"]),
-      rpc("eth_call", [{ to: pool.address, data: "0xd0c93a7c" }, "latest"]),
     ]);
     const slot0 = decodeV3Slot0(slot0Result);
-    const tickSpacing = Number(decodeUint(tickSpacingResult, "tick-spacing"));
+    let tickSpacing = Number(pool.tickSpacing);
+    if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) {
+      const tickSpacingResult = await rpc("eth_call", [{
+        to: pool.address, data: "0xd0c93a7c",
+      }, "latest"]);
+      tickSpacing = Number(decodeUint(tickSpacingResult, "tick-spacing"));
+      pool.tickSpacing = tickSpacing;
+    }
     const boundaryTick = await resolveV3Boundary(
       pool, slot0.tick, tickSpacing, quoteIsToken0,
     );
