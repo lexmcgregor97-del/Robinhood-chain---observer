@@ -88,7 +88,7 @@ export class ShadowEvaluator {
 
   pendingPoolAddresses() {
     return [...new Set(this.samples
-      .filter((sample) => !sample.closedAt)
+      .filter((sample) => !sample.closedAt && !sample.resolutionFailedAt)
       .map((sample) => sample.pool))];
   }
 
@@ -97,9 +97,18 @@ export class ShadowEvaluator {
       .filter((candidate) => finite(candidate?.marketSafety?.tokenPriceQuote))
       .map((candidate) => [candidate.address, Number(candidate.marketSafety.tokenPriceQuote)]));
     for (const sample of this.samples) {
-      if (sample.closedAt || now - sample.openedAt < this.horizonMs) continue;
+      if (sample.closedAt || sample.resolutionFailedAt
+          || now - sample.openedAt < this.horizonMs) continue;
       const exitPrice = prices.get(sample.pool);
-      if (!finite(exitPrice) || exitPrice <= 0) continue;
+      if (!finite(exitPrice) || exitPrice <= 0) {
+        if (now - sample.openedAt >= this.horizonMs * 3) {
+          sample.resolutionFailedAt = now;
+          sample.grossReturnPct = -100;
+          sample.netReturnPct = -100;
+          sample.returnPct = -100;
+        }
+        continue;
+      }
       sample.closedAt = now;
       sample.exitPrice = exitPrice;
       sample.grossReturnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
@@ -136,10 +145,13 @@ export class ShadowEvaluator {
   snapshot() {
     const byRule = {};
     for (const rule of this.rules) {
-      const closed = this.samples.filter((sample) => sample.rule === rule.name && sample.closedAt);
+      const closed = this.samples.filter((sample) => sample.rule === rule.name
+        && (sample.closedAt || sample.resolutionFailedAt));
       const summary = summarizeSamples(closed);
       byRule[rule.name] = {
-        openSamples: this.samples.filter((sample) => sample.rule === rule.name && !sample.closedAt).length,
+        openSamples: this.samples.filter((sample) => sample.rule === rule.name
+          && !sample.closedAt && !sample.resolutionFailedAt).length,
+        resolutionFailures: closed.filter((sample) => sample.resolutionFailedAt).length,
         ...summary,
         promotion: evaluateShadowPromotion(summary),
       };

@@ -94,3 +94,15 @@ test("promotion metrics use net return after simulated execution cost", () => {
   assert.ok(Math.abs(sample.netReturnPct - 3) < 1e-9);
   assert.ok(Math.abs(evaluator.snapshot().byRule["escape-strict"].averageReturnPct - 3) < 1e-9);
 });
+
+test("unpriceable samples become conservative losses after three horizons", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  evaluator.record([candidate()], 1000);
+  evaluator.resolve([], 1299);
+  assert.equal(evaluator.pendingPoolAddresses().length, 1);
+  evaluator.resolve([], 1300);
+  const summary = evaluator.snapshot().byRule["escape-strict"];
+  assert.equal(summary.resolutionFailures, 1);
+  assert.equal(summary.averageReturnPct, -100);
+  assert.deepEqual(evaluator.pendingPoolAddresses(), []);
+});
