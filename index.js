@@ -6,6 +6,7 @@ import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import { DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
+import { auditSwapPrice } from "./price-audit.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
@@ -404,12 +405,16 @@ async function marketSafety(pool) {
     if (pool.version === "v2") {
       const reserves = decodeV2Reserves(await rpc("eth_call",
         [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
-      return evaluateV2MarketSafety(pool, {
+      const safety = evaluateV2MarketSafety(pool, {
         latestBlock: metrics.latestBlock || metrics.cursor,
         quoteTokens, reserve0: reserves.reserve0, reserve1: reserves.reserve1,
         token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
         quoteAmountIn,
       });
+      return { ...safety, ...auditSwapPrice({
+        spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
+        token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
+      }) };
     }
     const [slot0Result, liquidityResult] = await Promise.all([
       rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
@@ -427,13 +432,17 @@ async function marketSafety(pool) {
     const boundaryTick = await resolveV3Boundary(
       pool, slot0.tick, tickSpacing, quoteIsToken0,
     );
-    return evaluateV3MarketSafety(pool, {
+    const safety = evaluateV3MarketSafety(pool, {
       latestBlock: metrics.latestBlock || metrics.cursor,
       quoteTokens, sqrtPriceX96: slot0.sqrtPriceX96, currentTick: slot0.tick,
       liquidity: decodeUint(liquidityResult, "liquidity"), boundaryTick,
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       quoteAmountIn,
     });
+    return { ...safety, ...auditSwapPrice({
+      spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
+      token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
+    }) };
   } catch (error) {
     return { ...base, measurementError: error instanceof Error ? error.message : String(error) };
   }
@@ -483,6 +492,8 @@ function paperEntryAudit(candidate, feeRate) {
     acceleration: candidate.signal?.acceleration,
     priceImpactPct: candidate.marketSafety?.priceImpactPct,
     roundTripLossPct: candidate.marketSafety?.roundTripLossPct,
+    lastSwapPriceQuote: candidate.marketSafety?.lastSwapPriceQuote,
+    spotVsLastSwapPct: candidate.marketSafety?.spotVsLastSwapPct,
     currentTick: candidate.marketSafety?.currentTick,
     boundaryTick: candidate.marketSafety?.boundaryTick,
     feeRate,
