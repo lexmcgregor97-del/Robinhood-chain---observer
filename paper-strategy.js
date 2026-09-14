@@ -7,6 +7,7 @@ export const DEFAULT_PAPER_STRATEGY = Object.freeze({
   trailingDrawdownPct: 10,
   maxHoldMs: 6 * 60 * 60 * 1000,
   maxRealizedDrawdownPct: 20,
+  reentryCooldownMs: 5 * 60 * 1000,
 });
 
 const finite = (value) => Number.isFinite(Number(value));
@@ -25,7 +26,7 @@ export function paperCircuitFailures(analytics, policy = DEFAULT_PAPER_STRATEGY)
   return failures;
 }
 
-export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRATEGY) {
+export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRATEGY, now = Date.now()) {
   const failures = [];
   const midPrice = Number(candidate?.marketSafety?.tokenPriceQuote);
   const baseTokenDecimals = Number(candidate?.marketSafety?.baseTokenDecimals);
@@ -38,6 +39,14 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
   }
   if (!finite(portfolio?.cash) || portfolio.cash <= 0) failures.push("no-paper-cash");
   if ((portfolio?.openPositions || []).some((p) => p.pool === candidate?.address)) failures.push("position-already-open");
+  const cooldownMs = Number(policy.reentryCooldownMs);
+  if (finite(cooldownMs) && cooldownMs > 0) {
+    const lastClose = (portfolio?.trades || []).reduce((latest, trade) => (
+      trade?.type === "close" && trade.pool === candidate?.address
+        && Number(trade.timestamp) > latest ? Number(trade.timestamp) : latest
+    ), 0);
+    if (lastClose && now - lastClose < cooldownMs) failures.push("pool-reentry-cooldown");
+  }
   if (Number.isInteger(Number(portfolio?.maxPositions))
       && (portfolio?.openPositions || []).length >= Number(portfolio.maxPositions)) {
     failures.push("position-limit-reached");
@@ -72,6 +81,7 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
       price: executionPrice,
       midPrice,
       quantity,
+      quantityUnits: String(BigInt(buyAmountOut)),
       notional,
     },
   };
