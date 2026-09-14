@@ -28,23 +28,31 @@ export class ExecutionLifecycle {
   }
 
   async submit(rawIntent, { now = Date.now() } = {}) {
-    const spent = this.ledger.snapshot(now).spentWei;
-    const evaluated = evaluateExecutionPolicy(rawIntent, this.policy, { now, dailySpentWei: spent });
-    if (!evaluated.approved) return Object.freeze({ status: "rejected", stage: "policy", failures: evaluated.failures });
+    const normalizedAsset = String(rawIntent?.spendAsset || "").toLowerCase();
+    const spent = this.ledger.snapshot(now).spent[normalizedAsset] || "0";
+    const evaluated = evaluateExecutionPolicy(rawIntent, this.policy, { now, dailySpent: spent });
+    if (!evaluated.approved) {
+      return Object.freeze({ status: "rejected", stage: "policy", failures: evaluated.failures });
+    }
 
     const { intent } = evaluated;
     if (this.running.has(intent.id)) {
       return Object.freeze({ status: "rejected", stage: "replay", failures: ["duplicate-intent"] });
     }
     const calldata = this.validateCalldata(intent, this.policy, { nowSeconds: Math.floor(now / 1000) });
-    if (!calldata.approved) return Object.freeze({ status: "rejected", stage: "calldata", failures: calldata.failures });
+    if (!calldata.approved) {
+      return Object.freeze({ status: "rejected", stage: "calldata", failures: calldata.failures });
+    }
 
     this.running.add(intent.id);
     const state = { intentId: intent.id, status: "pending", stage: "reserved", transactionHash: null };
     try {
-      this.ledger.record({ intentId: intent.id, amountWei: intent.valueWei }, now);
+      this.ledger.record({
+        intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
+      }, now);
       await this.journal.transition(intent.id, {
-        status: "reserved", chainId: intent.chainId, valueWei: intent.valueWei,
+        status: "reserved", chainId: intent.chainId,
+        spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
       }, now);
     } catch (error) {
       this.running.delete(intent.id);
