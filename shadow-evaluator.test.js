@@ -71,3 +71,14 @@ test("promotion requires robust return and drawdown evidence", () => {
     "win-rate-too-low", "shadow-drawdown-too-high",
   ]);
 });
+
+test("resolves a pending pool after it drops from the ranked candidates", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  evaluator.record([candidate()], 1000);
+  assert.deepEqual(evaluator.pendingPoolAddresses(), ["0xpool"]);
+  evaluator.resolve([{
+    address: "0xpool", marketSafety: { tokenPriceQuote: 1 },
+  }], 1100);
+  assert.equal(evaluator.snapshot().byRule["escape-strict"].averageReturnPct, -50);
+  assert.deepEqual(evaluator.pendingPoolAddresses(), []);
+});
