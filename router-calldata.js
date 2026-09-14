@@ -63,6 +63,9 @@ export function validateV2RouterCalldata(intent, policy, { nowSeconds = Math.flo
   }
   if (ethInput && BigInt(intent.valueWei) !== amountIn) failures.push("transaction-value-mismatch");
   if (!ethInput && BigInt(intent.valueWei) !== 0n) failures.push("unexpected-transaction-value");
+  const spendAsset = ethInput ? "native" : path[0].toLowerCase();
+  if (intent.spendAsset !== spendAsset) failures.push("spend-asset-mismatch");
+  if (BigInt(intent.spendAmount) !== amountIn) failures.push("spend-amount-mismatch");
 
   return {
     approved: failures.length === 0,
