@@ -24,7 +24,7 @@ test("computes fee-adjusted paper performance", () => {
   assert.equal(result.averageWin, 5);
   assert.equal(result.averageLoss, -10);
   assert.equal(result.averageHoldMs, 150);
-  assert.equal(result.feesPaid, 0.6);
+  assert.ok(Math.abs(result.feesPaid - 0.6) < 1e-12);
   assert.equal(result.maxRealizedDrawdownPct, (10 / 105) * 100);
 });
 
