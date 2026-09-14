@@ -471,6 +471,21 @@ function poolFeeRate(pool) {
   return pool.dex === "pancakeswap" ? 0.0025 : 0.003;
 }
 
+function paperEntryAudit(candidate, feeRate) {
+  return {
+    block: metrics.latestBlock,
+    signal: candidate.signal?.state,
+    score: candidate.signal?.score,
+    recentSwaps: candidate.signal?.swapsCurrentWindow,
+    acceleration: candidate.signal?.acceleration,
+    priceImpactPct: candidate.marketSafety?.priceImpactPct,
+    roundTripLossPct: candidate.marketSafety?.roundTripLossPct,
+    currentTick: candidate.marketSafety?.currentTick,
+    boundaryTick: candidate.marketSafety?.boundaryTick,
+    feeRate,
+  };
+}
+
 function rememberPaperDecision(decision) {
   paperAutomation.recentDecisions.push({ at: Date.now(), ...decision });
   if (paperAutomation.recentDecisions.length > 50) paperAutomation.recentDecisions.shift();
@@ -489,8 +504,15 @@ async function runPaperCycle() {
         const marked = book.portfolio.mark(position.pool, safety.tokenPriceQuote);
         const reason = paperExitReason(marked);
         if (reason) {
-          const fee = marked.marketValue * poolFeeRate(pool);
-          book.portfolio.close({ pool: position.pool, price: safety.tokenPriceQuote, fee, reason });
+          const feeRate = poolFeeRate(pool);
+          const fee = marked.marketValue * feeRate;
+          book.portfolio.close({
+            pool: position.pool, price: safety.tokenPriceQuote, fee, reason,
+            audit: {
+              block: metrics.latestBlock, reason, feeRate,
+              returnPct: marked.returnPct, peakReturnPct: marked.peakReturnPct,
+            },
+          });
           paperAutomation.exits += 1;
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
@@ -517,8 +539,11 @@ async function runPaperCycle() {
           pool: candidate.address, reasons: plan.failures });
         continue;
       }
-      const fee = plan.order.notional * poolFeeRate(candidate);
-      book.portfolio.open({ ...plan.order, fee });
+      const feeRate = poolFeeRate(candidate);
+      const fee = plan.order.notional * feeRate;
+      book.portfolio.open({
+        ...plan.order, fee, audit: paperEntryAudit(candidate, feeRate),
+      });
       paperAutomation.entries += 1;
       rememberPaperDecision({ type: "entry", quote: book.symbol, pool: candidate.address,
         price: plan.order.price, notional: plan.order.notional, fee });
@@ -529,11 +554,20 @@ async function runPaperCycle() {
   }
 }
 
+function paperBookStatus(book) {
+  const state = book.portfolio.serialize();
+  return {
+    quote: book.symbol,
+    ...book.portfolio.snapshot(),
+    recentTrades: state.trades.slice(-20),
+  };
+}
+
 function paperStatus() {
   return {
     mode: "PAPER_ONLY",
     books: Object.fromEntries([...paperBooks.values()].map((book) => [
-      book.symbol, { quote: book.symbol, ...book.portfolio.snapshot() },
+      book.symbol, paperBookStatus(book),
     ])),
     automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
       lastCycleAt: lastPaperCycleAt || null },
