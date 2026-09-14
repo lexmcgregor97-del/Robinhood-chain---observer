@@ -38,8 +38,7 @@ const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 const PAPER_WETH_INITIAL_CASH = Number(process.env.PAPER_WETH_INITIAL_CASH || 0.1);
 const PAPER_WETH_MAX_ENTRY = Number(process.env.PAPER_WETH_MAX_ENTRY || 0.01);
-const PAPER_WETH_PROBE_WEI = BigInt(process.env.PAPER_WETH_PROBE_WEI || "1000000000000000");
-const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10");
+const PAPER_USDG_MAX_ENTRY = Number(process.env.PAPER_USDG_MAX_ENTRY || 100);
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
@@ -453,6 +452,22 @@ async function ensureDiscoveryTimestamp(pool) {
   return timestampMs;
 }
 
+function plannedPaperNotional(quoteAddress) {
+  const book = paperBooks.get(quoteAddress);
+  if (!book) return null;
+  const cash = Number(book.portfolio.snapshot().cash);
+  const cap = book.symbol === "WETH" ? PAPER_WETH_MAX_ENTRY : PAPER_USDG_MAX_ENTRY;
+  const notional = Math.min(cash * DEFAULT_PAPER_STRATEGY.entryCashPct / 100, cap);
+  return Number.isFinite(notional) && notional > 0 ? notional : null;
+}
+
+function humanToUnits(value, decimals) {
+  const precision = Math.min(Number(decimals), 12);
+  const scaled = Math.floor(Number(value) * (10 ** precision));
+  if (!Number.isSafeInteger(scaled) || scaled <= 0) throw new Error("invalid-planned-notional");
+  return BigInt(scaled) * (10n ** BigInt(Number(decimals) - precision));
+}
+
 async function marketSafety(pool) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg];
   const quoteAddresses = quoteTokens.map((address) => address.toLowerCase());
@@ -478,9 +493,9 @@ async function marketSafety(pool) {
     ]);
     const quoteAddress = quoteIsToken0 ? pool.token0 : pool.token1;
     const quoteDecimals = quoteIsToken0 ? token0Meta.decimals : token1Meta.decimals;
-    const quoteAmountIn = quoteAddress === ROBINHOOD.usdg.toLowerCase()
-      ? PAPER_USDG_PROBE_UNITS * (10n ** BigInt(quoteDecimals))
-      : PAPER_WETH_PROBE_WEI;
+    const plannedNotionalQuote = plannedPaperNotional(quoteAddress);
+    if (!plannedNotionalQuote) throw new Error("paper-notional-unavailable");
+    const quoteAmountIn = humanToUnits(plannedNotionalQuote, quoteDecimals);
     if (pool.version === "v2") {
       const reserves = decodeV2Reserves(await rpc("eth_call",
         [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
@@ -490,7 +505,7 @@ async function marketSafety(pool) {
         token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
         quoteAmountIn,
       });
-      return { ...safety, ...auditSwapPrice({
+      return { ...safety, plannedNotionalQuote, ...auditSwapPrice({
         spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
         token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       }) };
@@ -518,7 +533,7 @@ async function marketSafety(pool) {
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
       quoteAmountIn,
     });
-    return { ...safety, ...auditSwapPrice({
+    return { ...safety, plannedNotionalQuote, ...auditSwapPrice({
       spotPriceQuote: safety.tokenPriceQuote, swap: pool.lastSwap, quoteIsToken0,
       token0Decimals: token0Meta.decimals, token1Decimals: token1Meta.decimals,
     }) };
@@ -570,7 +585,8 @@ function paperEntryAudit(candidate, feeRate) {
     recentSwaps: candidate.signal?.swapsCurrentWindow,
     acceleration: candidate.signal?.acceleration,
     priceImpactPct: candidate.marketSafety?.priceImpactPct,
-    roundTripLossPct: candidate.marketSafety?.roundTripLossPct,
+    executionCostPct: candidate.marketSafety?.executionCostPct,
+    plannedNotionalQuote: candidate.marketSafety?.plannedNotionalQuote,
     lastSwapPriceQuote: candidate.marketSafety?.lastSwapPriceQuote,
     spotVsLastSwapPct: candidate.marketSafety?.spotVsLastSwapPct,
     currentTick: candidate.marketSafety?.currentTick,

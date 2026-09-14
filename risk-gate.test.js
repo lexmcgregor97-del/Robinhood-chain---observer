@@ -11,7 +11,7 @@ const measuredSafety = {
   spotVsLastSwapPct: 1,
   poolAgeMs: 10 * 60_000,
   priceImpactPct: 2,
-  roundTripLossPct: 6,
+  executionCostPct: 6,
 };
 
 test("fails closed when safety data is unavailable", () => {
@@ -38,12 +38,12 @@ test("measures minimum pool age in wall-clock time", () => {
   assert.ok(result.failures.includes("pool-too-new"));
 });
 
-test("blocks excessive execution loss", () => {
+test("blocks excessive execution cost", () => {
   const result = evaluateRiskGate({
     signal: { state: "escape-velocity" },
-    marketSafety: { ...measuredSafety, roundTripLossPct: 30 },
+    marketSafety: { ...measuredSafety, executionCostPct: 30 },
   });
-  assert.ok(result.failures.includes("round-trip-loss-too-high"));
+  assert.ok(result.failures.includes("execution-cost-too-high"));
 });
 
 test("V3 candidates fail closed until tick boundaries are measured", () => {

@@ -23,8 +23,10 @@ test("measures a quote-token V2 round trip", () => {
   assert.equal(safety.poolAgeBlocks, 100);
   assert.equal(safety.tokenPriceQuote, 0.5);
   assert.equal(safety.baseToken, "0xtoken");
+  assert.equal(safety.baseTokenDecimals, 3);
+  assert.ok(BigInt(safety.buyAmountOut) > 0n);
   assert.ok(safety.priceImpactPct >= 0);
-  assert.ok(safety.roundTripLossPct >= 0);
+  assert.equal(safety.executionCostPct, safety.priceImpactPct * 2);
 });
 
 test("fails closed when neither side is an approved quote token", () => {

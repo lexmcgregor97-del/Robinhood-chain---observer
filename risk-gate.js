@@ -1,7 +1,7 @@
 export const DEFAULT_PAPER_POLICY = Object.freeze({
   minPoolAgeMs: 5 * 60_000,
   maxPriceImpactPct: 5,
-  maxRoundTripLossPct: 15,
+  maxExecutionCostPct: 15,
   maxSpotSwapDeviationPct: 5,
   requiredSignal: "escape-velocity",
 });
@@ -26,7 +26,9 @@ export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
   }
   if (!Number.isFinite(safety.priceImpactPct)
       || safety.priceImpactPct > policy.maxPriceImpactPct) failures.push("price-impact-too-high");
-  if (!Number.isFinite(safety.roundTripLossPct)
-      || safety.roundTripLossPct > policy.maxRoundTripLossPct) failures.push("round-trip-loss-too-high");
+  if (!Number.isFinite(safety.executionCostPct)
+      || safety.executionCostPct > policy.maxExecutionCostPct) {
+    failures.push("execution-cost-too-high");
+  }
   return { eligibleForPaperEntry: failures.length === 0, failures, policy };
 }
