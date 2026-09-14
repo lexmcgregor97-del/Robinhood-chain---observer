@@ -466,6 +466,11 @@ async function candidates(limit = 10) {
   return (await candidatePromise).slice(0, boundedLimit);
 }
 
+function poolFeeRate(pool) {
+  if (pool.version === "v3") return Number(pool.fee || 3000) / 1_000_000;
+  return pool.dex === "pancakeswap" ? 0.0025 : 0.003;
+}
+
 function rememberPaperDecision(decision) {
   paperAutomation.recentDecisions.push({ at: Date.now(), ...decision });
   if (paperAutomation.recentDecisions.length > 50) paperAutomation.recentDecisions.shift();
@@ -484,7 +489,7 @@ async function runPaperCycle() {
         const marked = book.portfolio.mark(position.pool, safety.tokenPriceQuote);
         const reason = paperExitReason(marked);
         if (reason) {
-          const fee = marked.marketValue * 0.003;
+          const fee = marked.marketValue * poolFeeRate(pool);
           book.portfolio.close({ pool: position.pool, price: safety.tokenPriceQuote, fee, reason });
           paperAutomation.exits += 1;
           rememberPaperDecision({
@@ -512,10 +517,7 @@ async function runPaperCycle() {
           pool: candidate.address, reasons: plan.failures });
         continue;
       }
-      const feeRate = candidate.version === "v3"
-        ? Number(candidate.fee || 3000) / 1_000_000
-        : candidate.dex === "pancakeswap" ? 0.0025 : 0.003;
-      const fee = plan.order.notional * feeRate;
+      const fee = plan.order.notional * poolFeeRate(candidate);
       book.portfolio.open({ ...plan.order, fee });
       paperAutomation.entries += 1;
       rememberPaperDecision({ type: "entry", quote: book.symbol, pool: candidate.address,
