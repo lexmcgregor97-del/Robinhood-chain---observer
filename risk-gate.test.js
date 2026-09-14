@@ -30,6 +30,30 @@ test("allows a fully measured paper candidate", () => {
   assert.deepEqual(result.failures, []);
 });
 
+test("allows a bounded promoted steady-accumulation policy", () => {
+  const policy = {
+    ...DEFAULT_PAPER_POLICY,
+    allowedSignals: ["active"],
+    minSwaps: 4,
+    minAcceleration: 0.75,
+    maxAcceleration: 1.5,
+  };
+  const result = evaluateRiskGate({
+    signal: { state: "active", swapsCurrentWindow: 5, acceleration: 1.1 },
+    marketSafety: measuredSafety,
+  }, policy);
+  assert.equal(result.eligibleForPaperEntry, true);
+  assert.deepEqual(result.failures, []);
+  assert.ok(evaluateRiskGate({
+    signal: { state: "active", swapsCurrentWindow: 3, acceleration: 1.1 },
+    marketSafety: measuredSafety,
+  }, policy).failures.includes("signal-activity-too-low"));
+  assert.ok(evaluateRiskGate({
+    signal: { state: "active", swapsCurrentWindow: 5, acceleration: 2 },
+    marketSafety: measuredSafety,
+  }, policy).failures.includes("signal-acceleration-too-high"));
+});
+
 test("measures minimum pool age in wall-clock time", () => {
   const result = evaluateRiskGate({
     signal: { state: "escape-velocity" },

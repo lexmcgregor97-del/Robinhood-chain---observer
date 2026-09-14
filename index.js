@@ -1,7 +1,7 @@
 import http from "node:http";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent } from "./market-data.js";
-import { evaluateRiskGate } from "./risk-gate.js";
+import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
   DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
@@ -63,7 +63,18 @@ const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
-const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v2";
+const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v3-steady-accumulation";
+const QUALIFYING_PAPER_STRATEGY = Object.freeze({
+  ...DEFAULT_PAPER_STRATEGY,
+  maxHoldMs: 30 * 60_000,
+});
+const QUALIFYING_PAPER_RISK_POLICY = Object.freeze({
+  ...DEFAULT_PAPER_POLICY,
+  allowedSignals: ["active"],
+  minSwaps: 4,
+  minAcceleration: 0.75,
+  maxAcceleration: 1.5,
+});
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -651,10 +662,16 @@ async function paperExitQuote(pool, position) {
 }
 
 async function measureCandidates(limit) {
-  const ranked = signals(limit);
+  const quoteTokens = new Set(ROBINHOOD.quoteTokens.map(
+    (token) => token.address.toLowerCase(),
+  ));
+  const ranked = signals(25).filter((pool) => (
+    quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
+  )).slice(0, limit);
   return Promise.all(ranked.map(async (pool) => {
     const measured = { ...pool, marketSafety: await marketSafety(pool) };
-    return { ...measured, riskGate: evaluateRiskGate(measured) };
+    return { ...measured,
+      riskGate: evaluateRiskGate(measured, QUALIFYING_PAPER_RISK_POLICY) };
   }));
 }
 
@@ -757,7 +774,7 @@ async function runPaperCycle() {
             || exit.quoteToken !== quoteToken
             || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
-        const reason = paperExitReason(marked);
+        const reason = paperExitReason(marked, Date.now(), QUALIFYING_PAPER_STRATEGY);
         if (reason) {
           const feeRate = poolFeeRate(pool);
           const fee = exit.proceeds * feeRate;
@@ -817,8 +834,8 @@ async function runPaperCycle() {
         continue;
       }
       const policy = book.symbol === "WETH"
-        ? { ...DEFAULT_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
-        : DEFAULT_PAPER_STRATEGY;
+        ? { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+        : { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
       const paperState = book.portfolio.serialize();
       const circuitFailures = paperCircuitFailures(analyzePaperTrades({
         initialCash: paperState.initialCash, trades: paperState.trades,

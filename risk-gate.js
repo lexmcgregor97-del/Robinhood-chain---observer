@@ -9,7 +9,21 @@ export const DEFAULT_PAPER_POLICY = Object.freeze({
 export function evaluateRiskGate(candidate, policy = DEFAULT_PAPER_POLICY) {
   const failures = [];
   const safety = candidate.marketSafety || {};
-  if (candidate.signal?.state !== policy.requiredSignal) failures.push("signal-not-ready");
+  const signal = candidate.signal || {};
+  const allowedSignals = policy.allowedSignals || [policy.requiredSignal];
+  if (!allowedSignals.includes(signal.state)) failures.push("signal-not-ready");
+  if (Number.isFinite(Number(policy.minSwaps))
+      && Number(signal.swapsCurrentWindow) < Number(policy.minSwaps)) {
+    failures.push("signal-activity-too-low");
+  }
+  if (Number.isFinite(Number(policy.minAcceleration))
+      && Number(signal.acceleration) < Number(policy.minAcceleration)) {
+    failures.push("signal-acceleration-too-low");
+  }
+  if (Number.isFinite(Number(policy.maxAcceleration))
+      && Number(signal.acceleration) > Number(policy.maxAcceleration)) {
+    failures.push("signal-acceleration-too-high");
+  }
   if (!safety.quoteTokenKnown) failures.push("unknown-quote-token");
   if (!safety.liquidityKnown) failures.push("liquidity-not-measured");
   if (!safety.buyMathOk) failures.push("buy-math-failed");
