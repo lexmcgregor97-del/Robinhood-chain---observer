@@ -1,26 +1,20 @@
 const finite = (value) => Number.isFinite(Number(value));
+const FIVE_MINUTES = 5 * 60_000;
+const RULE_VERSION = "2026-09-14-measurement-v2";
 
 export const SHADOW_RULES = Object.freeze([
-  { name: "escape-strict", signal: "escape-velocity", maxDeviationPct: 5 },
-  { name: "escape-relaxed", signal: "escape-velocity", maxDeviationPct: 10 },
-  { name: "escape-confirmed", signal: "escape-velocity", maxDeviationPct: 5,
-    confirmationCycles: 2 },
+  { name: "escape-activity", signal: "escape-velocity", maxDeviationPct: 5 },
   { name: "steady-accumulation", signal: "active", minSwaps: 4,
     minAcceleration: 0.75, maxAcceleration: 1.5, maxDeviationPct: 5 },
-  { name: "activity-baseline", signals: ["active", "breakout-watch", "escape-velocity"],
-    minSwaps: 3, maxDeviationPct: 5 },
   { name: "activity-pullback", signals: ["active", "breakout-watch", "escape-velocity"],
     minSwaps: 3, maxDeviationPct: 5, pullbackMinPct: 2, pullbackMaxPct: 12,
-    setupMaxAgeMs: 5 * 60_000 },
-  { name: "breakout-strict", signal: "breakout-watch", maxDeviationPct: 5 },
+    setupMaxAgeMs: FIVE_MINUTES },
 ]);
 
 export const DEFAULT_PROMOTION_POLICY = Object.freeze({
-  minClosedSamples: 30,
-  minAverageReturnPct: 2,
+  minUniquePools: 20,
   minMedianReturnPct: 0,
-  minWinRatePct: 45,
-  maxCumulativeDrawdownPct: 25,
+  minMeanCiLowerPct: 0,
 });
 
 export function shadowRuleMatches(candidate, rule) {
@@ -40,167 +34,195 @@ export function shadowRuleMatches(candidate, rule) {
     && safety.priceAuditAvailable === true
     && finite(safety.tokenPriceQuote) && Number(safety.tokenPriceQuote) > 0
     && finite(safety.priceImpactPct) && Number(safety.priceImpactPct) <= 5
-    && finite(safety.roundTripLossPct) && Number(safety.roundTripLossPct) <= 15
+    && finite(safety.executionCostPct) && Number(safety.executionCostPct) <= 15
     && finite(safety.spotVsLastSwapPct)
     && Number(safety.spotVsLastSwapPct) <= rule.maxDeviationPct;
 }
 
-function summarizeSamples(samples) {
-  const returns = samples.map((sample) => Number(sample.netReturnPct ?? sample.returnPct))
-    .filter(Number.isFinite);
-  const sorted = [...returns].sort((a, b) => a - b);
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return 0;
   const middle = Math.floor(sorted.length / 2);
-  const medianReturnPct = sorted.length
-    ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : 0;
-  let cumulative = 0;
-  let peak = 0;
-  let maxCumulativeDrawdownPct = 0;
-  for (const value of returns) {
-    cumulative += value;
-    peak = Math.max(peak, cumulative);
-    maxCumulativeDrawdownPct = Math.max(maxCumulativeDrawdownPct, peak - cumulative);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function poolBootstrapLower(samples, iterations = 1000) {
+  const byPool = new Map();
+  for (const sample of samples) {
+    const values = byPool.get(sample.pool) || [];
+    values.push(Number(sample.netReturnPct));
+    byPool.set(sample.pool, values);
   }
+  const pools = [...byPool.values()];
+  if (pools.length < 2) return null;
+  const random = seededRandom(0x5eed1234);
+  const means = [];
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const values = [];
+    for (let index = 0; index < pools.length; index += 1) {
+      const selected = pools[Math.floor(random() * pools.length)];
+      values.push(...selected);
+    }
+    means.push(values.reduce((sum, value) => sum + value, 0) / values.length);
+  }
+  means.sort((a, b) => a - b);
+  return means[Math.floor(means.length * 0.025)];
+}
+
+function summarizeSamples(samples) {
+  const resolved = samples.filter((sample) => sample.closedAt
+    && finite(sample.netReturnPct));
+  const returns = resolved.map((sample) => Number(sample.netReturnPct));
+  const uniquePools = new Set(resolved.map((sample) => sample.pool)).size;
   const wins = returns.filter((value) => value > 0).length;
   return {
     closedSamples: returns.length,
+    uniquePools,
+    censoredSamples: samples.filter((sample) => sample.censoredAt).length,
     winRatePct: returns.length ? wins / returns.length * 100 : 0,
     averageReturnPct: returns.length
       ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0,
-    medianReturnPct,
-    maxCumulativeDrawdownPct,
+    medianReturnPct: median(returns),
+    meanCiLowerPct: poolBootstrapLower(resolved),
   };
 }
 
 export function evaluateShadowPromotion(summary, policy = DEFAULT_PROMOTION_POLICY) {
-  if (summary.closedSamples < policy.minClosedSamples) {
+  if (summary.uniquePools < policy.minUniquePools) {
     return {
       status: "collecting",
       eligible: false,
-      remainingSamples: policy.minClosedSamples - summary.closedSamples,
-      failures: ["insufficient-samples"],
+      remainingUniquePools: policy.minUniquePools - summary.uniquePools,
+      failures: ["insufficient-unique-pools"],
     };
   }
   const failures = [];
-  if (summary.averageReturnPct < policy.minAverageReturnPct) failures.push("average-return-too-low");
-  if (summary.medianReturnPct < policy.minMedianReturnPct) failures.push("median-return-too-low");
-  if (summary.winRatePct < policy.minWinRatePct) failures.push("win-rate-too-low");
-  if (summary.maxCumulativeDrawdownPct > policy.maxCumulativeDrawdownPct) {
-    failures.push("shadow-drawdown-too-high");
+  if (summary.medianReturnPct <= policy.minMedianReturnPct) {
+    failures.push("median-return-too-low");
+  }
+  if (!finite(summary.meanCiLowerPct)
+      || summary.meanCiLowerPct <= policy.minMeanCiLowerPct) {
+    failures.push("mean-confidence-bound-too-low");
   }
   return {
     status: failures.length ? "rejected" : "promotion-candidate",
     eligible: failures.length === 0,
-    remainingSamples: 0,
+    remainingUniquePools: 0,
     failures,
   };
 }
 
 export class ShadowEvaluator {
-  constructor({ horizonMs, horizonsMs = [60_000, 5 * 60_000, 15 * 60_000],
-    rules = SHADOW_RULES } = {}) {
-    this.horizonsMs = horizonMs ? [horizonMs] : horizonsMs;
-    this.horizonMs = this.horizonsMs.includes(5 * 60_000)
-      ? 5 * 60_000 : this.horizonsMs[0];
+  constructor({
+    horizonMs = FIVE_MINUTES,
+    episodeGapMs = FIVE_MINUTES,
+    resolutionTimeoutMultiplier = 3,
+    rules = SHADOW_RULES,
+  } = {}) {
+    this.horizonMs = horizonMs;
+    this.horizonsMs = [horizonMs];
+    this.episodeGapMs = episodeGapMs;
+    this.resolutionTimeoutMultiplier = resolutionTimeoutMultiplier;
     this.rules = rules;
     this.samples = [];
-    this.confirmations = new Map();
+    this.episodes = new Map();
     this.pullbackSetups = new Map();
   }
 
   pendingPoolAddresses() {
     return [...new Set(this.samples
-      .filter((sample) => !sample.closedAt && !sample.resolutionFailedAt)
+      .filter((sample) => !sample.closedAt && !sample.censoredAt)
       .map((sample) => sample.pool))];
   }
 
   resolve(candidates, now = Date.now()) {
-    const prices = new Map(candidates
-      .filter((candidate) => finite(candidate?.marketSafety?.tokenPriceQuote))
-      .map((candidate) => [candidate.address, Number(candidate.marketSafety.tokenPriceQuote)]));
+    const measurements = new Map(candidates.map((candidate) => [
+      candidate.address, candidate.marketSafety || {},
+    ]));
     for (const sample of this.samples) {
-      const sampleHorizonMs = Number(sample.horizonMs || this.horizonMs);
-      if (sample.closedAt || sample.resolutionFailedAt
-          || now - sample.openedAt < sampleHorizonMs) continue;
-      const exitPrice = prices.get(sample.pool);
+      if (sample.closedAt || sample.censoredAt
+          || now - sample.openedAt < this.horizonMs) continue;
+      const safety = measurements.get(sample.pool);
+      const exitPrice = Number(safety?.tokenPriceQuote);
       if (!finite(exitPrice) || exitPrice <= 0) {
-        if (now - sample.openedAt >= sampleHorizonMs * 3) {
-          sample.resolutionFailedAt = now;
-          sample.grossReturnPct = -100;
-          sample.netReturnPct = -100;
-          sample.returnPct = -100;
+        if (now - sample.openedAt >= this.horizonMs * this.resolutionTimeoutMultiplier) {
+          sample.censoredAt = now;
+          sample.censorReason = "price-unavailable";
         }
         continue;
       }
       sample.closedAt = now;
       sample.exitPrice = exitPrice;
       sample.grossReturnPct = ((exitPrice / sample.entryPrice) - 1) * 100;
-      sample.netReturnPct = sample.grossReturnPct - Number(sample.executionCostPct || 0);
+      sample.netReturnPct = sample.grossReturnPct - Number(sample.executionCostPct);
       sample.returnPct = sample.netReturnPct;
     }
   }
 
   record(candidates, now = Date.now()) {
-    const observedConfirmationKeys = new Set();
+    const observedEpisodeKeys = new Set();
     const observedPullbackKeys = new Set();
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
-        const confirmationKey = `${rule.name}:${candidate.address}`;
-        const pullbackKey = confirmationKey;
+        const key = `${rule.name}:${candidate.address}`;
+        observedEpisodeKeys.add(key);
         if (finite(rule.pullbackMinPct)) {
-          observedPullbackKeys.add(pullbackKey);
+          observedPullbackKeys.add(key);
           const price = Number(candidate.marketSafety.tokenPriceQuote);
-          let setup = this.pullbackSetups.get(pullbackKey);
-          if (!setup || now - setup.startedAt > Number(rule.setupMaxAgeMs || 5 * 60_000)) {
-            this.pullbackSetups.set(pullbackKey, {
-              startedAt: now, peakPrice: price,
-            });
+          let setup = this.pullbackSetups.get(key);
+          if (!setup || now - setup.startedAt > Number(rule.setupMaxAgeMs || FIVE_MINUTES)) {
+            this.pullbackSetups.set(key, { startedAt: now, peakPrice: price });
             continue;
           }
           setup.peakPrice = Math.max(setup.peakPrice, price);
           const pullbackPct = ((setup.peakPrice - price) / setup.peakPrice) * 100;
           if (pullbackPct > Number(rule.pullbackMaxPct)) {
-            this.pullbackSetups.delete(pullbackKey);
+            this.pullbackSetups.delete(key);
             continue;
           }
           if (pullbackPct < Number(rule.pullbackMinPct)) continue;
         }
-        const requiredCycles = Number(rule.confirmationCycles || 1);
-        if (requiredCycles > 1) {
-          observedConfirmationKeys.add(confirmationKey);
-          const count = Number(this.confirmations.get(confirmationKey) || 0) + 1;
-          this.confirmations.set(confirmationKey, count);
-          if (count < requiredCycles) continue;
+        const episode = this.episodes.get(key);
+        if (episode && now - episode.lastQualifiedAt < this.episodeGapMs) {
+          episode.lastQualifiedAt = now;
+          continue;
         }
-        let recorded = false;
-        for (const horizonMs of this.horizonsMs) {
-          const duplicate = this.samples.some((sample) => !sample.closedAt
-            && !sample.resolutionFailedAt && sample.rule === rule.name
-            && sample.pool === candidate.address
-            && Number(sample.horizonMs || this.horizonMs) === horizonMs);
-          if (duplicate) continue;
-          this.samples.push({
-            rule: rule.name,
-            horizonMs,
-            pool: candidate.address,
-            quoteToken: candidate.marketSafety.quoteToken,
-            entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
-            executionCostPct: Number(candidate.marketSafety.roundTripLossPct),
-            openedAt: now,
-          });
-          recorded = true;
-        }
-        if (recorded && requiredCycles > 1) this.confirmations.set(confirmationKey, 0);
-        if (recorded && finite(rule.pullbackMinPct)) this.pullbackSetups.delete(pullbackKey);
+        const episodeId = `${key}:${now}`;
+        this.episodes.set(key, { episodeId, lastQualifiedAt: now });
+        this.samples.push({
+          rule: rule.name,
+          ruleVersion: RULE_VERSION,
+          episodeId,
+          horizonMs: this.horizonMs,
+          pool: candidate.address,
+          quoteToken: candidate.marketSafety.quoteToken,
+          entryPrice: Number(candidate.marketSafety.tokenPriceQuote),
+          executionCostPct: Number(candidate.marketSafety.executionCostPct),
+          openedAt: now,
+        });
+        if (finite(rule.pullbackMinPct)) this.pullbackSetups.delete(key);
       }
     }
-    for (const key of this.confirmations.keys()) {
-      if (!observedConfirmationKeys.has(key)) this.confirmations.delete(key);
+    for (const [key, episode] of this.episodes) {
+      if (!observedEpisodeKeys.has(key)
+          && now - episode.lastQualifiedAt >= this.episodeGapMs) {
+        this.episodes.delete(key);
+      }
     }
     for (const key of this.pullbackSetups.keys()) {
       if (!observedPullbackKeys.has(key)) this.pullbackSetups.delete(key);
     }
-    if (this.samples.length > 2000) this.samples = this.samples.slice(-2000);
   }
 
   observe(candidates, now = Date.now()) {
@@ -211,43 +233,43 @@ export class ShadowEvaluator {
   snapshot() {
     const byRule = {};
     for (const rule of this.rules) {
-      const byHorizon = {};
-      for (const horizonMs of this.horizonsMs) {
-        const matching = this.samples.filter((sample) => sample.rule === rule.name
-          && Number(sample.horizonMs || this.horizonMs) === horizonMs);
-        const closed = matching.filter((sample) => sample.closedAt || sample.resolutionFailedAt);
-        const summary = summarizeSamples(closed);
-        byHorizon[String(horizonMs)] = {
-          openSamples: matching.filter((sample) => !sample.closedAt
-            && !sample.resolutionFailedAt).length,
-          resolutionFailures: closed.filter((sample) => sample.resolutionFailedAt).length,
-          ...summary,
-          promotion: evaluateShadowPromotion(summary),
-        };
-      }
-      const primary = byHorizon[String(this.horizonMs)];
-      byRule[rule.name] = { ...primary, byHorizon };
+      const matching = this.samples.filter((sample) => sample.rule === rule.name
+        && sample.ruleVersion === RULE_VERSION);
+      const summary = summarizeSamples(matching);
+      byRule[rule.name] = {
+        openSamples: matching.filter((sample) => !sample.closedAt
+          && !sample.censoredAt).length,
+        ...summary,
+        promotion: evaluateShadowPromotion(summary),
+      };
     }
-    return { mode: "SHADOW_ONLY", horizonMs: this.horizonMs,
+    return {
+      mode: "SHADOW_ONLY",
+      ruleVersion: RULE_VERSION,
+      horizonMs: this.horizonMs,
       horizonsMs: this.horizonsMs,
-      promotionPolicy: DEFAULT_PROMOTION_POLICY, byRule,
-      recentSamples: this.samples.slice(-50) };
+      episodeGapMs: this.episodeGapMs,
+      promotionPolicy: DEFAULT_PROMOTION_POLICY,
+      byRule,
+      recentSamples: this.samples.slice(-50),
+    };
   }
 
   serialize() {
-    return { horizonMs: this.horizonMs, horizonsMs: this.horizonsMs,
+    return {
+      horizonMs: this.horizonMs,
+      horizonsMs: this.horizonsMs,
+      episodeGapMs: this.episodeGapMs,
       samples: this.samples,
-      confirmations: Object.fromEntries(this.confirmations),
-      pullbackSetups: Object.fromEntries(this.pullbackSetups) };
+      episodes: Object.fromEntries(this.episodes),
+      pullbackSetups: Object.fromEntries(this.pullbackSetups),
+    };
   }
 
   restore(state) {
     if (!state || !Array.isArray(state.samples)) return;
-    this.samples = state.samples.slice(-2000).map((sample) => ({
-      ...sample,
-      horizonMs: Number(sample.horizonMs || state.horizonMs || 5 * 60_000),
-    }));
-    this.confirmations = new Map(Object.entries(state.confirmations || {}));
+    this.samples = state.samples.slice(-2000);
+    this.episodes = new Map(Object.entries(state.episodes || {}));
     this.pullbackSetups = new Map(Object.entries(state.pullbackSetups || {}));
   }
 }
