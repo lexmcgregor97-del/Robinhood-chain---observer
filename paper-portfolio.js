@@ -15,7 +15,7 @@ export class PaperPortfolio {
     if (state) this.restore(state);
   }
 
-  open({ pool, token, price, notional, fee = 0, timestamp = Date.now() }) {
+  open({ pool, token, price, notional, fee = 0, timestamp = Date.now(), audit = null }) {
     if (this.positions.has(pool)) throw new Error("position-already-open");
     if (this.positions.size >= this.maxPositions) throw new Error("position-limit-reached");
     price = finitePositive(price, "price");
@@ -25,10 +25,12 @@ export class PaperPortfolio {
     if (notional > this.cash) throw new Error("insufficient-paper-cash");
     const quantity = (notional - fee) / price;
     const position = { pool, token, quantity, entryPrice: price, markPrice: price,
-      costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price };
+      costBasis: notional, entryFee: fee, openedAt: timestamp, peakPrice: price,
+      entryAudit: audit ? structuredClone(audit) : null };
     this.cash -= notional;
     this.positions.set(pool, position);
-    this.trades.push({ type: "open", pool, token, price, quantity, notional, fee, timestamp });
+    this.trades.push({ type: "open", pool, token, price, quantity, notional, fee, timestamp,
+      audit: audit ? structuredClone(audit) : null });
     return { ...position };
   }
 
@@ -40,7 +42,7 @@ export class PaperPortfolio {
     return this.positionSnapshot(position);
   }
 
-  close({ pool, price, fee = 0, timestamp = Date.now(), reason = "manual" }) {
+  close({ pool, price, fee = 0, timestamp = Date.now(), reason = "manual", audit = null }) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
     price = finitePositive(price, "price");
@@ -52,7 +54,8 @@ export class PaperPortfolio {
     this.realizedPnl += pnl;
     this.positions.delete(pool);
     const trade = { type: "close", pool, token: position.token, price,
-      quantity: position.quantity, proceeds, fee, pnl, reason, timestamp };
+      quantity: position.quantity, proceeds, fee, pnl, reason, timestamp,
+      audit: audit ? structuredClone(audit) : null };
     this.trades.push(trade);
     return { ...trade };
   }
@@ -89,6 +92,7 @@ export class PaperPortfolio {
       entryPrice: Number(position.entryPrice), markPrice: Number(position.markPrice),
       costBasis: Number(position.costBasis), entryFee: Number(position.entryFee), openedAt: position.openedAt,
       peakPrice: Number(position.peakPrice || position.markPrice),
+      entryAudit: position.entryAudit ? structuredClone(position.entryAudit) : null,
     }]));
     if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [p.quantity, p.entryPrice, p.markPrice, p.costBasis])].every(Number.isFinite)) throw new Error("invalid-paper-state");
   }
