@@ -4,7 +4,7 @@ import { decodeSwapEvent } from "./market-data.js";
 import { evaluateRiskGate } from "./risk-gate.js";
 import { loadExecutionConfig } from "./wallet.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
-import { planPaperEntry, paperExitReason } from "./paper-strategy.js";
+import { DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason } from "./paper-strategy.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
 import { decodeUint, decodeV3Slot0 } from "./v3-simulator.js";
@@ -27,6 +27,8 @@ const SIGNAL_WINDOW_BLOCKS = Number(process.env.SIGNAL_WINDOW_BLOCKS || 20);
 const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
 const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
+const PAPER_WETH_INITIAL_CASH = Number(process.env.PAPER_WETH_INITIAL_CASH || 0.1);
+const PAPER_WETH_MAX_ENTRY = Number(process.env.PAPER_WETH_MAX_ENTRY || 0.01);
 const PAPER_WETH_PROBE_WEI = BigInt(process.env.PAPER_WETH_PROBE_WEI || "1000000000000000");
 const PAPER_USDG_PROBE_UNITS = BigInt(process.env.PAPER_USDG_PROBE_UNITS || "10");
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 30_000);
@@ -47,6 +49,13 @@ const pools = new Map();
 const tokenCache = new Map();
 const v3BoundaryCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
+const wethPaperPortfolio = new PaperPortfolio({
+  initialCash: PAPER_WETH_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS,
+});
+const paperBooks = new Map([
+  [ROBINHOOD.usdg.toLowerCase(), { symbol: "USDG", portfolio: paperPortfolio }],
+  [ROBINHOOD.weth.toLowerCase(), { symbol: "WETH", portfolio: wethPaperPortfolio }],
+]);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 let pollRunning = false;
 let nextPollDelayMs = POLL_MS;
@@ -75,6 +84,9 @@ function persistedState() {
     cursor: metrics.cursor,
     pools: [...pools.values()],
     paper: paperPortfolio.serialize(),
+    paperBooks: Object.fromEntries([...paperBooks].map(([quoteToken, book]) => [
+      quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
+    ])),
     paperAutomation,
   };
 }
@@ -89,7 +101,12 @@ async function restoreState() {
     metrics.v2Pools = [...pools.values()].filter((pool) => pool.version === "v2").length;
     metrics.v3Pools = [...pools.values()].filter((pool) => pool.version === "v3").length;
     metrics.swaps = [...pools.values()].reduce((sum, pool) => sum + (Number(pool.swapCount) || 0), 0);
-    if (state.paper) paperPortfolio.restore(state.paper);
+    if (state.paperBooks) {
+      for (const [quoteToken, saved] of Object.entries(state.paperBooks)) {
+        const book = paperBooks.get(quoteToken.toLowerCase());
+        if (book && saved?.state) book.portfolio.restore(saved.state);
+      }
+    } else if (state.paper) paperPortfolio.restore(state.paper);
     if (state.paperAutomation) Object.assign(paperAutomation, state.paperAutomation);
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;
@@ -454,37 +471,50 @@ async function runPaperCycle() {
   lastPaperCycleAt = Date.now();
   paperAutomation.cycles += 1;
   try {
-    for (const position of paperPortfolio.snapshot().openPositions) {
-      const pool = pools.get(position.pool);
-      if (!pool) continue;
-      const safety = await marketSafety(pool);
-      if (safety.quoteToken !== ROBINHOOD.usdg.toLowerCase()
-          || !Number.isFinite(safety.tokenPriceQuote)) continue;
-      const marked = paperPortfolio.mark(position.pool, safety.tokenPriceQuote);
-      const reason = paperExitReason(marked);
-      if (reason) {
-        const fee = marked.marketValue * 0.003;
-        paperPortfolio.close({ pool: position.pool, price: safety.tokenPriceQuote, fee, reason });
-        paperAutomation.exits += 1;
-        rememberPaperDecision({ type: "exit", pool: position.pool, reason, price: safety.tokenPriceQuote });
+    for (const [quoteToken, book] of paperBooks) {
+      for (const position of book.portfolio.snapshot().openPositions) {
+        const pool = pools.get(position.pool);
+        if (!pool) continue;
+        const safety = await marketSafety(pool);
+        if (safety.quoteToken !== quoteToken || !Number.isFinite(safety.tokenPriceQuote)) continue;
+        const marked = book.portfolio.mark(position.pool, safety.tokenPriceQuote);
+        const reason = paperExitReason(marked);
+        if (reason) {
+          const fee = marked.marketValue * 0.003;
+          book.portfolio.close({ pool: position.pool, price: safety.tokenPriceQuote, fee, reason });
+          paperAutomation.exits += 1;
+          rememberPaperDecision({
+            type: "exit", quote: book.symbol, pool: position.pool,
+            reason, price: safety.tokenPriceQuote,
+          });
+        }
       }
     }
 
     const measured = await candidates(10);
     for (const candidate of measured) {
-      if (candidate.marketSafety.quoteToken !== ROBINHOOD.usdg.toLowerCase()) {
-        rememberPaperDecision({ type: "reject", pool: candidate.address, reasons: ["non-usdg-accounting"] });
+      const book = paperBooks.get(candidate.marketSafety.quoteToken);
+      if (!book) {
+        rememberPaperDecision({ type: "reject", pool: candidate.address,
+          reasons: ["unsupported-paper-quote"] });
         continue;
       }
-      const plan = planPaperEntry(candidate, paperPortfolio.snapshot());
+      const policy = book.symbol === "WETH"
+        ? { ...DEFAULT_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+        : DEFAULT_PAPER_STRATEGY;
+      const plan = planPaperEntry(candidate, book.portfolio.snapshot(), policy);
       if (!plan.approved) {
-        rememberPaperDecision({ type: "reject", pool: candidate.address, reasons: plan.failures });
+        rememberPaperDecision({ type: "reject", quote: book.symbol,
+          pool: candidate.address, reasons: plan.failures });
         continue;
       }
-      const fee = plan.order.notional * 0.003;
-      paperPortfolio.open({ ...plan.order, fee });
+      const feeRate = candidate.version === "v3"
+        ? Number(candidate.fee || 3000) / 1_000_000
+        : candidate.dex === "pancakeswap" ? 0.0025 : 0.003;
+      const fee = plan.order.notional * feeRate;
+      book.portfolio.open({ ...plan.order, fee });
       paperAutomation.entries += 1;
-      rememberPaperDecision({ type: "entry", pool: candidate.address,
+      rememberPaperDecision({ type: "entry", quote: book.symbol, pool: candidate.address,
         price: plan.order.price, notional: plan.order.notional, fee });
     }
     paperAutomation.lastError = null;
@@ -494,8 +524,14 @@ async function runPaperCycle() {
 }
 
 function paperStatus() {
-  return { ...paperPortfolio.snapshot(), automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
-    lastCycleAt: lastPaperCycleAt || null } };
+  return {
+    mode: "PAPER_ONLY",
+    books: Object.fromEntries([...paperBooks.values()].map((book) => [
+      book.symbol, { quote: book.symbol, ...book.portfolio.snapshot() },
+    ])),
+    automation: { ...paperAutomation, cycleIntervalMs: PAPER_CYCLE_MS,
+      lastCycleAt: lastPaperCycleAt || null },
+  };
 }
 
 async function dashboard() {
