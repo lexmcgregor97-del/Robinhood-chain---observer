@@ -38,6 +38,7 @@ const V3_BITMAP_WORDS_PER_LOOKUP = Number(process.env.V3_BITMAP_WORDS_PER_LOOKUP
 const V3_BITMAP_MAX_OFFSET = Number(process.env.V3_BITMAP_MAX_OFFSET || 256);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 300_000);
 const V3_BOUNDARY_MISS_CACHE_MS = Number(process.env.V3_BOUNDARY_MISS_CACHE_MS || 30_000);
+const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";
@@ -60,6 +61,8 @@ const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitt
 let pollRunning = false;
 let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
+let candidateCache = null;
+let candidatePromise = null;
 const paperAutomation = { cycles: 0, entries: 0, exits: 0, lastError: null, recentDecisions: [] };
 let executionConfig;
 try { executionConfig = loadExecutionConfig(); }
@@ -454,12 +457,32 @@ async function marketSafety(pool) {
   }
 }
 
-async function candidates(limit = 25) {
+async function measureCandidates(limit) {
   const ranked = signals(limit);
   return Promise.all(ranked.map(async (pool) => {
     const measured = { ...pool, marketSafety: await marketSafety(pool) };
     return { ...measured, riskGate: evaluateRiskGate(measured) };
   }));
+}
+
+async function candidates(limit = 10) {
+  const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+  if (candidateCache && candidateCache.expiresAt > Date.now()
+      && candidateCache.limit >= boundedLimit) {
+    return candidateCache.value.slice(0, boundedLimit);
+  }
+  if (!candidatePromise) {
+    candidatePromise = measureCandidates(Math.max(10, boundedLimit))
+      .then((value) => {
+        candidateCache = {
+          value, limit: Math.max(10, boundedLimit),
+          expiresAt: Date.now() + CANDIDATE_CACHE_MS,
+        };
+        return value;
+      })
+      .finally(() => { candidatePromise = null; });
+  }
+  return (await candidatePromise).slice(0, boundedLimit);
 }
 
 function rememberPaperDecision(decision) {
