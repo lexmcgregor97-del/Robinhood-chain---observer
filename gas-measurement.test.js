@@ -37,6 +37,31 @@ test("fails closed without the chain's L1 fee component", async () => {
   assert.ok(result.failures.includes("gas-l1-component-unverified"));
 });
 
+test("accepts Nitro L1 gas only as a sub-component of total gasUsed", async () => {
+  const { l1Fee, ...nitro } = receipt;
+  nitro.gasUsedForL1 = "0x2710";
+  const result = await verifyGasMeasurement({ config, now,
+    getReceipt: async () => nitro,
+    getBlock: async () => ({ timestamp: `0x${Math.floor(now / 1000).toString(16)}` }),
+  });
+  assert.equal(result.verifiedInput, true);
+  assert.equal(result.observedCostWei, "100000000000000");
+  assert.equal("receiptBlock" in result, false);
+  assert.equal("router" in result, false);
+  assert.ok(result.lastVerifiedAt);
+});
+
+test("rejects an impossible Nitro L1 sub-component", async () => {
+  const { l1Fee, ...nitro } = receipt;
+  nitro.gasUsedForL1 = "0x186a1";
+  const result = await verifyGasMeasurement({ config, now,
+    getReceipt: async () => nitro,
+    getBlock: async () => ({ timestamp: `0x${Math.floor(now / 1000).toString(16)}` }),
+  });
+  assert.equal(result.verifiedInput, false);
+  assert.ok(result.failures.includes("gas-l1-component-invalid"));
+});
+
 test("rejects stale, failed, wrong-router, and underpriced measurements", async () => {
   const low = { ...config, configuredWethPerSide: 1e-12 };
   const result = await verifyGasMeasurement({ config: low, now,

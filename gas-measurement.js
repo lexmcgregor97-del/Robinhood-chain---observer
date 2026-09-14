@@ -50,17 +50,20 @@ export async function verifyGasMeasurement({ config, getReceipt, getBlock, now =
       if (!Number.isFinite(ageMs) || ageMs < -5 * 60_000 || ageMs > config.maxAgeMs) {
         failures.push("gas-measurement-stale");
       }
-      const executionWei = hexBigInt(receipt.gasUsed, "gas-used-invalid")
+      const gasUsed = hexBigInt(receipt.gasUsed, "gas-used-invalid");
+      const executionWei = gasUsed
         * hexBigInt(receipt.effectiveGasPrice, "gas-price-invalid");
-      let l1FeeWei = null;
-      if (receipt.l1Fee != null) l1FeeWei = hexBigInt(receipt.l1Fee, "gas-l1-fee-invalid");
-      else if (receipt.gasUsedForL1 != null && (receipt.l1GasPrice != null || receipt.l1BaseFee != null)) {
-        l1FeeWei = hexBigInt(receipt.gasUsedForL1, "gas-l1-used-invalid")
-          * hexBigInt(receipt.l1GasPrice ?? receipt.l1BaseFee, "gas-l1-price-invalid");
-      }
-      if (l1FeeWei === null) failures.push("gas-l1-component-unverified");
-      else {
-        observedCostWei = executionWei + l1FeeWei;
+      if (receipt.l1Fee != null) {
+        // OP-style receipts expose an additional L1 fee.
+        observedCostWei = executionWei + hexBigInt(receipt.l1Fee, "gas-l1-fee-invalid");
+      } else if (receipt.gasUsedForL1 != null) {
+        // Nitro/Orbit receipts fold the L1 component into gasUsed. Prove that
+        // the reported L1 gas is a sub-component and do not add it twice.
+        const gasUsedForL1 = hexBigInt(receipt.gasUsedForL1, "gas-l1-used-invalid");
+        if (gasUsedForL1 > gasUsed) failures.push("gas-l1-component-invalid");
+        else observedCostWei = executionWei;
+      } else failures.push("gas-l1-component-unverified");
+      if (observedCostWei !== null) {
         observedCostWeth = Number(observedCostWei) / 1e18;
         if (!Number.isFinite(observedCostWeth)
             || config.configuredWethPerSide < observedCostWeth) {
@@ -71,9 +74,9 @@ export async function verifyGasMeasurement({ config, getReceipt, getBlock, now =
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
   }
-  return { verifiedInput: failures.length === 0, measuredAt,
-    receiptBlock: receipt?.blockNumber || null,
-    router: ADDRESS.test(router || "") ? router : null,
+  const verifiedInput = failures.length === 0;
+  return { verifiedInput, measuredAt,
+    lastVerifiedAt: verifiedInput ? new Date(now).toISOString() : null,
     observedCostWei: observedCostWei?.toString() || null, observedCostWeth,
     configuredWethPerSide: config?.configuredWethPerSide ?? null,
     failures: [...new Set(failures)] };

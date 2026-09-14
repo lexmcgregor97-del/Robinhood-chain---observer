@@ -59,6 +59,8 @@ to a router in `PAPER_V2_ROUTER_ADDRESSES`, includes the receipt's L1 component,
 and confirms `PAPER_WETH_GAS_PER_SIDE` is no lower than the observed cost. The
 public status reports the derived cost but deliberately omits the transaction
 hash. Until every check passes, the entry gate stays closed.
+Verification is repeated hourly by default; any later failure closes the entry
+gate. Public status includes `lastVerifiedAt`, but not the router or block.
 
 Turnkey read-only verification requires that the API user is outside the root
 quorum, owns the configured API key, has zero applicable `EFFECT_ALLOW`

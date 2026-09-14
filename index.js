@@ -66,6 +66,12 @@ const PAPER_USDG_MAX_ENTRY = Number(process.env.PAPER_USDG_MAX_ENTRY || 100);
 const PAPER_WETH_GAS_PER_SIDE = Number(process.env.PAPER_WETH_GAS_PER_SIDE || 0.00001);
 const PAPER_USDG_GAS_PER_SIDE = Number(process.env.PAPER_USDG_GAS_PER_SIDE || 0.03);
 const PAPER_CYCLE_MS = Number(process.env.PAPER_CYCLE_MS || 10_000);
+const CONFIGURED_GAS_VERIFICATION_INTERVAL_MS = Number(
+  process.env.GAS_VERIFICATION_INTERVAL_MS || 60 * 60_000,
+);
+const GAS_VERIFICATION_INTERVAL_MS = Number.isFinite(CONFIGURED_GAS_VERIFICATION_INTERVAL_MS)
+  && CONFIGURED_GAS_VERIFICATION_INTERVAL_MS >= 60_000
+  ? CONFIGURED_GAS_VERIFICATION_INTERVAL_MS : 60 * 60_000;
 const STATE_FILE = String(process.env.STATE_FILE || "");
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
@@ -78,8 +84,8 @@ const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
 const EVIDENCE_FILE = EVIDENCE_DIR
   ? join(EVIDENCE_DIR, `${PAPER_STRATEGY_VERSION}.jsonl`) : "";
 const GAS_MEASUREMENT_CONFIG = gasMeasurementFromEnv(process.env);
-let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, receiptBlock: null,
-  router: null, observedCostWei: null, observedCostWeth: null,
+let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, lastVerifiedAt: null,
+  observedCostWei: null, observedCostWeth: null,
   configuredWethPerSide: GAS_MEASUREMENT_CONFIG.configuredWethPerSide,
   failures: [...GAS_MEASUREMENT_CONFIG.failures] };
 const QUALIFYING_PAPER_STRATEGY = Object.freeze({
@@ -1218,6 +1224,10 @@ await verifyConfiguredGasMeasurement();
 await verifyTurnkeyConfiguration();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
+const gasVerificationTimer = setInterval(() => {
+  void verifyConfiguredGasMeasurement();
+}, GAS_VERIFICATION_INTERVAL_MS);
+gasVerificationTimer.unref();
 
 let shuttingDown = false;
 async function shutdown() {

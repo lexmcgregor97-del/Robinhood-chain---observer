@@ -1,4 +1,4 @@
-# Atlas V5 Integrity Hardening — Fourth Verification Review
+# Atlas V5 Integrity Hardening — Fifth Verification Review
 
 Review branch: `peer-review/v2-integrity-fixes`
 
@@ -6,7 +6,7 @@ Please verify the implementation against the findings in
 `CLAUDE_REVIEW_PACKET.md`. This branch includes the original review snapshot,
 the first integrity patch, and the additional fresh-epoch requirements.
 
-This revision responds to the third review's W-1 through W-5 findings while
+This revision responds to the fourth review's X-1 through X-3 findings while
 retaining all prior integrity fixes.
 
 ## Implemented
@@ -60,10 +60,18 @@ retaining all prior integrity fixes.
 - Restore status publishes restart downtime. Crash-after-journal-before-state
   recovery remains deliberately fail-closed and its quarantine/new-epoch
   procedure is documented; automatic replay is not enabled.
+- Nitro/Orbit receipts now prove the L1 component with
+  `gasUsedForL1 <= gasUsed`; Atlas uses `gasUsed * effectiveGasPrice` as the
+  already-inclusive total and does not add the L1 portion twice. OP-style
+  `l1Fee` receipts retain their separate-fee accounting.
+- Gas verification repeats hourly (minimum configurable interval: one minute),
+  and every recheck fails the entry gate closed if assumptions regress.
+- Public gas status exposes `observedCostWeth`, `measuredAt`, and
+  `lastVerifiedAt`, but no receipt block, router, or measurement transaction.
 
 ## Validation
 
-- `npm test`: 169 passed, 0 failed
+- `npm test`: 171 passed, 0 failed
 - `npm run check`: passed
 - `git diff --check`: passed
 - Embedded-secret pattern scan: no match
@@ -86,7 +94,7 @@ closed with `gas-estimate-required`.
 
 ## Requested verdict
 
-1. Confirm whether W-1 through W-5 are adequately resolved or safely blocked.
+1. Confirm whether X-1 through X-3 are adequately resolved.
 2. Re-audit the evidence journal/state checkpoint protocol for crash windows,
    truncation, replay, concurrency, and information exposure.
 3. Audit gas accounting and marked drawdown for double counting or omissions.
