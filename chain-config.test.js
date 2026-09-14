@@ -8,6 +8,14 @@ test("pins Robinhood mainnet and canonical quote assets", () => {
   assert.equal(ROBINHOOD.factories.length, 4);
   assert.ok(isAddress(ROBINHOOD.weth));
   assert.ok(isAddress(ROBINHOOD.usdg));
+  assert.deepEqual(
+    ROBINHOOD.quoteTokens.map(({ symbol, decimals }) => ({ symbol, decimals })),
+    [{ symbol: "WETH", decimals: 18 }, { symbol: "USDG", decimals: 6 }],
+  );
+  assert.deepEqual(
+    ROBINHOOD.quoteTokens.map(({ address }) => address.toLowerCase()),
+    [ROBINHOOD.weth.toLowerCase(), ROBINHOOD.usdg.toLowerCase()],
+  );
 });
 
 test("keeps every factory and router address valid and unique", () => {

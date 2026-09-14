@@ -21,6 +21,7 @@ import {
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { assessReadiness } from "./readiness.js";
 import { nextBackoffMs, RpcScheduler } from "./rpc-scheduler.js";
+import { createTokenMetadataLoader } from "./token-metadata.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URL = process.env.RPC_URL || ROBINHOOD.rpcUrl;
@@ -57,8 +58,7 @@ const PANCAKE_V3_SWAP = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d264
 const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
 const pools = new Map();
-const tokenCache = new Map();
-const v3BoundaryCache = new Map();
+ const v3BoundaryCache = new Map();
 const paperPortfolio = new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS });
 const wethPaperPortfolio = new PaperPortfolio({
   initialCash: PAPER_WETH_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS,
@@ -90,7 +90,9 @@ const metrics = {
 };
 const persistence = {
   enabled: Boolean(STATE_FILE), restored: false, restoredCursor: null, restoredPoolCount: 0,
-  lastSavedAt: null, lastAttemptAt: 0, lastError: null, stateFile: STATE_FILE ? "configured" : null,
+  lastSavedAt: null, lastAttemptAt: 0, lastError: null,
+  writeBlocked: false, automationBlockedReason: null,
+  stateFile: STATE_FILE ? "configured" : null,
 };
 
 function persistedState() {
@@ -139,11 +141,14 @@ async function restoreState() {
     persistence.lastSavedAt = state.savedAt;
   } catch (error) {
     persistence.lastError = error instanceof Error ? error.message : String(error);
+    persistence.writeBlocked = true;
+    persistence.automationBlockedReason = "state-restore-failed";
+    console.error(`State restore failed; persistence and paper automation blocked: ${persistence.lastError}`);
   }
 }
 
 async function persistState(force = false) {
-  if (!STATE_FILE) return;
+  if (!STATE_FILE || persistence.writeBlocked) return;
   const now = Date.now();
   if (!force && now - persistence.lastAttemptAt < STATE_SAVE_MS) return;
   persistence.lastAttemptAt = now;
@@ -172,6 +177,11 @@ async function rpc(method, params) {
     return body.result;
   });
 }
+
+const tokenMeta = createTokenMetadataLoader({
+  call: (address, data) => rpc("eth_call", [{ to: address, data }, "latest"]),
+  pinned: ROBINHOOD.quoteTokens,
+});
 
 const hexBlock = (n) => `0x${n.toString(16)}`;
 const intHex = (value) => Number.parseInt(value || "0x0", 16);
@@ -329,7 +339,8 @@ async function poll() {
       latestBlock: metrics.latestBlock, cursor: metrics.cursor,
       backfillActive: metrics.backfill.active, lastError: metrics.lastError,
     });
-    if (ready.readyForPaper && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
+    if (ready.readyForPaper && !persistence.automationBlockedReason
+        && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
       await runPaperCycle();
     }
     await persistState();
@@ -345,31 +356,6 @@ async function poll() {
     pollRunning = false;
     setTimeout(poll, nextPollDelayMs);
   }
-}
-
-function decodeSymbol(result) {
-  if (!result || result === "0x") return "UNK";
-  const hex = result.slice(2);
-  try {
-    if (hex.length === 64) return Buffer.from(hex.replace(/00+$/, ""), "hex").toString("utf8") || "UNK";
-    const offset = Number.parseInt(hex.slice(0, 64), 16) * 2;
-    const length = Number.parseInt(hex.slice(offset, offset + 64), 16) * 2;
-    return Buffer.from(hex.slice(offset + 64, offset + 64 + length), "hex").toString("utf8") || "UNK";
-  } catch { return "UNK"; }
-}
-
-async function tokenMeta(address) {
-  if (tokenCache.has(address)) return tokenCache.get(address);
-  let meta = { symbol: "UNK", decimals: 18 };
-  try {
-    const [symbol, decimals] = await Promise.all([
-      rpc("eth_call", [{ to: address, data: "0x95d89b41" }, "latest"]),
-      rpc("eth_call", [{ to: address, data: "0x313ce567" }, "latest"]),
-    ]);
-    meta = { symbol: decodeSymbol(symbol).slice(0, 20), decimals: intHex(decimals) };
-  } catch {}
-  tokenCache.set(address, meta);
-  return meta;
 }
 
 const esc = (value) => String(value).replace(/[&<>"']/g, (c) => ({
@@ -793,7 +779,9 @@ function paperStatus() {
   return {
     mode: "PAPER_ONLY",
     newEntriesPaused: MEASUREMENT_REPAIR_ACTIVE,
-    pauseReason: MEASUREMENT_REPAIR_ACTIVE ? "measurement-repair" : null,
+    pauseReason: persistence.automationBlockedReason
+      || (MEASUREMENT_REPAIR_ACTIVE ? "measurement-repair" : null),
+    automationBlockedReason: persistence.automationBlockedReason,
     books: Object.fromEntries([...paperBooks.values()].map((book) => [
       book.symbol, paperBookStatus(book),
     ])),
