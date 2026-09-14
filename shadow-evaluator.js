@@ -9,6 +9,9 @@ export const SHADOW_RULES = Object.freeze([
     minAcceleration: 0.75, maxAcceleration: 1.5, maxDeviationPct: 5 },
   { name: "activity-baseline", signals: ["active", "breakout-watch", "escape-velocity"],
     minSwaps: 3, maxDeviationPct: 5 },
+  { name: "activity-pullback", signals: ["active", "breakout-watch", "escape-velocity"],
+    minSwaps: 3, maxDeviationPct: 5, pullbackMinPct: 2, pullbackMaxPct: 12,
+    setupMaxAgeMs: 5 * 60_000 },
   { name: "breakout-strict", signal: "breakout-watch", maxDeviationPct: 5 },
 ]);
 
@@ -101,6 +104,7 @@ export class ShadowEvaluator {
     this.rules = rules;
     this.samples = [];
     this.confirmations = new Map();
+    this.pullbackSetups = new Map();
   }
 
   pendingPoolAddresses() {
@@ -137,10 +141,30 @@ export class ShadowEvaluator {
 
   record(candidates, now = Date.now()) {
     const observedConfirmationKeys = new Set();
+    const observedPullbackKeys = new Set();
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
         const confirmationKey = `${rule.name}:${candidate.address}`;
+        const pullbackKey = confirmationKey;
+        if (finite(rule.pullbackMinPct)) {
+          observedPullbackKeys.add(pullbackKey);
+          const price = Number(candidate.marketSafety.tokenPriceQuote);
+          let setup = this.pullbackSetups.get(pullbackKey);
+          if (!setup || now - setup.startedAt > Number(rule.setupMaxAgeMs || 5 * 60_000)) {
+            this.pullbackSetups.set(pullbackKey, {
+              startedAt: now, peakPrice: price,
+            });
+            continue;
+          }
+          setup.peakPrice = Math.max(setup.peakPrice, price);
+          const pullbackPct = ((setup.peakPrice - price) / setup.peakPrice) * 100;
+          if (pullbackPct > Number(rule.pullbackMaxPct)) {
+            this.pullbackSetups.delete(pullbackKey);
+            continue;
+          }
+          if (pullbackPct < Number(rule.pullbackMinPct)) continue;
+        }
         const requiredCycles = Number(rule.confirmationCycles || 1);
         if (requiredCycles > 1) {
           observedConfirmationKeys.add(confirmationKey);
@@ -167,10 +191,14 @@ export class ShadowEvaluator {
           recorded = true;
         }
         if (recorded && requiredCycles > 1) this.confirmations.set(confirmationKey, 0);
+        if (recorded && finite(rule.pullbackMinPct)) this.pullbackSetups.delete(pullbackKey);
       }
     }
     for (const key of this.confirmations.keys()) {
       if (!observedConfirmationKeys.has(key)) this.confirmations.delete(key);
+    }
+    for (const key of this.pullbackSetups.keys()) {
+      if (!observedPullbackKeys.has(key)) this.pullbackSetups.delete(key);
     }
     if (this.samples.length > 2000) this.samples = this.samples.slice(-2000);
   }
@@ -208,7 +236,9 @@ export class ShadowEvaluator {
 
   serialize() {
     return { horizonMs: this.horizonMs, horizonsMs: this.horizonsMs,
-      samples: this.samples, confirmations: Object.fromEntries(this.confirmations) };
+      samples: this.samples,
+      confirmations: Object.fromEntries(this.confirmations),
+      pullbackSetups: Object.fromEntries(this.pullbackSetups) };
   }
 
   restore(state) {
@@ -218,5 +248,6 @@ export class ShadowEvaluator {
       horizonMs: Number(sample.horizonMs || state.horizonMs || 5 * 60_000),
     }));
     this.confirmations = new Map(Object.entries(state.confirmations || {}));
+    this.pullbackSetups = new Map(Object.entries(state.pullbackSetups || {}));
   }
 }

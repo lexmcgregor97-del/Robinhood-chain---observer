@@ -183,3 +183,33 @@ test("steady accumulation rejects sparse or rapidly accelerating flow", () => {
   spiking.signal.acceleration = 1.8;
   assert.equal(shadowRuleMatches(spiking, rule), false);
 });
+
+test("activity pullback records after a controlled retracement", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  const first = candidate("active", 100);
+  first.signal.swapsCurrentWindow = 4;
+  first.signal.acceleration = 1;
+  evaluator.record([first], 1000);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "activity-pullback").length, 0);
+  const retraced = candidate("active", 95);
+  retraced.signal.swapsCurrentWindow = 4;
+  retraced.signal.acceleration = 1;
+  evaluator.record([retraced], 1050);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "activity-pullback").length, 1);
+});
+
+test("activity pullback rejects a drop beyond the falling-knife limit", () => {
+  const evaluator = new ShadowEvaluator({ horizonMs: 100 });
+  const first = candidate("active", 100);
+  first.signal.swapsCurrentWindow = 4;
+  first.signal.acceleration = 1;
+  evaluator.record([first], 1000);
+  const collapse = candidate("active", 80);
+  collapse.signal.swapsCurrentWindow = 4;
+  collapse.signal.acceleration = 1;
+  evaluator.record([collapse], 1050);
+  assert.equal(evaluator.serialize().samples
+    .filter((sample) => sample.rule === "activity-pullback").length, 0);
+});
