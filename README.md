@@ -1,6 +1,6 @@
-# Robinhood Chain Observer
+# Atlas Trader
 
-A read-only Uniswap and PancakeSwap V2/V3 observer and paper-measurement service for Robinhood Chain (chain ID 4663).
+A compact, safety-first multichain trading core. Its first adapter is a read-only Uniswap and PancakeSwap V2/V3 observer and paper-measurement service for Robinhood Chain (chain ID 4663).
 
 ## Safety boundary
 

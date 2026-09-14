@@ -37,13 +37,3 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
 
   return { approved: failures.length === 0, failures, intent };
 }
-
-export class DisabledSigner {
-  async sign() {
-    throw new Error("atlas-signer-disabled");
-  }
-
-  async broadcast() {
-    throw new Error("atlas-broadcast-disabled");
-  }
-}

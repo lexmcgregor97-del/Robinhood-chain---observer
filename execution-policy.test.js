@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DisabledSigner, evaluateExecutionPolicy } from "./execution-policy.js";
+import { evaluateExecutionPolicy } from "./execution-policy.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const router = "0x2222222222222222222222222222222222222222";
@@ -38,10 +38,4 @@ test("rejects wrong wallet, chain, selector, expiry, and value", () => {
     "chain-not-allowed", "wallet-mismatch", "selector-not-allowed",
     "expiry-too-distant", "transaction-value-limit",
   ]);
-});
-
-test("disabled signer cannot sign or broadcast", async () => {
-  const signer = new DisabledSigner();
-  await assert.rejects(signer.sign(intent), /atlas-signer-disabled/);
-  await assert.rejects(signer.broadcast("0xdead"), /atlas-broadcast-disabled/);
 });
