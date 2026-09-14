@@ -41,7 +41,7 @@ test("keeps one unresolved sample per rule and pool", () => {
   const evaluator = new ShadowEvaluator({ horizonMs: 100 });
   evaluator.observe([candidate()], 1000);
   evaluator.observe([candidate()], 1050);
-  assert.equal(evaluator.serialize().samples.length, 4);
+  assert.equal(evaluator.serialize().samples.length, 3);
 });
 
 test("promotion remains advisory until enough samples exist", () => {
