@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { encodeFunctionData } from "viem";
 import { ExecutionLifecycle, ExecutionLifecycleError } from "./execution-lifecycle.js";
 import { ExecutionJournal } from "./execution-journal.js";
+import { NonceLane } from "./nonce-lane.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 import { DailySpendLedger } from "./spend-ledger.js";
 
@@ -30,7 +31,11 @@ const hash = `0x${"ab".repeat(32)}`;
 function provider(overrides = {}) {
   return {
     calls: [],
-    async sign(intent) { this.calls.push(["sign", intent.id]); return { payload: "signed", transactionHash: hash }; },
+    async getPendingNonce() { this.calls.push(["nonce"]); return 7; },
+    async sign(intent, options) {
+      this.calls.push(["sign", intent.id, options.nonce]);
+      return { payload: "signed", transactionHash: hash };
+    },
     async broadcast(signed) { this.calls.push(["broadcast", signed]); return hash; },
     async waitForReceipt(txHash) { this.calls.push(["receipt", txHash]); return { status: "success" }; },
     async getReceipt(txHash) { this.calls.push(["getReceipt", txHash]); return null; },
@@ -38,22 +43,23 @@ function provider(overrides = {}) {
   };
 }
 
+const lifecycleFor = (walletProvider, ledger = new DailySpendLedger(), journal = new ExecutionJournal()) =>
+  new ExecutionLifecycle({ policy, ledger, journal, nonceLane: new NonceLane(), provider: walletProvider });
+
 test("runs an approved intent through sign, broadcast, and confirmation", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), provider: walletProvider });
-  const result = await lifecycle.submit(rawIntent, { now });
+  const result = await lifecycleFor(walletProvider, ledger).submit(rawIntent, { now });
   assert.equal(result.status, "confirmed");
   assert.equal(result.transactionHash, hash);
-  assert.deepEqual(walletProvider.calls.map(([name]) => name), ["sign", "broadcast", "receipt"]);
+  assert.deepEqual(walletProvider.calls.map(([name]) => name), ["nonce", "sign", "broadcast", "receipt"]);
   assert.equal(ledger.snapshot(now).spentWei, "100");
 });
 
 test("rejects unsafe calldata before reserving spend or calling the provider", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), provider: walletProvider });
-  const result = await lifecycle.submit({ ...rawIntent, data: "0x12345678" }, { now });
+  const result = await lifecycleFor(walletProvider, ledger).submit({ ...rawIntent, data: "0x12345678" }, { now });
   assert.equal(result.status, "rejected");
   assert.equal(walletProvider.calls.length, 0);
   assert.equal(ledger.snapshot(now).spentWei, "0");
@@ -61,8 +67,7 @@ test("rejects unsafe calldata before reserving spend or calling the provider", a
 
 test("rejects replay before calling the provider a second time", async () => {
   const walletProvider = provider();
-  const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), provider: walletProvider });
+  const lifecycle = lifecycleFor(walletProvider);
   await lifecycle.submit(rawIntent, { now });
   const replay = await lifecycle.submit(rawIntent, { now });
   assert.deepEqual(replay.failures, ["duplicate-intent"]);
@@ -70,9 +75,8 @@ test("rejects replay before calling the provider a second time", async () => {
 });
 
 test("retains the conservative reservation when broadcast fails", async () => {
-  const walletProvider = provider({ async broadcast() { throw new Error("network-down"); } });
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), provider: walletProvider });
+  const lifecycle = lifecycleFor(provider({ async broadcast() { throw new Error("network-down"); } }), ledger);
   await assert.rejects(
     lifecycle.submit(rawIntent, { now }),
     (error) => error instanceof ExecutionLifecycleError && error.stage === "broadcasting",
@@ -81,10 +85,7 @@ test("retains the conservative reservation when broadcast fails", async () => {
 });
 
 test("reports a mined revert without treating it as confirmation", async () => {
-  const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal: new ExecutionJournal(),
-    provider: provider({ async waitForReceipt() { return { status: "reverted" }; } }),
-  });
+  const lifecycle = lifecycleFor(provider({ async waitForReceipt() { return { status: "reverted" }; } }));
   assert.equal((await lifecycle.submit(rawIntent, { now })).status, "reverted");
 });
 
@@ -93,12 +94,10 @@ test("persists a transaction hash before broadcast", async () => {
   const journal = new ExecutionJournal({}, {
     persist: async (state) => transitions.push(state.records.at(-1)?.status),
   });
-  const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal,
-    provider: provider({ async broadcast() { throw new Error("network-down"); } }),
-  });
+  const lifecycle = lifecycleFor(provider({ async broadcast() { throw new Error("network-down"); } }),
+    new DailySpendLedger(), journal);
   await assert.rejects(lifecycle.submit(rawIntent, { now }));
-  assert.deepEqual(transitions, ["reserved", "signed"]);
+  assert.deepEqual(transitions, ["reserved", "nonce-reserved", "signed"]);
   assert.equal(journal.get(rawIntent.id).transactionHash, hash);
 });
 
@@ -108,7 +107,10 @@ test("reconciles a pending transaction after restart without signing or broadcas
   }] });
   const walletProvider = provider({ async getReceipt() { return { status: "success", blockNumber: 12 }; } });
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, provider: walletProvider,
+    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane({ lanes: [{
+      key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
+      pending: { intentId: rawIntent.id, nonce: 7 },
+    }] }), provider: walletProvider,
   });
   const [result] = await lifecycle.recoverPending({ now: now + 1 });
   assert.equal(result.recovery, "reconciled");
@@ -122,7 +124,7 @@ test("never rebroadcasts when recovery cannot find a receipt", async () => {
   }] });
   const walletProvider = provider();
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, provider: walletProvider,
+    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(), provider: walletProvider,
   });
   const [result] = await lifecycle.recoverPending({ now: now + 1 });
   assert.equal(result.recovery, "still-pending");
