@@ -4,8 +4,9 @@ const isProviderLimit = (error) => /RPC HTTP 400(?:\s|\(|$)/.test(String(error?.
 
 export async function fetchLogsAdaptive({ request, from, to, address, topics }) {
   try {
+    const requestAddress = Array.isArray(address) && address.length === 1 ? address[0] : address;
     return await request("eth_getLogs", [{
-      fromBlock: blockHex(from), toBlock: blockHex(to), address, topics,
+      fromBlock: blockHex(from), toBlock: blockHex(to), address: requestAddress, topics,
     }]);
   } catch (error) {
     if (!isProviderLimit(error)) throw error;

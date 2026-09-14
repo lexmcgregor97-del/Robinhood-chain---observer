@@ -21,14 +21,25 @@ test("splits an oversized block range without skipping blocks", async () => {
 test("splits address batches when one block still exceeds the provider limit", async () => {
   const sizes = [];
   const request = async (_method, [filter]) => {
-    sizes.push(filter.address.length);
-    if (filter.address.length > 2) throw new Error("RPC endpoints unavailable: RPC HTTP 400 (eth_getLogs)");
-    return filter.address.map((address) => ({ address }));
+    const addresses = Array.isArray(filter.address) ? filter.address : [filter.address];
+    sizes.push(addresses.length);
+    if (addresses.length > 2) throw new Error("RPC endpoints unavailable: RPC HTTP 400 (eth_getLogs)");
+    return addresses.map((entry) => ({ address: entry }));
   };
   const address = ["0x1", "0x2", "0x3", "0x4"];
   const logs = await fetchLogsAdaptive({ request, from: 20, to: 20, address, topics: [] });
   assert.deepEqual(sizes, [4, 2, 2]);
   assert.deepEqual(logs.map((log) => log.address), address);
+});
+
+test("normalizes a singleton address batch to a scalar filter", async () => {
+  let observedAddress;
+  const request = async (_method, [filter]) => {
+    observedAddress = filter.address;
+    return [];
+  };
+  await fetchLogsAdaptive({ request, from: 1, to: 1, address: ["0x1"], topics: [] });
+  assert.equal(observedAddress, "0x1");
 });
 
 test("fails closed when a single-block single-address query is rejected", async () => {
