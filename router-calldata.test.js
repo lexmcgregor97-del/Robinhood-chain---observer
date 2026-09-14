@@ -11,6 +11,8 @@ const policy = { walletAddress: wallet, allowedPaths: [[weth, token]], maxRouter
 function intent(overrides = {}) {
   return {
     valueWei: "100",
+    spendAsset: "native",
+    spendAmount: "100",
     data: encodeFunctionData({
       abi: V2_ROUTER_ABI,
       functionName: "swapExactETHForTokens",
@@ -46,8 +48,18 @@ test("rejects native value attached to a token-input swap", () => {
     args: [100n, 90n, [weth, token], wallet, 1_050n],
   });
   assert.deepEqual(
-    validateV2RouterCalldata(intent({ data }), policy, { nowSeconds: 1_000 }).failures,
-    ["unexpected-transaction-value"],
+    validateV2RouterCalldata(intent({
+      data, valueWei: "0", spendAsset: weth, spendAmount: "100",
+    }), policy, { nowSeconds: 1_000 }).failures,
+    [],
+  );
+});
+
+test("rejects a spend declaration that does not match calldata", () => {
+  assert.deepEqual(
+    validateV2RouterCalldata(intent({ spendAmount: "99", spendAsset: weth }), policy,
+      { nowSeconds: 1_000 }).failures,
+    ["spend-asset-mismatch", "spend-amount-mismatch"],
   );
 });
 
