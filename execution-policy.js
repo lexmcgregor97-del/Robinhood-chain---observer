@@ -15,8 +15,9 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
   }
 
   const allowedChains = new Set(policy.allowedChainIds || []);
-  const allowedRouters = lowerSet(policy.allowedRouters);
-  const allowedSelectors = lowerSet(policy.allowedSelectors);
+  const allowedCalls = new Map(Object.entries(policy.allowedCalls || {}).map(
+    ([router, selectors]) => [router.toLowerCase(), lowerSet(selectors)],
+  ));
   const walletAddress = String(policy.walletAddress || "").toLowerCase();
   const maxExpiryMs = Number(policy.maxExpiryMs || 60_000);
   const value = BigInt(intent.valueWei);
@@ -26,8 +27,9 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
 
   if (!allowedChains.has(intent.chainId)) failures.push("chain-not-allowed");
   if (intent.from !== walletAddress) failures.push("wallet-mismatch");
-  if (!allowedRouters.has(intent.to)) failures.push("router-not-allowed");
-  if (!allowedSelectors.has(intent.selector)) failures.push("selector-not-allowed");
+  const routerSelectors = allowedCalls.get(intent.to);
+  if (!routerSelectors) failures.push("router-not-allowed");
+  else if (!routerSelectors.has(intent.selector)) failures.push("selector-not-allowed");
   if (intent.expiresAt <= now) failures.push("intent-expired");
   if (intent.expiresAt > now + maxExpiryMs) failures.push("expiry-too-distant");
   if (value > maxValue) failures.push("transaction-value-limit");
