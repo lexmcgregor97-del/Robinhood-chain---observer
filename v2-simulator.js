@@ -30,7 +30,10 @@ export function simulateV2RoundTrip({ reserveQuote, reserveToken, quoteAmountIn,
     amountIn: buy.amountOut, feeBps });
   const loss = quoteAmountIn - sell.amountOut;
   const roundTripLossBps = Number(loss * 10_000n / quoteAmountIn);
-  return { buyAmountOut: buy.amountOut, sellAmountOut: sell.amountOut,
-    buyPriceImpactBps: buy.priceImpactBps, sellPriceImpactBps: sell.priceImpactBps,
-    roundTripLossBps, profitableWithoutPriceMove: loss < 0n };
+  return {
+    buyAmountOut: buy.amountOut,
+    sellAmountOut: sell.amountOut,
+    buyPriceImpactBps: buy.priceImpactBps,
+    roundTripLossBps,
+  };
 }

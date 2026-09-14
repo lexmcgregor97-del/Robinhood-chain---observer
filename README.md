@@ -1,100 +1,60 @@
 # Robinhood Chain Observer
 
-Read-only Uniswap and PancakeSwap V2/V3 pool and swap observer for Robinhood Chain (chain ID 4663).
+A read-only Uniswap and PancakeSwap V2/V3 observer and paper-measurement service for Robinhood Chain (chain ID 4663).
 
 ## Safety boundary
 
-- No wallet, private key, signer, transaction construction, or write RPC.
-- No wallet, live trading, position sizing, or P/L logic.
-- Paper-signal scoring ranks pool activity and acceleration; it never submits transactions.
-- HTTP endpoints are GET-only.
-- Scanner state is bounded. It persists atomically when `STATE_FILE` points to a mounted volume; otherwise it resets on redeploy.
+- No wallet, private key, signer, transaction construction, or write RPC exists.
+- No transaction can be signed or broadcast.
+- Every HTTP endpoint is GET-only.
+- New paper and shadow entries are paused during the measurement repair.
+- Existing paper positions are marked and closed only in the virtual ledger.
+
+## Measurement model
+
+Swap activity is stored as timestamped per-block counts. Signals compare a 60-second window with a rate-normalized five-minute baseline; pool age is measured in elapsed time rather than block count.
+
+Candidate safety is measured at the paper book's actual intended notional. V2 and bounded same-tick V3 quotes determine acquired quantity, execution price, sell proceeds, fees, and price impact. These calculations are AMM arithmetic, not a honeypot or transfer-tax simulation.
+
+Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Missing prices are censored rather than recorded as losses. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
+
+## Persistence
+
+Mount a Railway volume at `/data` and set:
+
+```sh
+STATE_FILE=/data/observer-state.json
+```
+
+State is written atomically. A missing file starts cleanly. Corrupt, unsupported, or unreadable state blocks paper automation and all subsequent writes while leaving scanner health visible, preserving the original file for recovery.
 
 ## Run
 
 Requires Node.js 20 or newer.
 
 ```sh
+npm ci
+npm test
 npm start
 ```
 
-Optional environment variables:
+See `.env.example` for configuration. WETH (18 decimals) and USDG (6 decimals) are pinned; failed metadata lookups for other tokens are not cached.
 
-- `RPC_URL` (defaults to Robinhood Chain public RPC)
-- `POLL_INTERVAL_MS` (defaults to `5000`)
-- `PORT` (defaults to `3000`)
-- `SIGNAL_WINDOW_BLOCKS` (defaults to `20`)
-- `SIGNAL_MIN_SWAPS` (defaults to `3`)
+## Endpoints
 
-Endpoints: `/`, `/health`, `/api/scanner`, `/api/pools`, `/api/signals`,
-`/api/candidates`.
-
-## Current build stage
-
-`/api/signals` labels pools as `quiet`, `active`, `breakout-watch`, or
-`escape-velocity` from recent swap count, acceleration versus the prior block
-window, and recency. This is the first paper layer. Price, liquidity, honeypot,
-slippage, virtual fills, and P/L gates must be added and validated before any
-wallet or live-execution layer.
-
-Swap payloads are decoded with `viem` and the latest raw token deltas are kept
-on each pool. Human-normalized execution prices are available once token
-decimals and quote-token classification pass the market-safety gate.
-
-`/api/candidates` is deliberately fail-closed. A pool cannot become eligible
-for a virtual entry until quote-token identity, liquidity, simulated buy and
-sell success, pool age, price impact, and round-trip loss are all measured.
-
-## Dedicated wallet boundary
-
-The bot supports a dedicated EOA loaded from deployment secrets. It remains
-disarmed unless `LIVE_TRADING_ENABLED` exactly matches the explicit arm phrase
-and every required limit and router allowlist is valid. `/api/wallet` reveals
-only configuration state and the public address—never key material.
-
-Before signing is connected, every proposed transaction must pass chain-ID,
-router allowlist, per-trade, daily-spend, gas, slippage, and calldata checks.
-The current build can validate an intent but cannot broadcast it.
-
-## Paper portfolio
-
-`/api/paper` reports virtual cash, open positions, market value, equity, and
-realized/unrealized P/L. The accounting engine includes entry and exit fees,
-position limits, overspend protection, deterministic marks, and serializable
-state for persistence. It is not yet wired to open positions automatically.
-
-## Swap simulation
-
-The V2 simulator applies constant-product reserve changes and pool fees in both
-directions. It reports buy/sell output, price impact, and round-trip loss using
-integer arithmetic. This supplies two of the candidate gate's required safety
-measurements without estimating them from chart candles.
-
-## Robinhood Chain venues
-
-Factory discovery covers both Uniswap and PancakeSwap V2/V3. WETH, USDG,
-factory, and router addresses are pinned in `chain-config.js` from Robinhood,
-Uniswap, and PancakeSwap primary sources. Router addresses are references only;
-the wallet allowlist remains empty until deployment configuration explicitly
-selects a venue.
-
-## Reuse policy
-
-- `viem` (MIT): EVM ABI and RPC primitives.
-- PancakeSwap SDK (MIT): approved for later route and price-impact math.
-- Hummingbot (Apache-2.0): architecture reference only unless attribution is added.
-- GPL/AGPL or unlicensed trading repositories: no copied code.
-
-## Persistence
-
-Set `STATE_FILE=/data/observer-state.json` after mounting a Railway volume at `/data`.
-The service atomically checkpoints its cursor, bounded pool history, paper portfolio,
-trades, and automation state every 30 seconds and again during graceful shutdown.
-Without a mounted volume, persistence remains disabled and the scanner continues safely in memory.
+- `/`
+- `/health`
+- `/api/scanner`
+- `/api/pools`
+- `/api/signals`
+- `/api/candidates`
+- `/api/paper`
 
 ## RPC reliability
 
-All JSON-RPC calls pass through a shared serialized scheduler. The default spacing is
-250–350 ms, with a shared 15-second cooldown on HTTP 429 responses and adaptive poll
-backoff. Override with `RPC_MIN_INTERVAL_MS` and `RPC_JITTER_MS` only after measuring
-the configured provider's published limits.
+All JSON-RPC calls pass through a serialized scheduler. The default spacing is 250–350 ms, with a shared cooldown on HTTP 429 responses and adaptive poll backoff.
+
+## Reuse policy
+
+- `viem` (MIT) supplies ABI decoding and EVM primitives.
+- No GPL/AGPL or unlicensed trading-bot code is copied into this repository.
