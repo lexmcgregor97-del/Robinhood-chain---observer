@@ -120,6 +120,8 @@ test("persists a transaction hash before broadcast", async () => {
   assert.equal(journal.get(rawIntent.id).gas, "100000");
   assert.equal(journal.get(rawIntent.id).signingRequestedAt, now);
   assert.equal(journal.get(rawIntent.id).signedAt, now);
+  assert.equal(journal.get(rawIntent.id).reservedAt, now);
+  assert.equal(journal.get(rawIntent.id).signingProtocolVersion, 2);
 });
 
 test("a sign-then-checkpoint failure remains ambiguous and cannot be operator-rejected", async () => {

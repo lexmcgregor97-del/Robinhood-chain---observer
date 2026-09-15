@@ -138,6 +138,9 @@ assertion. The record must pre-exist as `manual-review`, carry
 lifecycle checkpoints that marker before calling Turnkey; marker-without-bytes
 is ambiguous and remains blocked. The rejection is journaled as its own
 evidence type before nonce release. Legacy, signed, and hashed records are refused.
+The protocol version must be incremented if the ordering or meaning of the
+pre-sign marker changes. Execution evidence records `reservedAt`,
+`signingRequestedAt`, `signedAt`, and `broadcastAt` explicitly.
 Dropped signed-transaction resolution, exact approval orchestration,
 native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final

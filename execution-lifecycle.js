@@ -4,6 +4,9 @@ import { ExecutionRecovery } from "./execution-recovery.js";
 import { keccak256 } from "viem";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+// Bump this whenever the ordering or meaning of the pre-sign marker changes.
+// Older protocol records must remain ineligible for never-signed resolution.
+const SIGNING_PROTOCOL_VERSION = 2;
 
 export class ExecutionLifecycleError extends Error {
   constructor(stage, cause, state) {
@@ -84,7 +87,8 @@ export class ExecutionLifecycle {
       await this.journal.transition(intent.id, {
         status: "reserved", chainId: intent.chainId,
         spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
-        signingProtocolVersion: 2,
+        signingProtocolVersion: SIGNING_PROTOCOL_VERSION,
+        reservedAt: Number(now),
       }, now);
     } catch {
       this.running.delete(intent.id);

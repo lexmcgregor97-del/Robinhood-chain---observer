@@ -1,11 +1,14 @@
-# Atlas Never-Signed Manual-Review Resolution — Review Packet (revision 2)
+# Atlas Never-Signed Manual-Review Resolution — Review Packet (revision 3)
 
 ## Exact scope
 
 Review PR #22, branch `fix/manual-review-resolution`, against production
 `main` at `386f7ffa1a7fbc4bfa207ce1eaeb13a009803beb`.
 
-Revision 2 responds to Claude findings F-1 through F-3. Review the exact final
+Revision 2 responds to Claude findings F-1 through F-3. Revision 3 applies the
+two non-blocking forensic suggestions from the revision-2 review: it records
+`reservedAt` and documents that a future change to pre-sign marker ordering or
+meaning must bump the signing protocol version. Review the exact final
 commit linked in the handoff, not an implicitly moving branch.
 
 Production and Railway remain unchanged in V6b `PAPER_ONLY`. This branch is
@@ -47,7 +50,7 @@ that recognizes only the typed
 - The existing exclusive recovery lock and state-age check remain in force.
 - Runtime signing and attestation private material remain forbidden.
 - The new resolver has no provider, signer, or broadcast dependency.
-- `signingRequestedAt`, `signedAt`, and `broadcastAt` preserve the timeline.
+- `reservedAt`, `signingRequestedAt`, `signedAt`, and `broadcastAt` preserve the timeline.
 - Any record containing signed bytes or a transaction hash is refused.
 - The web runtime does not import or expose the resolver.
 - Submission remains disconnected; micro-mainnet remains disabled.
