@@ -41,10 +41,14 @@ import {
 } from "./v2-sell-probe.js";
 import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
 import {
-  assessMicroMainnetActivation, microMainnetConfigFromEnv, publicMicroMainnetConfig,
+  assessMicroMainnetActivation, forbiddenRuntimeSecretFailures,
+  microMainnetConfigFromEnv, publicMicroMainnetConfig,
 } from "./micro-mainnet-config.js";
 import { assessTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 import { readSigningAttestation, verifySigningAttestation } from "./signing-attestation.js";
+
+const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
+if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -279,6 +283,7 @@ async function verifyTurnkeyConfiguration() {
 
 async function verifyAttestedSigningConfiguration(client, observerUserId) {
   const failures = [];
+  let stage = "attestation";
   try {
     if (!SIGNING_ATTESTATION_FILE || !SIGNING_ATTESTATION_PUBLIC_KEY) {
       throw new Error("signing-attestation-config-required");
@@ -293,6 +298,7 @@ async function verifyAttestedSigningConfiguration(client, observerUserId) {
       throw new Error("signing-attestation-observer-user-mismatch");
     }
     const signingUserId = attestation.claims.signingUserId;
+    stage = "turnkey";
     const [organizationConfigs, policies, user] = await Promise.all([
       client.getOrganizationConfigs({ organizationId: MICRO_MAINNET_CONFIG.organizationId }),
       client.getPolicies({ organizationId: MICRO_MAINNET_CONFIG.organizationId }),
@@ -302,6 +308,7 @@ async function verifyAttestedSigningConfiguration(client, observerUserId) {
       whoami: { userId: signingUserId }, organizationConfigs, policies,
       user: user?.user || user });
     failures.push(...policy.failures);
+    stage = "balance";
     const balanceCall = `0x70a08231000000000000000000000000${MICRO_MAINNET_CONFIG.walletAddress.slice(2)}`;
     const walletWethBalanceWei = BigInt(await rpc("eth_call", [{
       to: ROBINHOOD.weth, data: balanceCall,
@@ -317,12 +324,17 @@ async function verifyAttestedSigningConfiguration(client, observerUserId) {
       walletWethBalanceWei,
       failures: [...new Set(failures)], lastError: null,
     });
-  } catch (error) {
+  } catch {
+    const fixedFailure = {
+      attestation: "signing-attestation-read-failed",
+      turnkey: "turnkey-revalidation-failed",
+      balance: "weth-balance-read-failed",
+    }[stage];
     Object.assign(turnkeySigningStatus, {
       checked: true, verified: false, credentialVerified: false,
       attestationVerified: false, walletBalanceVerified: false,
       walletWethBalanceWei: null,
-      failures: [...new Set(failures.length ? failures : [error.message])],
+      failures: [...new Set(failures.length ? failures : [fixedFailure])],
       lastError: "external-signing-verification-failed",
     });
   }
