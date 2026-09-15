@@ -15,8 +15,10 @@ export class ExecutionLifecycleError extends Error {
 }
 
 export class ExecutionLifecycle {
-  constructor({ policy, ledger, journal, nonceLane, provider, validateCalldata = validateV2RouterCalldata }) {
-    if (!policy || !ledger || !journal || !nonceLane || !provider || typeof validateCalldata !== "function") {
+  constructor({ policy, ledger, journal, nonceLane, provider, preflight,
+    validateCalldata = validateV2RouterCalldata }) {
+    if (!policy || !ledger || !journal || !nonceLane || !provider
+        || typeof preflight !== "function" || typeof validateCalldata !== "function") {
       throw new Error("invalid-execution-lifecycle-config");
     }
     this.policy = policy;
@@ -24,6 +26,7 @@ export class ExecutionLifecycle {
     this.journal = journal;
     this.nonceLane = nonceLane;
     this.provider = provider;
+    this.preflight = preflight;
     this.validateCalldata = validateCalldata;
     this.running = new Set();
   }
@@ -43,6 +46,19 @@ export class ExecutionLifecycle {
     const calldata = this.validateCalldata(intent, this.policy, { nowSeconds: Math.floor(now / 1000) });
     if (!calldata.approved) {
       return Object.freeze({ status: "rejected", stage: "calldata", failures: calldata.failures });
+    }
+
+    try {
+      const preflight = await this.preflight(intent, { now });
+      if (preflight?.approved !== true) {
+        const failures = Array.isArray(preflight?.failures) && preflight.failures.length
+          ? preflight.failures : ["execution-preflight-rejected"];
+        return Object.freeze({ status: "rejected", stage: "preflight",
+          failures: Object.freeze([...new Set(failures)]) });
+      }
+    } catch {
+      return Object.freeze({ status: "rejected", stage: "preflight",
+        failures: Object.freeze(["execution-preflight-failed"]) });
     }
 
     this.running.add(intent.id);
