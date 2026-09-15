@@ -171,3 +171,23 @@ test("operator recovery can broadcast only the identical persisted signed bytes"
   assert.equal(journal.get(rawIntent.id).status, "broadcast");
   assert.deepEqual(walletProvider.calls.map(([name]) => name), ["broadcast"]);
 });
+
+test("a dropped broadcast can rebroadcast only the identical persisted bytes", async () => {
+  const calls = [];
+  const journal = new ExecutionJournal();
+  const lifecycle = new ExecutionLifecycle({
+    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
+    provider: {
+      getPendingNonce: async () => 7,
+      sign: async () => ({ payload: signedPayload, transactionHash: hash }),
+      broadcast: async (bytes) => { calls.push(bytes); return hash; },
+      waitForReceipt: async () => { throw new Error("transaction-receipt-timeout"); },
+      getReceipt: async () => null,
+    },
+  });
+  await assert.rejects(lifecycle.submit(rawIntent, { now }), /execution-confirming-failed/);
+  assert.equal(journal.get(rawIntent.id).status, "broadcast");
+  const result = await lifecycle.rebroadcastIdentical(rawIntent.id);
+  assert.equal(result.status, "broadcast");
+  assert.deepEqual(calls, [signedPayload, signedPayload]);
+});
