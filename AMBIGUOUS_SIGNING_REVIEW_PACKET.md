@@ -1,4 +1,4 @@
-# Atlas Ambiguous-Signing Evidence Restoration — Review Packet (revision 1)
+# Atlas Ambiguous-Signing Evidence Restoration — Review Packet (revision 2)
 
 ## Scope
 
@@ -13,19 +13,31 @@ an operator command or execution release.
 `SIGN_TRANSACTION_V2` activity against a journal record already blocked as
 `manual-review-signing-ambiguous`. It requires:
 
-- protocol-v2 record, durable `signingRequestedAt`, chain ID, and nonce;
+- protocol-v3 record, durable `signingRequestedAt`, intent-transaction digest,
+  chain ID, and nonce;
 - exact organization, signing-user approval vote, and signing wallet;
 - activity creation within the bounded post-request window;
 - parseable Turnkey unsigned intent and completed signed result;
 - cryptographically recovered signer equal to the configured wallet;
-- equality of chain, nonce, target, calldata, and value between unsigned and
-  signed transactions;
-- signed chain and nonce equal to the blocked journal record.
+- equality of chain, nonce, type, target, calldata, value, gas, and EIP-1559
+  fee fields between unsigned and signed transactions;
+- signed chain and nonce equal to the blocked journal record;
+- a canonical digest of the signed transaction's chain, recovered sender,
+  target, calldata, and value equal to the digest persisted before signing;
+- EIP-1559 type and configured gas and fee ceilings.
+
+The lifecycle now persists that canonical digest in the same fail-closed
+`signing-requested` transition that precedes the Turnkey call. Because this
+changes the marker's meaning, `SIGNING_PROTOCOL_VERSION` is bumped to 3;
+protocol-v2 ambiguous records cannot use this restoration path. Safe
+never-signed rejection remains available to both v2 and v3 records whose
+durable evidence proves that signing was never requested.
 
 The resolver performs verification internally from raw activity evidence; it
 does not trust a caller-supplied `verified` flag. With the exact offline
 assertion it journals the recovered hash, signed bytes, activity ID, and signed
-time as `signed`. It does not finalize the nonce or broadcast.
+time as `signed`, and clears the stale `recoveryFailure`. It does not finalize
+the nonce or broadcast.
 
 ## Safety boundary
 
@@ -39,13 +51,14 @@ time as `signed`. It does not finalize the nonce or broadcast.
 ## Validation
 
 - `npm run check`: passing
-- `npm test`: 268/268 passing on the dependency-complete runner
+- `npm test`: 272/272 passing on the dependency-complete runner
 - `git diff --check`: clean
 
 Tests cover exact completed activity restoration, organization/status/time/
 nonce/vote/wallet drift, unsigned-versus-signed intent mismatch, recovered
-signer validation, refusal of unverified evidence, and retention of the pending
-nonce after successful restoration.
+signer validation, canonical digest drift for a different genuine same-nonce
+wallet transaction, gas/fee safeguards, refusal of unverified evidence, stale
+recovery-label clearing, and retention of the pending nonce after restoration.
 
 ## Deliberate remaining blockers
 
@@ -60,11 +73,13 @@ nonce after successful restoration.
 
 1. Can raw caller data forge a verified result or restore arbitrary bytes?
 2. Are organization, signing user, wallet, time, nonce, chain, signer, target,
-   calldata, and value all bound?
+   calldata, value, transaction type, gas, and fees all bound?
 3. Can a failed/denied/pending activity restore a payload?
 4. Can unsigned intent A be paired with signed transaction B?
 5. Does successful restoration leave the nonce blocked and avoid broadcast?
 6. Does the new code remain unreachable from the web runtime?
+7. Can a different genuine wallet transaction sharing chain and nonce satisfy
+   the persisted intent digest?
 
 ## Required verdicts
 

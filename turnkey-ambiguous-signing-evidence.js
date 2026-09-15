@@ -1,6 +1,7 @@
 import {
   isAddressEqual, keccak256, parseTransaction, recoverTransactionAddress,
 } from "viem";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const COMPLETED = "ACTIVITY_STATUS_COMPLETED";
 const SIGN_TRANSACTION = "ACTIVITY_TYPE_SIGN_TRANSACTION_V2";
@@ -31,23 +32,31 @@ const timestampMs = (value) => {
 
 const sameTransaction = (left, right) => left.chainId === right.chainId
   && left.nonce === right.nonce
+  && left.type === right.type
   && sameAddress(left.to, right.to)
   && String(left.data || "0x").toLowerCase() === String(right.data || "0x").toLowerCase()
-  && BigInt(left.value || 0n) === BigInt(right.value || 0n);
+  && BigInt(left.value || 0n) === BigInt(right.value || 0n)
+  && BigInt(left.gas || 0n) === BigInt(right.gas || 0n)
+  && BigInt(left.maxFeePerGas || 0n) === BigInt(right.maxFeePerGas || 0n)
+  && BigInt(left.maxPriorityFeePerGas || 0n) === BigInt(right.maxPriorityFeePerGas || 0n);
 
 export async function verifyAmbiguousSigningActivity({
   record, activity, organizationId, walletAddress, signingUserId,
-  maximumActivityDelayMs = 5 * 60_000,
+  maximumActivityDelayMs = 5 * 60_000, maxGas, maxFeePerGasWei,
 } = {}) {
   const failures = [];
   if (record?.status !== "manual-review"
       || record?.recoveryFailure !== "manual-review-signing-ambiguous"
-      || record?.signingProtocolVersion !== 2
+      || record?.signingProtocolVersion !== 3
+      || !/^0x[0-9a-fA-F]{64}$/.test(String(record?.intentTransactionDigest || ""))
       || !Number.isSafeInteger(record?.nonce)
       || !Number.isFinite(record?.signingRequestedAt)) {
     failures.push("ambiguous-signing-record-invalid");
   }
-  if (!organizationId || !walletAddress || !signingUserId
+  let gasLimit;
+  let feeLimit;
+  try { gasLimit = BigInt(maxGas); feeLimit = BigInt(maxFeePerGasWei); } catch {}
+  if (!organizationId || !walletAddress || !signingUserId || !(gasLimit > 0n) || !(feeLimit > 0n)
       || !Number.isSafeInteger(maximumActivityDelayMs) || maximumActivityDelayMs <= 0) {
     failures.push("ambiguous-signing-evidence-config-invalid");
   }
@@ -92,6 +101,24 @@ export async function verifyAmbiguousSigningActivity({
     if (signedTransaction.chainId !== Number(record?.chainId)
         || signedTransaction.nonce !== Number(record?.nonce)) {
       failures.push("turnkey-activity-record-mismatch");
+    }
+    let digest;
+    try {
+      digest = executionIntentTransactionDigest({ chainId: signedTransaction.chainId,
+        from: walletAddress, to: signedTransaction.to, data: signedTransaction.data,
+        value: signedTransaction.value || 0n });
+    } catch {}
+    if (digest?.toLowerCase() !== String(record?.intentTransactionDigest || "").toLowerCase()) {
+      failures.push("turnkey-activity-intent-mismatch");
+    }
+    if (signedTransaction.type !== "eip1559"
+        || signedTransaction.gas == null || signedTransaction.maxFeePerGas == null
+        || signedTransaction.maxPriorityFeePerGas == null
+        || typeof gasLimit !== "bigint" || typeof feeLimit !== "bigint"
+        || (typeof gasLimit === "bigint" && signedTransaction.gas > gasLimit)
+        || (typeof feeLimit === "bigint" && signedTransaction.maxFeePerGas > feeLimit)
+        || (typeof feeLimit === "bigint" && signedTransaction.maxPriorityFeePerGas > feeLimit)) {
+      failures.push("turnkey-activity-gas-fee-limit");
     }
   }
   const uniqueFailures = [...new Set(failures)];

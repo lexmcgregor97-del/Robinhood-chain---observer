@@ -1,6 +1,7 @@
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 
 const NEVER_SIGNED_FAILURE = "signed-transaction-not-durable";
+const NEVER_SIGNED_PROTOCOLS = new Set([2, 3]);
 
 export class ExecutionManualReviewResolver {
   constructor({ journal, nonceLane }) {
@@ -17,7 +18,7 @@ export class ExecutionManualReviewResolver {
     if (!record || record.status !== "manual-review") {
       throw new Error("manual-review-record-required");
     }
-    if (record.signingProtocolVersion !== 2
+    if (!NEVER_SIGNED_PROTOCOLS.has(record.signingProtocolVersion)
         || record.recoveryFailure !== NEVER_SIGNED_FAILURE
         || record.signingRequestedAt != null
         || TX_HASH.test(String(record.transactionHash || ""))
@@ -54,6 +55,8 @@ export class ExecutionManualReviewResolver {
       walletAddress: activityEvidence?.walletAddress,
       signingUserId: activityEvidence?.signingUserId,
       maximumActivityDelayMs: activityEvidence?.maximumActivityDelayMs,
+      maxGas: activityEvidence?.maxGas,
+      maxFeePerGasWei: activityEvidence?.maxFeePerGasWei,
     });
     if (!verification.verified) {
       throw new Error("manual-review-turnkey-evidence-invalid");
@@ -67,6 +70,7 @@ export class ExecutionManualReviewResolver {
       turnkeySigningActivityId: evidence.activityId,
       operatorResolution: { type: "turnkey-signed-payload-restored",
         assertedAt: Number(now) },
+      recoveryFailure: null,
     }, now);
     return Object.freeze({ intentId: record.intentId, status: "signed",
       transactionHash: evidence.transactionHash,

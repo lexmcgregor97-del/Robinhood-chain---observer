@@ -5,6 +5,7 @@ import { NonceLane } from "./nonce-lane.js";
 import { ExecutionManualReviewResolver } from "./execution-manual-review.js";
 import { serializeTransaction } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const signingAccount = privateKeyToAccount(`0x${"11".repeat(32)}`);
@@ -97,13 +98,17 @@ test("a failed rejection checkpoint leaves the nonce blocked", async () => {
 
 test("restores verified Turnkey bytes without releasing or broadcasting the nonce", async () => {
   const signingRequestedAt = 1_000_000;
-  const { journal, nonceLane, resolver } = fixture({ chainId: 4663,
-    recoveryFailure: "manual-review-signing-ambiguous", signingRequestedAt,
-  });
   const transaction = { chainId: 4663, type: "eip1559", nonce: 7,
     to: "0x2222222222222222222222222222222222222222", data: "0x12345678",
     value: 0n, gas: 150000n, maxFeePerGas: 1000000000n,
     maxPriorityFeePerGas: 1000000n };
+  const { journal, nonceLane, resolver } = fixture({ chainId: 4663,
+    recoveryFailure: "manual-review-signing-ambiguous", signingRequestedAt,
+    signingProtocolVersion: 3,
+    intentTransactionDigest: executionIntentTransactionDigest({ chainId: 4663,
+      from: signingAccount.address, to: transaction.to, data: transaction.data,
+      value: transaction.value }),
+  });
   const signedPayload = await signingAccount.signTransaction(transaction);
   const activity = { id: "activity-1", organizationId,
     status: "ACTIVITY_STATUS_COMPLETED", type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
@@ -114,10 +119,12 @@ test("restores verified Turnkey bytes without releasing or broadcasting the nonc
     result: { signTransactionResult: { signedTransaction: signedPayload } } };
   const result = await resolver.restoreSignedFromTurnkey("entry:1", {
     activity, organizationId, walletAddress: signingAccount.address, signingUserId,
+    maxGas: "200000", maxFeePerGasWei: "2000000000",
   }, { now: 4, operatorAssertion: "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY" });
   assert.equal(result.status, "signed");
   assert.equal(journal.get("entry:1").signedPayload, signedPayload);
   assert.equal(journal.get("entry:1").turnkeySigningActivityId, "activity-1");
+  assert.equal(journal.get("entry:1").recoveryFailure, null);
   assert.equal(nonceLane.snapshot().lanes[0].pending.intentId, "entry:1");
 });
 

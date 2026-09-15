@@ -129,12 +129,12 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Protocol-v2 `manual-review` reservations durably proven never submitted for
+Protocol-v2 or protocol-v3 `manual-review` reservations durably proven never submitted for
 signing can be rejected only by the isolated
 recovery command with both `EXECUTION_MANUAL_REVIEW_INTENT_ID` and the exact
 `EXECUTION_MANUAL_REVIEW_CONFIRM=REJECT_ATLAS_NEVER_SIGNED_RESERVATION`
 assertion. The record must pre-exist as `manual-review`, carry
-`signingProtocolVersion: 2`, and have no `signingRequestedAt` marker. The
+an eligible `signingProtocolVersion`, and have no `signingRequestedAt` marker. The
 lifecycle checkpoints that marker before calling Turnkey; marker-without-bytes
 is ambiguous and remains blocked. The rejection is journaled as its own
 evidence type before nonce release. Legacy, signed, and hashed records are refused.
@@ -151,9 +151,12 @@ The dormant ambiguous-signing verifier accepts only a completed Turnkey
 `SIGN_TRANSACTION_V2` activity from the pinned organization, signing user, and
 wallet, inside the bounded signing window. It cryptographically recovers the
 signer and requires the signed transaction to match Turnkey's unsigned intent
-and the journal's chain ID and nonce. The resolver can then durably restore
-those exact signed bytes while leaving the nonce blocked. This component is not
-yet connected to an operator command and cannot list activities or broadcast.
+and the journal's protocol-v3 intent digest (chain, sender, target, calldata,
+and value), chain ID, and nonce. It also rechecks EIP-1559 type and configured
+gas and fee ceilings. The resolver can then durably restore those exact signed
+bytes, clear the stale recovery label, and leave the nonce blocked. Protocol-v2
+ambiguous records remain ineligible. This component is not yet connected to an
+operator command and cannot list activities or broadcast.
 
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
