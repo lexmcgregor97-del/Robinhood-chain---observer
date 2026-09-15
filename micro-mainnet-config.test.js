@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  assessMicroMainnetActivation, microMainnetConfigFromEnv, publicMicroMainnetConfig,
+  assessMicroMainnetActivation, forbiddenRuntimeSecretFailures,
+  microMainnetConfigFromEnv, publicMicroMainnetConfig,
 } from "./micro-mainnet-config.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
@@ -58,6 +59,15 @@ test("keeps signing secrets out of public status", () => {
   const result = publicMicroMainnetConfig(microMainnetConfigFromEnv(configured));
   assert.equal(JSON.stringify(result).includes(configured.TURNKEY_SIGNING_API_PUBLIC_KEY), false);
   assert.equal(result.signingApiKeyConfigured, true);
+});
+
+test("web runtime refuses signing and attestation private keys", () => {
+  assert.deepEqual(forbiddenRuntimeSecretFailures({}), []);
+  assert.deepEqual(forbiddenRuntimeSecretFailures({
+    TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY: "secret",
+    TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: "secret",
+  }), ["signing-private-key-must-not-be-configured",
+    "attestation-private-key-must-not-be-configured"]);
 });
 
 test("never arms with pending execution state or incomplete independent checks", () => {
