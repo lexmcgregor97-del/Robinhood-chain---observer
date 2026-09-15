@@ -31,6 +31,7 @@ const policy = {
 const signedPayload = `0x${"ab".repeat(100)}`;
 const { keccak256 } = await import("viem");
 const hash = keccak256(signedPayload);
+const preflight = async () => ({ approved: true, failures: [] });
 
 function provider(overrides = {}) {
   return {
@@ -49,7 +50,8 @@ function provider(overrides = {}) {
 test("runs an approved intent through sign, broadcast, and confirmation", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), nonceLane: new NonceLane(), provider: walletProvider });
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+    nonceLane: new NonceLane(), provider: walletProvider, preflight });
   const result = await lifecycle.submit(rawIntent, { now });
   assert.equal(result.status, "confirmed");
   assert.equal(result.transactionHash, hash);
@@ -60,7 +62,8 @@ test("runs an approved intent through sign, broadcast, and confirmation", async 
 test("rejects unsafe calldata before reserving spend or calling the provider", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), nonceLane: new NonceLane(), provider: walletProvider });
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+    nonceLane: new NonceLane(), provider: walletProvider, preflight });
   const result = await lifecycle.submit({ ...rawIntent, data: "0x12345678" }, { now });
   assert.equal(result.status, "rejected");
   assert.equal(walletProvider.calls.length, 0);
@@ -70,7 +73,8 @@ test("rejects unsafe calldata before reserving spend or calling the provider", a
 test("rejects replay before calling the provider a second time", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), nonceLane: new NonceLane(), provider: walletProvider });
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+    nonceLane: new NonceLane(), provider: walletProvider, preflight });
   await lifecycle.submit(rawIntent, { now });
   const replay = await lifecycle.submit(rawIntent, { now });
   assert.deepEqual(replay.failures, ["duplicate-intent"]);
@@ -80,7 +84,8 @@ test("rejects replay before calling the provider a second time", async () => {
 test("retains the conservative reservation when broadcast fails", async () => {
   const walletProvider = provider({ async broadcast() { throw new Error("network-down"); } });
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(), nonceLane: new NonceLane(), provider: walletProvider });
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+    nonceLane: new NonceLane(), provider: walletProvider, preflight });
   await assert.rejects(
     lifecycle.submit(rawIntent, { now }),
     (error) => error instanceof ExecutionLifecycleError && error.stage === "broadcasting",
@@ -90,7 +95,7 @@ test("retains the conservative reservation when broadcast fails", async () => {
 
 test("reports a mined revert without treating it as confirmation", async () => {
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal: new ExecutionJournal(),
+    policy, preflight, ledger: new DailySpendLedger(), journal: new ExecutionJournal(),
     nonceLane: new NonceLane(),
     provider: provider({ async waitForReceipt() { return { status: "reverted" }; } }),
   });
@@ -103,7 +108,7 @@ test("persists a transaction hash before broadcast", async () => {
     persist: async (state) => transitions.push(state.records.at(-1)?.status),
   });
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal,
+    policy, preflight, ledger: new DailySpendLedger(), journal,
     nonceLane: new NonceLane(),
     provider: provider({ async broadcast() { throw new Error("network-down"); } }),
   });
@@ -120,7 +125,7 @@ test("reconciles a pending transaction after restart without signing or broadcas
   }] });
   const walletProvider = provider({ async getReceipt() { return { status: "success", blockNumber: 12 }; } });
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane({ lanes: [{
+    policy, preflight, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane({ lanes: [{
       key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
       pending: { intentId: rawIntent.id, nonce: 7 },
     }] }), provider: walletProvider,
@@ -137,7 +142,8 @@ test("never rebroadcasts when recovery cannot find a receipt", async () => {
   }] });
   const walletProvider = provider();
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(), provider: walletProvider,
+    policy, preflight, ledger: new DailySpendLedger(), journal,
+    nonceLane: new NonceLane(), provider: walletProvider,
   });
   const [result] = await lifecycle.recoverPending({ now: now + 1 });
   assert.equal(result.recovery, "still-pending");
@@ -150,7 +156,8 @@ test("escalates an old missing receipt to manual review", async () => {
     createdAt: now, updatedAt: now,
   }] });
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(), provider: provider(),
+    policy, preflight, ledger: new DailySpendLedger(), journal,
+    nonceLane: new NonceLane(), provider: provider(),
   });
   const [result] = await lifecycle.recoverPending({ now: now + 11 * 60_000 });
   assert.equal(result.recovery, "manual-review");
@@ -163,7 +170,7 @@ test("operator recovery can broadcast only the identical persisted signed bytes"
   }] });
   const walletProvider = provider();
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
+    policy, preflight, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
     provider: walletProvider,
   });
   const result = await lifecycle.rebroadcastIdentical(rawIntent.id, { now: now + 1 });
@@ -176,7 +183,7 @@ test("a dropped broadcast can rebroadcast only the identical persisted bytes", a
   const calls = [];
   const journal = new ExecutionJournal();
   const lifecycle = new ExecutionLifecycle({
-    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
+    policy, preflight, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
     provider: {
       getPendingNonce: async () => 7,
       sign: async () => ({ payload: signedPayload, transactionHash: hash }),
@@ -190,4 +197,17 @@ test("a dropped broadcast can rebroadcast only the identical persisted bytes", a
   const result = await lifecycle.rebroadcastIdentical(rawIntent.id);
   assert.equal(result.status, "broadcast");
   assert.deepEqual(calls, [signedPayload, signedPayload]);
+});
+
+test("per-intent preflight can fail closed before spend or provider access", async () => {
+  const walletProvider = provider();
+  const ledger = new DailySpendLedger();
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+    nonceLane: new NonceLane(), provider: walletProvider,
+    preflight: async () => ({ approved: false, failures: ["policy-revalidation-failed"] }) });
+  const result = await lifecycle.submit(rawIntent, { now });
+  assert.deepEqual(result, { status: "rejected", stage: "preflight",
+    failures: ["policy-revalidation-failed"] });
+  assert.deepEqual(ledger.snapshot(now).spent, {});
+  assert.deepEqual(walletProvider.calls, []);
 });
