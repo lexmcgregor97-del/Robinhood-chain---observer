@@ -147,6 +147,14 @@ post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.
 
+The dormant ambiguous-signing verifier accepts only a completed Turnkey
+`SIGN_TRANSACTION_V2` activity from the pinned organization, signing user, and
+wallet, inside the bounded signing window. It cryptographically recovers the
+signer and requires the signed transaction to match Turnkey's unsigned intent
+and the journal's chain ID and nonce. The resolver can then durably restore
+those exact signed bytes while leaving the nonce blocked. This component is not
+yet connected to an operator command and cannot list activities or broadcast.
+
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
 ## Measurement model

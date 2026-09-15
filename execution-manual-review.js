@@ -37,4 +37,40 @@ export class ExecutionManualReviewResolver {
     return Object.freeze({ intentId: record.intentId, status: "operator-rejected",
       resolution: "never-signed-rejection" });
   }
+
+  async restoreSignedFromTurnkey(intentId, activityEvidence,
+    { now = Date.now(), operatorAssertion } = {}) {
+    if (operatorAssertion !== "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY") {
+      throw new Error("manual-review-operator-assertion-required");
+    }
+    const record = this.journal.get(String(intentId || ""));
+    if (!record || record.status !== "manual-review"
+        || record.recoveryFailure !== "manual-review-signing-ambiguous") {
+      throw new Error("manual-review-ambiguous-record-required");
+    }
+    const verification = await verifyAmbiguousSigningActivity({ record,
+      activity: activityEvidence?.activity,
+      organizationId: activityEvidence?.organizationId,
+      walletAddress: activityEvidence?.walletAddress,
+      signingUserId: activityEvidence?.signingUserId,
+      maximumActivityDelayMs: activityEvidence?.maximumActivityDelayMs,
+    });
+    if (!verification.verified) {
+      throw new Error("manual-review-turnkey-evidence-invalid");
+    }
+    const evidence = verification.evidence;
+    await this.journal.transition(record.intentId, {
+      status: "signed",
+      transactionHash: evidence.transactionHash,
+      signedPayload: evidence.signedPayload,
+      signedAt: evidence.createdAt,
+      turnkeySigningActivityId: evidence.activityId,
+      operatorResolution: { type: "turnkey-signed-payload-restored",
+        assertedAt: Number(now) },
+    }, now);
+    return Object.freeze({ intentId: record.intentId, status: "signed",
+      transactionHash: evidence.transactionHash,
+      resolution: "turnkey-signed-payload-restored" });
+  }
 }
+import { verifyAmbiguousSigningActivity } from "./turnkey-ambiguous-signing-evidence.js";
