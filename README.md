@@ -9,8 +9,9 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
   only for wallet-account verification; its policy must deny signing and
   activity creation, and Atlas fails live readiness without explicit attestation.
 - Every HTTP endpoint is GET-only.
-- Paper and shadow sampling run continuously by default. Explicit environment
-  flags provide emergency brakes when either measurement path must be quarantined.
+- Paper, shadow, and passive dislocation sampling run continuously by default.
+  Explicit environment flags provide emergency brakes when a measurement path
+  must be quarantined.
 - Existing paper positions are marked and closed only in the virtual ledger.
 - The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, inconsistent spend declarations, and native value. ERC-20 approval validation permits only the exact planned amount to an approved router; unlimited allowances fail closed. Neither boundary is connected to a signer.
 
@@ -277,6 +278,18 @@ paper pools, preventing repeated episodes in a few pools from masquerading as
 an independent 50-trade cohort.
 
 Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Confirmed zero liquidity is recorded as a total loss; genuinely unavailable measurements are censored and reported. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
+
+Passive dislocation observation compares established WETH-quoted V2 pools for
+the same base asset across independently configured PancakeSwap and Uniswap
+factories. A sample requires at least 7,200 blocks of age, 20 observed lifetime
+swaps, a 1% gross venue spread, and a conservatively estimated net edge above
+0.25%. Atlas charges both venues' full round-trip cost estimate before recording
+that edge, then measures five-minute convergence. This observer has no wallet,
+intent builder, signing path, capital allocation, promotion gate, or influence
+on paper/live readiness. Results are exposed under `passiveDislocations` in
+`/api/paper`, persisted with observer state, and written as
+`passive-dislocation-open` / `passive-dislocation-resolve` evidence. Set
+`DISLOCATION_OBSERVATION_PAUSED=true` to stop this measurement path independently.
 
 ## Persistence
 

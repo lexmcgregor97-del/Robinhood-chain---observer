@@ -10,6 +10,7 @@ import {
 } from "./paper-strategy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { ShadowEvaluator } from "./shadow-evaluator.js";
+import { PassiveDislocationObserver } from "./passive-dislocation-observer.js";
 import { auditSwapPrice } from "./price-audit.js";
 import { ROBINHOOD } from "./chain-config.js";
 import { decodeV2Reserves, evaluateV2MarketSafety, evaluateV3MarketSafety } from "./market-safety.js";
@@ -103,6 +104,9 @@ const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
+const DISLOCATION_OBSERVATION_PAUSED = envFlag(
+  process.env.DISLOCATION_OBSERVATION_PAUSED, false,
+);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
 const MICRO_MAINNET_CONFIG = microMainnetConfigFromEnv(process.env);
 const SIGNING_ATTESTATION_FILE = String(process.env.TURNKEY_SIGNING_ATTESTATION_FILE || "");
@@ -189,6 +193,9 @@ const paperAutomation = {
   firstCycleAt: null, lastCycleAt: null, lastError: null, recentDecisions: [],
 };
 const shadowEvaluator = new ShadowEvaluator();
+const dislocationObserver = new PassiveDislocationObserver({
+  quoteToken: ROBINHOOD.weth.toLowerCase(),
+});
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
 // These three components must always share one serializer. The persistence
 // callback intentionally checkpoints their live snapshots together, so a
@@ -417,6 +424,7 @@ function persistedState() {
     paperArchives,
     paperAutomation,
     shadow: shadowEvaluator.serialize(),
+    passiveDislocations: dislocationObserver.serialize(),
     processedLogs: logDeduplicator.serialize(),
     positionLiveness: positionLiveness.serialize(),
     execution: {
@@ -494,6 +502,9 @@ async function restoreState() {
       Object.assign(paperAutomation, state.paperAutomation);
     }
     if (state.shadow) shadowEvaluator.restore(state.shadow);
+    if (state.passiveDislocations) {
+      dislocationObserver.restore(state.passiveDislocations);
+    }
     logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
     positionLiveness = new PositionLiveness({
       state: samePaperEpoch ? (state.positionLiveness || {}) : {},
@@ -1223,6 +1234,40 @@ async function candidates(limit = 10) {
   return (await candidatePromise).slice(0, boundedLimit);
 }
 
+function dislocationPoolSet(maxGroups = 6) {
+  const weth = ROBINHOOD.weth.toLowerCase();
+  const grouped = new Map();
+  for (const pool of pools.values()) {
+    if (pool.version !== "v2") continue;
+    const token0IsWeth = pool.token0 === weth;
+    const token1IsWeth = pool.token1 === weth;
+    if (token0IsWeth === token1IsWeth) continue;
+    const baseToken = token0IsWeth ? pool.token1 : pool.token0;
+    const values = grouped.get(baseToken) || [];
+    values.push(pool);
+    grouped.set(baseToken, values);
+  }
+  const pending = new Set(dislocationObserver.pendingPoolAddresses());
+  const eligibleGroups = [...grouped.values()]
+    .filter((group) => new Set(group.map((pool) => pool.dex)).size >= 2)
+    .sort((a, b) => Math.max(...b.map((pool) => Number(pool.lastSwapTimestampMs) || 0))
+      - Math.max(...a.map((pool) => Number(pool.lastSwapTimestampMs) || 0)))
+    .slice(0, maxGroups);
+  const selected = new Map(eligibleGroups.flat().map((pool) => [pool.address, pool]));
+  for (const address of pending) {
+    const pool = pools.get(address);
+    if (pool) selected.set(address, pool);
+  }
+  return [...selected.values()];
+}
+
+async function measureDislocationPools() {
+  return Promise.all(dislocationPoolSet().map(async (pool) => ({
+    ...pool,
+    marketSafety: await marketSafety(pool),
+  })));
+}
+
 function poolFeeRate(pool) {
   if (pool.version === "v3") return Number(pool.fee || 3000) / 1_000_000;
   return pool.dex === "pancakeswap" ? 0.0025 : 0.003;
@@ -1392,7 +1437,8 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       return;
     }
 
-    if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
+    if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED
+        && DISLOCATION_OBSERVATION_PAUSED) {
       paperAutomation.lastError = null;
       return;
     }
@@ -1428,6 +1474,26 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
         if (previous && !previous.closedAt && !previous.censoredAt
             && (sample.closedAt || sample.censoredAt)) {
           evidenceEvents.push({ type: "shadow-resolve", sample: structuredClone(sample) });
+        }
+      }
+      if (evidenceEvents.length) await appendEvidenceBatch(evidenceEvents);
+    }
+    if (!DISLOCATION_OBSERVATION_PAUSED) {
+      const previousCount = dislocationObserver.samples.length;
+      const previousState = new Map(dislocationObserver.samples.map((sample) => [
+        sample.episodeId, sample.resolvedAt,
+      ]));
+      const block = metrics.latestBlock;
+      dislocationObserver.observe(await measureDislocationPools(), Date.now(), { block });
+      const evidenceEvents = [];
+      for (let index = 0; index < dislocationObserver.samples.length; index += 1) {
+        const sample = dislocationObserver.samples[index];
+        if (index >= previousCount) {
+          evidenceEvents.push({ type: "passive-dislocation-open",
+            sample: structuredClone(sample) });
+        } else if (!previousState.get(sample.episodeId) && sample.resolvedAt) {
+          evidenceEvents.push({ type: "passive-dislocation-resolve",
+            sample: structuredClone(sample) });
         }
       }
       if (evidenceEvents.length) await appendEvidenceBatch(evidenceEvents);
@@ -1583,6 +1649,7 @@ function paperStatus() {
     pauseReason: persistence.automationBlockedReason
       || (PAPER_ENTRIES_PAUSED ? "paper-ledger-review" : null),
     shadowRecordingPaused: SHADOW_RECORDING_PAUSED,
+    passiveDislocationObservationPaused: DISLOCATION_OBSERVATION_PAUSED,
     automationBlockedReason: persistence.automationBlockedReason,
     books,
     archives: paperArchives.map((archive) => ({
@@ -1602,6 +1669,7 @@ function paperStatus() {
     gasMeasurement: GAS_MEASUREMENT,
     sellProbe: publicSellProbeStatus(),
     shadow,
+    passiveDislocations: dislocationObserver.snapshot(),
     liveReadiness,
     execution: executionStatus(operational.readyForPaper, liveReadiness),
   };

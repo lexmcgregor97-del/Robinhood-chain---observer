@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "start:live-worker": "node run-live-worker.js",
+    "check:passive-observer": "node --check passive-dislocation-observer.js",
     "verify:signing": "node verify-signing-policy.js",
     "recover:executions": "node recover-executions.js",
     "rehearse:live-worker": "node rehearse-live-worker.js",
