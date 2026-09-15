@@ -18,6 +18,7 @@ export function assessLiveExecutionPreflight({
   now = Date.now(),
   maxSnapshotAgeMs = 15_000,
   maxBlockLag = 2,
+  maxBlockClockLagMs = 60_000,
   minimumNativeBalanceWei = "0",
   maximumAllowanceWei,
 } = {}) {
@@ -50,6 +51,11 @@ export function assessLiveExecutionPreflight({
       || latestBlock < blockNumber || latestBlock - blockNumber > maxBlockLag) {
     failures.push("live-chain-snapshot-block-lag");
   }
+  const blockTimestampMs = Number(chain?.blockTimestampMs);
+  if (!Number.isSafeInteger(blockTimestampMs) || blockTimestampMs > now + 15_000
+      || now - blockTimestampMs > maxBlockClockLagMs) {
+    failures.push("live-chain-head-stale");
+  }
   try {
     if (!isAddressEqual(chain.poolAddress, plan.poolAddress)
         || !isAddressEqual(chain.token0, plan.token0)
@@ -67,8 +73,11 @@ export function assessLiveExecutionPreflight({
     failures.push("live-reserves-invalid");
   } else {
     try {
+      if (!new Set([25, 30]).has(Number(plan.feeBps))) {
+        failures.push("live-factory-fee-invalid");
+      }
       const currentOut = quoteV2({ reserveIn, reserveOut, amountIn,
-        feeBps: plan.dex === "pancakeswap" ? 25 : 30 }).amountOut;
+        feeBps: Number(plan.feeBps) }).amountOut;
       if (currentOut < amountOutMin) failures.push("live-price-moved-below-minimum");
     } catch { failures.push("live-reserves-invalid"); }
   }

@@ -8,6 +8,7 @@ export async function startLiveWorker({ env = process.env,
   let stopped = false;
   let timer = null;
   let cycles = 0;
+  let consecutiveFailures = 0;
   const report = (payload) => output(JSON.stringify({ service: "atlas-private-live-worker",
     connected: runtime.connected === true, automatic: runtime.automatic === true, ...payload }));
   const cycle = async () => {
@@ -15,13 +16,29 @@ export async function startLiveWorker({ env = process.env,
     try {
       const result = await runtime.runOnce({ now: Number(now()) });
       cycles += 1;
+      consecutiveFailures = 0;
       report({ event: "cycle", cycles, status: result.status,
         reason: result.reason || null, intentId: result.intentId || null });
     } catch {
       cycles += 1;
-      report({ event: "cycle", cycles, status: "failed", reason: "live-worker-cycle-failed" });
+      consecutiveFailures += 1;
+      report({ event: "cycle", cycles, status: "failed", reason: "cycle-exception",
+        consecutiveFailures });
     }
-    if (!stopped) timer = schedule(cycle, Number(runtime.config?.pollIntervalMs || 15_000));
+    const stopThreshold = Number(runtime.config?.failureStopThreshold || 10);
+    if (consecutiveFailures >= stopThreshold) {
+      stopped = true;
+      report({ event: "halted", status: "halted", reason: "failure-threshold-reached",
+        cycles, consecutiveFailures });
+      return;
+    }
+    if (!stopped) {
+      const base = Number(runtime.config?.pollIntervalMs || 15_000);
+      const cap = Number(runtime.config?.failureBackoffMaxMs || 15 * 60_000);
+      const delay = consecutiveFailures
+        ? Math.min(cap, base * (2 ** Math.min(consecutiveFailures - 1, 10))) : base;
+      timer = schedule(cycle, delay);
+    }
   };
   report({ event: "started", status: runtime.connected ? "armed" : "disabled" });
   timer = schedule(cycle, 0);
@@ -44,4 +61,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exitCode = 1;
   }
 }
-

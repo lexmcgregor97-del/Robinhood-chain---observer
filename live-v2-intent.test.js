@@ -14,7 +14,7 @@ const config = { chainId: 4663, walletAddress: WALLET, wethAddress: WETH,
 const candidate = { version: "v2", dex: "uniswap", address: POOL,
   token0: WETH, token1: TOKEN, router: ROUTER };
 const snapshot = { poolAddress: POOL, token0: WETH, token1: TOKEN,
-  reserve0: "1000000", reserve1: "2000000", blockNumber: 42 };
+  reserve0: "1000000", reserve1: "2000000", blockNumber: 42, feeBps: 30 };
 
 test("builds an immutable exact-spend V2 buy from a matching chain snapshot", () => {
   const first = buildLiveV2BuyIntent({ candidate, snapshot, config,

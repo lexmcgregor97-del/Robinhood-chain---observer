@@ -31,7 +31,13 @@ distinct Turnkey approval policy.
 The private worker has an additional exact connection ceremony; complete micro-mainnet
 configuration by itself leaves the worker submission path and automatic cycles disabled.
 Its Railway start command is `npm run start:live-worker`. Keep both worker activation
-flags false through peer review and the disabled deployment rehearsal.
+flags false through peer review and the disabled deployment rehearsal. This entry-only
+revision is structurally unarmable: the configuration fails with
+`live-worker-exit-path-not-connected` until a position ledger, sell-intent builder,
+and exit triggers exist and are independently reviewed. Worker recovery uses
+`EXECUTION_RECOVERY_STORE=live-worker` and the worker state/evidence paths; the worker
+honours the same exclusive recovery lock. Candidate and readiness endpoints require a
+shared bearer token, and the worker pins their exact configured hostname.
 
 The micro-mainnet review boundary uses a second Turnkey API user and never
 repurposes the read-only observer credential. Configuration requires an exact

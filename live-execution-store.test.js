@@ -27,3 +27,17 @@ test("fails closed when state is behind or evidence is modified", async () => {
   await writeFile(paths.statePath, JSON.stringify(state));
   await assert.rejects(openLiveExecutionStore(paths), /live-evidence-state-divergence/);
 });
+
+test("refuses open and later mutations while the offline recovery lock exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "atlas-live-store-"));
+  const paths = { statePath: join(dir, "state.json"), evidencePath: join(dir, "evidence.jsonl") };
+  let locked = true;
+  await assert.rejects(openLiveExecutionStore({ ...paths, lockPresent: async () => locked }),
+    /execution-recovery-lock-present/);
+  locked = false;
+  const store = await openLiveExecutionStore({ ...paths, lockPresent: async () => locked });
+  locked = true;
+  await assert.rejects(store.journal.transition("x", { status: "rejected" }),
+    /execution-recovery-lock-present/);
+  assert.equal(store.writeBlocked, true);
+});

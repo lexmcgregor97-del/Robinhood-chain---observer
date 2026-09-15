@@ -68,6 +68,10 @@ export async function readLiveV2ChainSnapshot({ candidate, config, rpc, now = Da
   ]);
   const timestampSeconds = quantity(block?.timestamp, "live-block-timestamp-invalid");
   if (timestampSeconds > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("live-block-timestamp-invalid");
+  const completedHead = quantity(await rpc("eth_blockNumber", []), "live-block-number-invalid");
+  if (completedHead < latest || completedHead > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("live-block-number-invalid");
+  }
   return Object.freeze({ poolAddress: poolAddress.toLowerCase(),
     wethAddress: weth.toLowerCase(),
     token0: normalizedToken0.toLowerCase(), token1: normalizedToken1.toLowerCase(),
@@ -76,7 +80,7 @@ export async function readLiveV2ChainSnapshot({ candidate, config, rpc, now = Da
     reserveOut: (quoteIsToken0 ? reserve1 : reserve0).toString(),
     wethBalanceWei: BigInt(wethBalance).toString(),
     nativeBalanceWei: quantity(nativeBalance, "live-native-balance-invalid").toString(),
-    allowanceWei: BigInt(allowance).toString(), blockNumber, latestBlock: blockNumber,
+    allowanceWei: BigInt(allowance).toString(), blockNumber, latestBlock: Number(completedHead),
     token0Decimals: Number(token0Decimals), token1Decimals: Number(token1Decimals),
     blockTimestampMs: Number(timestampSeconds) * 1_000,
     observedAt: Number(now), pinnedBlock });
@@ -102,7 +106,7 @@ export function createLiveCandidateInspector({
     const chain = await readLiveV2ChainSnapshot({ candidate, config, rpc, now });
     const strategy = await assessStrategy({ candidate, chain, phase, intent, plan, now });
     if (phase === "construction") return Object.freeze({ ...chain,
-      strategyApproved: strategy?.approved === true,
+      strategyApproved: strategy?.approved === true, feeBps: strategy?.feeBps,
       strategyFailures: Object.freeze([...(strategy?.failures || [])]) });
     const [readiness, signing, sellProbe] = await Promise.all([
       assessReadiness({ candidate, chain, strategy, intent, plan, now }),

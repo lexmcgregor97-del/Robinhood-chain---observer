@@ -55,6 +55,7 @@ import {
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
+import { workerObserverAuthorized } from "./worker-observer-auth.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -66,6 +67,9 @@ const RPC_URLS = rpcUrlsFromEnv({
   defaultUrl: ROBINHOOD.rpcUrl,
 });
 const CHAIN_ID = ROBINHOOD.chainId;
+const LIVE_WORKER_OBSERVER_BEARER_TOKEN = String(
+  process.env.LIVE_WORKER_OBSERVER_BEARER_TOKEN || "",
+);
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 30_000);
 const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 50);
@@ -1617,6 +1621,11 @@ async function dashboard() {
   return `<!doctype html><meta name="viewport" content="width=device-width"><title>Atlas Trader</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.ok{background:#14532d;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Atlas Trader</h1><p>Robinhood Chain adapter</p>${paperNotice}<section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
 }
 
+function workerRequestAuthorized(req) {
+  return workerObserverAuthorized(req.headers.authorization,
+    LIVE_WORKER_OBSERVER_BEARER_TOKEN);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method !== "GET") { res.writeHead(405).end("Method Not Allowed"); return; }
@@ -1626,6 +1635,13 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/signals") return json(res, { mode: "PAPER_SIGNAL_ONLY", signals: signals() });
     if (req.url === "/api/candidates") return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: await candidates() });
     if (req.url === "/api/paper") return json(res, paperStatus());
+    if (req.url === "/api/live-worker/candidates" || req.url === "/api/live-worker/readiness") {
+      if (!workerRequestAuthorized(req)) { res.writeHead(401).end("Unauthorized"); return; }
+      if (req.url === "/api/live-worker/candidates") {
+        return json(res, { mode: "PAPER_FAIL_CLOSED", candidates: await candidates() });
+      }
+      return json(res, paperStatus());
+    }
     if (req.url === "/api/evidence") {
       if (!evidenceJournal.enabled) { res.writeHead(404).end("Evidence journal disabled"); return; }
       res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8",

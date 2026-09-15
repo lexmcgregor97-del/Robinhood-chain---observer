@@ -21,6 +21,7 @@ import { Turnkey } from "@turnkey/sdk-server";
 import { turnkeyConfigFromEnv, probeTurnkeyPolicy } from "./turnkey-probe.js";
 import { restoreUniqueAmbiguousSigningActivity } from "./turnkey-ambiguous-signing-recovery.js";
 import { ExecutionRebroadcastResolver } from "./execution-rebroadcast.js";
+import { validateExecutionCheckpoint } from "./execution-checkpoint.js";
 
 const CONFIRMATION = "RECONCILE_ATLAS_EXECUTIONS_OFFLINE";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -38,7 +39,12 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
   if (forbiddenRuntimeSecretFailures(env).length) {
     throw new Error("execution-recovery-private-material-forbidden");
   }
-  const statePath = String(env.STATE_FILE || "");
+  const storeKind = String(env.EXECUTION_RECOVERY_STORE || "observer");
+  if (!new Set(["observer", "live-worker"]).has(storeKind)) {
+    throw new Error("execution-recovery-store-invalid");
+  }
+  const liveStore = storeKind === "live-worker";
+  const statePath = String(liveStore ? env.LIVE_WORKER_STATE_FILE : env.STATE_FILE || "");
   if (!statePath) throw new Error("execution-recovery-state-file-required");
   const expectedWalletAddress = String(
     env.TURNKEY_WALLET_ADDRESS || env.TURNKEY_SIGNING_WALLET_ADDRESS || "",
@@ -49,14 +55,27 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
   const minimumStateAgeMs = integer(env.EXECUTION_RECOVERY_MIN_STATE_AGE_MS, 60_000);
   const manualReviewAfterMs = integer(env.EXECUTION_MANUAL_REVIEW_AFTER_MS, 10 * 60_000);
   const state = await loadJsonState(statePath);
-  if (!state?.paperStrategyVersion) throw new Error("execution-recovery-state-invalid");
+  if ((!liveStore && !state?.paperStrategyVersion)
+      || (liveStore && state?.liveWorkerVersion !== 1)) {
+    throw new Error("execution-recovery-state-invalid");
+  }
   if (Number(now) - Number(state.savedAt) < minimumStateAgeMs) {
     throw new Error("execution-runtime-may-still-be-running");
   }
   const evidenceDir = String(env.EVIDENCE_DIR || join(dirname(statePath), "evidence"));
-  const evidence = new EvidenceJournal(join(evidenceDir, `${state.paperStrategyVersion}.jsonl`));
+  const evidencePath = liveStore ? String(env.LIVE_WORKER_EVIDENCE_FILE || "")
+    : join(evidenceDir, `${state.paperStrategyVersion}.jsonl`);
+  if (!evidencePath) throw new Error("execution-recovery-evidence-file-required");
+  const evidence = new EvidenceJournal(evidencePath);
   await evidence.initialize();
-  validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
+  if (liveStore) {
+    if (Number(state.evidenceSequence || 0) !== evidence.snapshot().sequence
+        || String(state.evidenceLastHash || "") !== evidence.snapshot().lastHash) {
+      throw new Error("evidence-state-divergence");
+    }
+    validateExecutionCheckpoint({ execution: state.execution,
+      typeCounts: evidence.snapshot().typeCounts });
+  } else validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
 
   const lockPath = executionRecoveryLockPath(statePath);
   let lock;
@@ -99,7 +118,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
             || observedEvidenceSnapshot.lastHash !== evidence.snapshot().lastHash) {
           throw new Error("execution-recovery-concurrent-runtime-detected");
         }
-        await evidence.append({ epoch: state.paperStrategyVersion,
+        await evidence.append({ epoch: liveStore ? "live-worker-v1" : state.paperStrategyVersion,
           recordedAt: Number(now), chainBlock: Number(state.cursor || 0), ...event });
         state.execution = { journal: journal.snapshot(), nonceLane: nonceLane.snapshot(),
           spendLedger: spendLedger.snapshot(Number(now)) };
@@ -209,10 +228,13 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
         });
       }
     }
-    validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
+    if (liveStore) {
+      validateExecutionCheckpoint({ execution: state.execution,
+        typeCounts: evidence.snapshot().typeCounts });
+    } else validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
     const safeToRestart = result.safeToRestart
       && (postBroadcastRecovery?.safeToRestart ?? true);
-    const report = Object.freeze({ ...result, safeToRestart,
+    const report = Object.freeze({ ...result, safeToRestart, storeKind,
       pendingExecutions: journal.pending().length,
       operatorResolution, postBroadcastRecovery,
       rpc: transport.snapshot(), writeBlocked });

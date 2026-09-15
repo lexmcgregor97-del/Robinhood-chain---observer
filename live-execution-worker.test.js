@@ -11,7 +11,7 @@ const candidate = { version: "v2", dex: "uniswap", address: POOL,
   token0: WETH, token1: TOKEN, marketSafety: { forged: true } };
 const snapshot = { poolAddress: POOL, token0: WETH, token1: TOKEN,
   reserve0: "1000000", reserve1: "2000000", blockNumber: 42,
-  strategyApproved: true };
+  strategyApproved: true, feeBps: 30 };
 const config = { chainId: 4663, walletAddress: WALLET, wethAddress: WETH,
   allowedRouters: [ROUTER], routerAddress: ROUTER, maxPerTransactionWei: "1000",
   amountInWei: "100", slippageBps: 100, deadlineSeconds: 60 };
@@ -51,6 +51,11 @@ test("observer source requires HTTPS and paper fail-closed response shape", asyn
   assert.throws(() => createObserverCandidateSource({ url: "http://example.com" }),
     /https-required/);
   const source = createObserverCandidateSource({ url: "https://observer.example",
+    expectedHostname: "observer.example",
+    bearerToken: "a".repeat(32),
     fetchImpl: async () => ({ ok: true, json: async () => ({ mode: "LIVE", candidates: [] }) }) });
   await assert.rejects(source.fetchCandidates(), /source-invalid/);
+  assert.throws(() => createObserverCandidateSource({ url: "https://observer.example",
+    expectedHostname: "different.example", bearerToken: "a".repeat(32) }),
+  /hostname-mismatch/);
 });

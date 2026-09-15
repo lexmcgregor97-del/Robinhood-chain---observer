@@ -37,6 +37,7 @@ test("pins every chain read to one block and orients WETH reserves", async () =>
   const calls = [];
   const result = await readLiveV2ChainSnapshot({ candidate, config, rpc: fakeRpc(calls), now: 9 });
   assert.equal(result.blockNumber, 42);
+  assert.equal(result.latestBlock, 42);
   assert.equal(result.reserveIn, "1000");
   assert.equal(result.reserveOut, "2000");
   assert.equal(result.wethBalanceWei, "100");

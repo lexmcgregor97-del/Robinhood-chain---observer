@@ -16,6 +16,7 @@ const chain = { poolAddress: POOL, token0: WETH, token1: TOKEN,
   token1Decimals: 18, blockNumber: 100, pinnedBlock: "0x64",
   blockTimestampMs: 1_000_000 };
 const config = { factories: { uniswap: FACTORY }, signalLookbackBlocks: 20,
+  factoryFeeBps: { [FACTORY]: 30 },
   signalWindowMs: 60_000, signalBaselineMs: 300_000, signalMinSwaps: 3,
   amountInWei: "100", wethAddress: WETH,
   riskPolicy: { minPoolAgeMs: 300_000, maxPriceImpactPct: 5,
@@ -50,6 +51,7 @@ test("derives an eligible V2 signal and safety result from its own RPC evidence"
   const result = await assessIndependentV2Strategy({ candidate, chain, config, rpc });
   assert.equal(result.approved, true, JSON.stringify(result));
   assert.equal(result.signal.state, "escape-velocity");
+  assert.equal(result.feeBps, 30);
   assert.equal(result.marketSafety.priceAuditAvailable, true);
   assert.equal(result.lastSwap.transactionHash, swaps.at(-1).transactionHash);
 });

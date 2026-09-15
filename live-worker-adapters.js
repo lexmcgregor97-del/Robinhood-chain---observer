@@ -1,16 +1,21 @@
 import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 import { probeV2Sell } from "./v2-sell-probe.js";
 
-export function createObserverReadinessAdapter({ url, fetchImpl = fetch,
+export function createObserverReadinessAdapter({ url, expectedHostname, bearerToken, fetchImpl = fetch,
   maxAgeMs = 30_000, timeoutMs = 5_000 } = {}) {
-  const endpoint = new URL("/api/paper", url);
+  const endpoint = new URL("/api/live-worker/readiness", url);
   if (endpoint.protocol !== "https:" && endpoint.hostname !== "localhost") {
     throw new Error("observer-readiness-https-required");
   }
+  if (!expectedHostname || endpoint.hostname.toLowerCase() !== String(expectedHostname).toLowerCase()) {
+    throw new Error("observer-readiness-hostname-mismatch");
+  }
+  if (String(bearerToken || "").length < 32) throw new Error("observer-readiness-auth-required");
   return async ({ now = Date.now() } = {}) => {
     try {
       const response = await fetchImpl(endpoint, { method: "GET",
-        headers: { accept: "application/json" }, signal: AbortSignal.timeout(timeoutMs) });
+        headers: { accept: "application/json", authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) throw new Error();
       const body = await response.json();
       const lastCycleAt = Number(body?.automation?.lastCycleAt);

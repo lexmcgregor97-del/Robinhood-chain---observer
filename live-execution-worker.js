@@ -8,6 +8,7 @@ const frozenPlan = (candidate, snapshot) => Object.freeze({
     ? String(snapshot.token1) : String(snapshot.token0)).toLowerCase(),
   dex: String(candidate.dex || ""),
   discoveryBlock: Number(candidate.discoveryBlock),
+  feeBps: Number(snapshot.feeBps),
   strategyApproved: snapshot.strategyApproved === true,
 });
 
@@ -62,15 +63,21 @@ export class LiveExecutionWorker {
   }
 }
 
-export function createObserverCandidateSource({ url, fetchImpl = fetch, timeoutMs = 5_000 } = {}) {
-  const endpoint = new URL("/api/candidates", url);
+export function createObserverCandidateSource({ url, expectedHostname, bearerToken,
+  fetchImpl = fetch, timeoutMs = 5_000 } = {}) {
+  const endpoint = new URL("/api/live-worker/candidates", url);
   if (endpoint.protocol !== "https:" && endpoint.hostname !== "localhost") {
     throw new Error("observer-candidate-source-https-required");
   }
+  if (!expectedHostname || endpoint.hostname.toLowerCase() !== String(expectedHostname).toLowerCase()) {
+    throw new Error("observer-candidate-hostname-mismatch");
+  }
+  if (String(bearerToken || "").length < 32) throw new Error("observer-candidate-auth-required");
   return Object.freeze({
     async fetchCandidates() {
       const response = await fetchImpl(endpoint, { method: "GET",
-        headers: { accept: "application/json" }, signal: AbortSignal.timeout(timeoutMs) });
+        headers: { accept: "application/json", authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) throw new Error("observer-candidate-source-failed");
       const body = await response.json();
       if (body?.mode !== "PAPER_FAIL_CLOSED" || !Array.isArray(body.candidates)) {

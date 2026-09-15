@@ -65,8 +65,9 @@ export function buildLiveV2BuyIntent({
   if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > 60) {
     throw new Error("live-deadline-invalid");
   }
-  const quoted = quoteV2({ reserveIn, reserveOut, amountIn,
-    feeBps: candidate.dex === "pancakeswap" ? 25 : 30 });
+  const feeBps = Number(snapshot.feeBps);
+  if (!new Set([25, 30]).has(feeBps)) throw new Error("live-factory-fee-invalid");
+  const quoted = quoteV2({ reserveIn, reserveOut, amountIn, feeBps });
   const amountOutMin = quoted.amountOut * BigInt(10_000 - bps) / 10_000n;
   if (amountOutMin <= 0n) throw new Error("live-minimum-output-invalid");
   const nowSeconds = Math.floor(now / 1_000);
@@ -87,4 +88,3 @@ export function buildLiveV2BuyIntent({
     spendAsset: weth, spendAmount: amountIn.toString(), data,
     expiresAt: now + ttl * 1_000 });
 }
-

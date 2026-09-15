@@ -5,14 +5,16 @@ import { createExecutionMutationSerializer } from "./execution-mutation-queue.js
 import { NonceLane } from "./nonce-lane.js";
 import { DailySpendLedger } from "./spend-ledger.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
+import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 
 const ZERO_HASH = "0".repeat(64);
 
 export async function openLiveExecutionStore({ statePath, evidencePath,
-  now = Date.now } = {}) {
+  now = Date.now, lockPresent = executionRecoveryLockPresent } = {}) {
   if (!statePath || !evidencePath || typeof now !== "function") {
     throw new Error("live-execution-store-paths-required");
   }
+  if (await lockPresent(statePath)) throw new Error("execution-recovery-lock-present");
   const evidence = new EvidenceJournal(evidencePath);
   await evidence.initialize();
   let state = await loadJsonState(statePath);
@@ -38,6 +40,7 @@ export async function openLiveExecutionStore({ statePath, evidencePath,
   const persist = async (_snapshot, event) => {
     if (writeBlocked) throw new Error("live-execution-store-write-blocked");
     try {
+      if (await lockPresent(statePath)) throw new Error("execution-recovery-lock-present");
       await evidence.append({ epoch: "live-worker-v1", recordedAt: Number(now()), ...event });
       state.execution = { journal: journal.snapshot(), nonceLane: nonceLane.snapshot(),
         spendLedger: spendLedger.snapshot(Number(now())) };
@@ -62,4 +65,3 @@ export async function openLiveExecutionStore({ statePath, evidencePath,
     evidenceLastHash: evidence.snapshot().lastHash }); },
   });
 }
-

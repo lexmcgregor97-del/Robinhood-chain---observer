@@ -59,6 +59,8 @@ export async function assessIndependentV2Strategy({ candidate, chain, rpc, confi
   }
   try {
     const factory = getAddress(config?.factories?.[candidate.dex]);
+    const feeBps = Number(config?.factoryFeeBps?.[factory.toLowerCase()]);
+    if (!new Set([25, 30]).has(feeBps)) throw new Error("live-factory-fee-invalid");
     const created = await verifyPoolCreation({ candidate, chain, factory, rpc });
     const lookbackBlocks = Number(config.signalLookbackBlocks);
     if (!Number.isSafeInteger(lookbackBlocks) || lookbackBlocks <= 0) {
@@ -88,7 +90,8 @@ export async function assessIndependentV2Strategy({ candidate, chain, rpc, confi
       lastSwapTimestampMs: times.get(ordered.at(-1)?.blockNumber) || 0 }, chain.blockTimestampMs, {
       windowMs: config.signalWindowMs, baselineMs: config.signalBaselineMs,
       minSwaps: config.signalMinSwaps });
-    const pool = { ...candidate, token0: chain.token0, token1: chain.token1,
+    const verifiedDex = feeBps === 25 ? "pancakeswap" : "uniswap";
+    const pool = { ...candidate, dex: verifiedDex, token0: chain.token0, token1: chain.token1,
       discoveryBlock: created.discoveryBlock };
     const safetyBase = evaluateV2MarketSafety(pool, { latestBlock: chain.blockNumber,
       quoteAmountIn: config.amountInWei, quoteTokens: [config.wethAddress],
@@ -101,7 +104,7 @@ export async function assessIndependentV2Strategy({ candidate, chain, rpc, confi
     const marketSafety = { ...safetyBase, ...priceAudit,
       poolAgeMs: chain.blockTimestampMs - created.discoveryTimestampMs };
     const risk = evaluateRiskGate({ ...pool, signal, marketSafety }, config.riskPolicy);
-    return Object.freeze({ approved: risk.eligibleForPaperEntry, failures: risk.failures,
+    return Object.freeze({ approved: risk.eligibleForPaperEntry, failures: risk.failures, feeBps,
       signal: Object.freeze(signal), marketSafety: Object.freeze(marketSafety),
       lastSwap: lastSwap ? Object.freeze({ ...lastSwap,
         blockNumber: ordered.at(-1).blockNumber,

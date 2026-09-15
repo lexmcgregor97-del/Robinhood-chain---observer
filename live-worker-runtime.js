@@ -13,11 +13,13 @@ import { assessIndependentV2Strategy } from "./live-v2-strategy.js";
 import { createLiveSellProbeAdapter, createObserverReadinessAdapter,
   createSigningPolicyAdapter } from "./live-worker-adapters.js";
 import { liveWorkerConfigFromEnv } from "./live-worker-config.js";
+import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 
 const SWAP_EXACT_TOKENS_FOR_TOKENS = "0x38ed1739";
 
 export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = fetch,
   now = Date.now, makeTurnkeyClient, makeSigningAccount, openStore = openLiveExecutionStore,
+  lockPresent = executionRecoveryLockPresent,
 } = {}) {
   const config = liveWorkerConfigFromEnv(env);
   if (!config.configured) throw new Error(`live-worker-config-invalid:${config.failures.join(",")}`);
@@ -32,6 +34,7 @@ export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = f
   const rpc = (method, params) => transport.request(method, params);
   const chainId = Number(BigInt(await rpc("eth_chainId", [])));
   if (chainId !== config.chainId) throw new Error("live-worker-chain-mismatch");
+  if (await lockPresent(config.statePath)) throw new Error("execution-recovery-lock-present");
   const store = await openStore({ statePath: config.statePath,
     evidencePath: config.evidencePath, now });
   const clientFactory = makeTurnkeyClient || ((input) => new Turnkey({
@@ -49,7 +52,9 @@ export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = f
   const provider = createEvmExecutionProvider({ account, rpc, maxGas: config.maxGas,
     maxFeePerGasWei: config.maxFeePerGasWei });
   const plans = new Map();
-  const readinessCheck = createObserverReadinessAdapter({ url: config.observerUrl, fetchImpl });
+  const readinessCheck = createObserverReadinessAdapter({ url: config.observerUrl,
+    expectedHostname: config.observerHostname,
+    bearerToken: config.observerBearerToken, fetchImpl });
   const sellCheck = createLiveSellProbeAdapter({ rpc, config });
   const strategyCheck = (input) => assessIndependentV2Strategy({ ...input, rpc, config });
   const inspector = createLiveCandidateInspector({ config, rpc,
@@ -76,9 +81,13 @@ export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = f
     journal: store.journal, nonceLane: store.nonceLane, provider, preflight, validateCalldata });
   await lifecycle.recoverPending({ now: Number(now()) });
   const worker = new LiveExecutionWorker({
-    source: createObserverCandidateSource({ url: config.observerUrl, fetchImpl }),
+    source: createObserverCandidateSource({ url: config.observerUrl,
+      expectedHostname: config.observerHostname,
+      bearerToken: config.observerBearerToken, fetchImpl }),
     inspectCandidate: inspector, lifecycle, journal: store.journal, plans, config });
   return Object.freeze({ connected: true, automatic: true, config, store, lifecycle,
-    transport, runOnce: (options) => worker.runOnce(options) });
+    transport, async runOnce(options) {
+      if (await lockPresent(config.statePath)) throw new Error("execution-recovery-lock-present");
+      return worker.runOnce(options);
+    } });
 }
-

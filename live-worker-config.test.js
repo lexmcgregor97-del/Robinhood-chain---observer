@@ -16,10 +16,12 @@ const base = { ATLAS_EXECUTION_MODE: "MICRO_MAINNET", MICRO_MAINNET_ENABLED: "tr
   MICRO_MAINNET_MAX_WETH_DAILY_WEI: "200", MICRO_MAINNET_MAX_GAS: "400000",
   MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
   MICRO_MAINNET_CONFIRMATION: `ENABLE_ATLAS_MICRO_MAINNET:4663:${WALLET}`,
-  ATLAS_OBSERVER_URL: "https://atlas.example", LIVE_WORKER_STATE_FILE: "/data/live.json",
+  ATLAS_OBSERVER_URL: "https://atlas.example", LIVE_WORKER_OBSERVER_HOSTNAME: "atlas.example",
+  LIVE_WORKER_STATE_FILE: "/data/live.json",
   LIVE_WORKER_EVIDENCE_FILE: "/data/live.jsonl", LIVE_WORKER_V2_ROUTER_ADDRESS: ROUTER,
   LIVE_WORKER_BUY_AMOUNT_WEI: "10", LIVE_WORKER_MAX_ALLOWANCE_WEI: "100",
   LIVE_WORKER_MIN_NATIVE_BALANCE_WEI: "1" };
+base.LIVE_WORKER_OBSERVER_BEARER_TOKEN = "a".repeat(32);
 
 test("stays disconnected by default even with complete execution configuration", () => {
   const result = liveWorkerConfigFromEnv(base);
@@ -28,16 +30,24 @@ test("stays disconnected by default even with complete execution configuration",
   assert.equal(result.automatic, false);
 });
 
-test("requires an independent exact worker ceremony before connection", () => {
+test("requires an independent exact worker ceremony and a real exit path before connection", () => {
   const wrong = liveWorkerConfigFromEnv({ ...base, LIVE_WORKER_SUBMISSION_CONNECTED: "true" });
   assert.ok(wrong.failures.includes("live-worker-confirmation-mismatch"));
   const exact = liveWorkerConfigFromEnv({ ...base, LIVE_WORKER_SUBMISSION_CONNECTED: "true",
     LIVE_WORKER_CONFIRMATION: `CONNECT_ATLAS_PRIVATE_WORKER:4663:${WALLET}` });
-  assert.equal(exact.configured, true);
+  assert.equal(exact.configured, false);
   assert.equal(exact.connected, true);
+  assert.equal(exact.exitPathConnected, false);
+  assert.ok(exact.failures.includes("live-worker-exit-path-not-connected"));
 });
 
 test("refuses allowance wider than the daily loss boundary", () => {
   const result = liveWorkerConfigFromEnv({ ...base, LIVE_WORKER_MAX_ALLOWANCE_WEI: "201" });
   assert.ok(result.failures.includes("live-worker-allowance-exceeds-daily-cap"));
+});
+
+test("pins the observer URL to an independently configured hostname", () => {
+  const result = liveWorkerConfigFromEnv({ ...base,
+    LIVE_WORKER_OBSERVER_HOSTNAME: "different.example" });
+  assert.ok(result.failures.includes("live-worker-observer-hostname-mismatch"));
 });

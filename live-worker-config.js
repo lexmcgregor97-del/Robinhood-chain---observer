@@ -23,6 +23,8 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   const automatic = envFlag(env.LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED, false);
   const failures = [...execution.failures];
   const observerUrl = String(env.ATLAS_OBSERVER_URL || "").trim();
+  const observerHostname = String(env.LIVE_WORKER_OBSERVER_HOSTNAME || "").trim().toLowerCase();
+  const observerBearerToken = String(env.LIVE_WORKER_OBSERVER_BEARER_TOKEN || "");
   const statePath = String(env.LIVE_WORKER_STATE_FILE || "").trim();
   const evidencePath = String(env.LIVE_WORKER_EVIDENCE_FILE || "").trim();
   let routerAddress = "";
@@ -30,13 +32,18 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   catch { failures.push("live-worker-router-invalid"); }
   if (routerAddress && !execution.allowedRouters.some((item) =>
     isAddressEqual(item, routerAddress))) failures.push("live-worker-router-not-allowed");
+  if (!observerHostname) failures.push("live-worker-observer-hostname-required");
   if (!observerUrl) failures.push("live-worker-observer-url-required");
   else {
     try {
       const parsed = new URL(observerUrl);
       if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") throw new Error();
+      if (parsed.hostname.toLowerCase() !== observerHostname) {
+        failures.push("live-worker-observer-hostname-mismatch");
+      }
     } catch { failures.push("live-worker-observer-url-invalid"); }
   }
+  if (observerBearerToken.length < 32) failures.push("live-worker-observer-bearer-invalid");
   if (!statePath || !evidencePath || statePath === evidencePath) {
     failures.push("live-worker-storage-paths-invalid");
   }
@@ -59,11 +66,15 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   const expectedConfirmation = execution.walletAddress
     ? `${LIVE_WORKER_CONFIRMATION_PREFIX}:${ROBINHOOD.chainId}:${execution.walletAddress}` : null;
   if (connected && confirmation !== expectedConfirmation) failures.push("live-worker-confirmation-mismatch");
+  const exitPathConnected = false;
+  if (connected && !exitPathConnected) failures.push("live-worker-exit-path-not-connected");
   if (automatic && !connected) failures.push("live-worker-submission-path-required");
   if (connected && !execution.configured) failures.push("micro-mainnet-config-incomplete");
   const numeric = {};
   for (const [key, value, fallback] of [
     ["pollIntervalMs", env.LIVE_WORKER_POLL_INTERVAL_MS, 15_000],
+    ["failureBackoffMaxMs", env.LIVE_WORKER_FAILURE_BACKOFF_MAX_MS, 15 * 60_000],
+    ["failureStopThreshold", env.LIVE_WORKER_FAILURE_STOP_THRESHOLD, 10],
     ["deadlineSeconds", env.LIVE_WORKER_DEADLINE_SECONDS, 60],
     ["slippageBps", env.LIVE_WORKER_SLIPPAGE_BPS, 300],
     ["signalLookbackBlocks", env.LIVE_WORKER_SIGNAL_LOOKBACK_BLOCKS, 3_000],
@@ -80,14 +91,18 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   }
   if (numeric.deadlineSeconds > 60) failures.push("live-worker-deadline-too-long");
   if (numeric.slippageBps > 2_000) failures.push("live-worker-slippage-too-high");
-  return Object.freeze({ ...execution, connected, automatic,
-    configured: failures.length === 0, observerUrl, statePath, evidencePath,
+  return Object.freeze({ ...execution, connected, automatic, exitPathConnected,
+    configured: failures.length === 0, observerUrl, observerHostname, observerBearerToken,
+    statePath, evidencePath,
     routerAddress, wethAddress: ROBINHOOD.weth.toLowerCase(), chainId: ROBINHOOD.chainId,
     amountInWei, maximumAllowanceWei, minimumNativeBalanceWei, confirmation,
     expectedConfirmation, ...numeric,
     factories: Object.freeze(Object.fromEntries(ROBINHOOD.factories
       .filter((item) => item.version === "v2")
       .map((item) => [item.dex, item.address.toLowerCase()]))),
+    factoryFeeBps: Object.freeze(Object.fromEntries(ROBINHOOD.factories
+      .filter((item) => item.version === "v2")
+      .map((item) => [item.address.toLowerCase(), item.dex === "pancakeswap" ? 25 : 30]))),
     riskPolicy: Object.freeze({ minPoolAgeMs: 5 * 60_000, maxPriceImpactPct: 1.5,
       maxExecutionCostPct: 4, maxSpotSwapDeviationPct: 5,
       allowedSignals: Object.freeze(["active"]), minSwaps: 4,
