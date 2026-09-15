@@ -1,0 +1,42 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { planLosslessRecovery } from "./recovery-policy.js";
+
+test("a 308-block runtime lag scans all blocks without an eight-block jump", () => {
+  const plan = planLosslessRecovery({ cursor: 1_000, latest: 1_308, maxBlocksPerPoll: 20_000 });
+  assert.deepEqual(plan, {
+    required: true,
+    from: 1_001,
+    to: 1_308,
+    remainingBlocks: 0,
+    skippedBlocks: 0,
+  });
+});
+
+test("large recovery gaps are split into contiguous bounded scans", () => {
+  const first = planLosslessRecovery({ cursor: 1_000, latest: 51_000, maxBlocksPerPoll: 20_000 });
+  const second = planLosslessRecovery({ cursor: first.to, latest: 51_000, maxBlocksPerPoll: 20_000 });
+  const third = planLosslessRecovery({ cursor: second.to, latest: 51_000, maxBlocksPerPoll: 20_000 });
+  assert.equal(first.from, 1_001);
+  assert.equal(second.from, first.to + 1);
+  assert.equal(third.from, second.to + 1);
+  assert.equal(third.to, 51_000);
+  assert.equal(first.skippedBlocks + second.skippedBlocks + third.skippedBlocks, 0);
+});
+
+test("no scan is planned when the cursor is caught up", () => {
+  assert.deepEqual(planLosslessRecovery({ cursor: 10, latest: 10, maxBlocksPerPoll: 20_000 }), {
+    required: false,
+    from: null,
+    to: null,
+    remainingBlocks: 0,
+    skippedBlocks: 0,
+  });
+});
+
+test("unsafe recovery inputs fail closed", () => {
+  assert.throws(() => planLosslessRecovery({ cursor: -1, latest: 10, maxBlocksPerPoll: 20_000 }),
+    /recovery-cursor-invalid/);
+  assert.throws(() => planLosslessRecovery({ cursor: 1, latest: 10, maxBlocksPerPoll: 0 }),
+    /recovery-limit-invalid/);
+});

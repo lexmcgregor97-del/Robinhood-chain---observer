@@ -1,0 +1,34 @@
+const positiveInteger = (value, name) => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name}-invalid`);
+  return parsed;
+};
+
+const nonNegativeInteger = (value, name) => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name}-invalid`);
+  return parsed;
+};
+
+export function planLosslessRecovery({ cursor, latest, maxBlocksPerPoll }) {
+  const normalizedCursor = nonNegativeInteger(cursor, "recovery-cursor");
+  const normalizedLatest = nonNegativeInteger(latest, "recovery-latest");
+  const limit = positiveInteger(maxBlocksPerPoll, "recovery-limit");
+  if (normalizedLatest <= normalizedCursor) {
+    return Object.freeze({
+      required: false,
+      from: null,
+      to: null,
+      remainingBlocks: 0,
+      skippedBlocks: 0,
+    });
+  }
+  const to = Math.min(normalizedLatest, normalizedCursor + limit);
+  return Object.freeze({
+    required: true,
+    from: normalizedCursor + 1,
+    to,
+    remainingBlocks: normalizedLatest - to,
+    skippedBlocks: 0,
+  });
+}

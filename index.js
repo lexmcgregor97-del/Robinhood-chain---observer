@@ -39,6 +39,7 @@ import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.j
 import {
   probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
+import { planLosslessRecovery } from "./recovery-policy.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -52,7 +53,7 @@ const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 50);
 const BACKFILL = 20_000;
 const CHUNK = 500;
-const MAX_RECOVERY_LAG_BLOCKS = 300;
+const MAX_RECOVERY_BLOCKS_PER_POLL = BACKFILL;
 const MAX_POOLS = 5_000;
 const SIGNAL_WINDOW_MS = Number(process.env.SIGNAL_WINDOW_MS || 60_000);
 const SIGNAL_BASELINE_MS = Number(process.env.SIGNAL_BASELINE_MS || 300_000);
@@ -81,7 +82,7 @@ const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
-const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6-risk-calibration";
+const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6b-lossless-recovery";
 const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
 const EVIDENCE_FILE = EVIDENCE_DIR
@@ -155,7 +156,6 @@ let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
 let candidateCache = null;
 let candidatePromise = null;
-let firstRestoredPollPending = false;
 const paperAutomation = {
   cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
   maxMarkedDrawdownPctByQuote: {},
@@ -335,7 +335,6 @@ async function restoreState() {
     persistence.restoredAt = Date.now();
     persistence.restartDowntimeMs = Number.isFinite(Number(state.savedAt))
       ? Math.max(0, persistence.restoredAt - Number(state.savedAt)) : null;
-    firstRestoredPollPending = true;
   } catch (error) {
     persistence.lastError = error instanceof Error ? error.message : String(error);
     persistence.writeBlocked = true;
@@ -541,16 +540,12 @@ async function poll() {
     if (!metrics.cursor) await bootstrap(latest);
     else if (latest > metrics.cursor) {
       caughtUp = false;
-      const lag = latest - metrics.cursor;
-      const recoveryLimit = firstRestoredPollPending ? BACKFILL : MAX_RECOVERY_LAG_BLOCKS;
-      if (lag > recoveryLimit) {
-        const skipped = lag - recoveryLimit;
-        metrics.recoverySkippedBlocks += skipped;
-        paperAutomation.recoverySkippedBlocks += skipped;
-        metrics.cursor = latest - recoveryLimit;
-      }
-      await scanRange(metrics.cursor + 1, latest);
-      firstRestoredPollPending = false;
+      const recovery = planLosslessRecovery({
+        cursor: metrics.cursor,
+        latest,
+        maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
+      });
+      await scanRange(recovery.from, recovery.to);
     }
     const block = await rpc("eth_getBlockByNumber", [hexBlock(latest), false]);
     metrics.blockTimestamp = intHex(block?.timestamp);
@@ -603,7 +598,8 @@ function snapshot() {
       failed: metrics.failedPolls, lastError: metrics.lastError,
     },
     recovery: {
-      maxLagBlocks: MAX_RECOVERY_LAG_BLOCKS,
+      policy: "lossless-bounded-catchup",
+      maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
       skippedBlocks: metrics.recoverySkippedBlocks,
     },
     backfill,
