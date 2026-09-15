@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { expectedTurnkeySigningPolicies } from "./turnkey-signing-probe.js";
 import { verifySigningPolicyOneShot } from "./verify-signing-policy.js";
+import { verifySigningAttestation } from "./signing-attestation.js";
 
 const signingUser = "11111111-1111-7111-8111-111111111111";
 const observerUser = "22222222-2222-7222-8222-222222222222";
@@ -60,4 +62,20 @@ test("one-shot verification rejects one user holding both credentials", async ()
   const result = await verifySigningPolicyOneShot(env, { makeClient: clients({ sameUser: true }) });
   assert.equal(result.verified, false);
   assert.ok(result.failures.includes("observer-and-signing-users-must-differ"));
+});
+
+test("one-shot verification can emit a signed, expiring, config-bound attestation", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256",
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" } });
+  let written = null;
+  const configured = { ...env, TURNKEY_SIGNING_ATTESTATION_FILE: "/tmp/not-written",
+    TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: Buffer.from(privateKey).toString("base64") };
+  const result = await verifySigningPolicyOneShot(configured, { makeClient: clients(),
+    writeAttestation: async (_path, document) => { written = document; } });
+  assert.equal(result.verified, true);
+  assert.equal(result.attestationWritten, true);
+  const parsed = (await import("./micro-mainnet-config.js")).microMainnetConfigFromEnv(configured);
+  assert.equal(verifySigningAttestation({ document: written, config: parsed,
+    publicKeyPem: publicKey }).verified, true);
 });
