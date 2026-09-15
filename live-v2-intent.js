@@ -85,6 +85,9 @@ export function buildLiveV2BuyIntent({
   if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) {
     throw new Error("live-snapshot-block-invalid");
   }
+  // Deadline is deliberately part of the identity so a final reverted attempt
+  // can be retried with fresh calldata. Duplicate suppression belongs to the
+  // position ledger and pending-execution gate, not to a deadline-blind ID.
   const identity = Object.freeze({ chainId: Number(config.chainId), pool: lower(pool),
     router: lower(router), blockNumber, amountIn: amountIn.toString(),
     amountOutMin: amountOutMin.toString(), baseToken: lower(baseToken), deadline });
@@ -132,6 +135,9 @@ export function buildLiveV2SellIntent({ position, snapshot, config, slippageBps,
   const data = encodeFunctionData({ abi: V2_ROUTER_ABI,
     functionName: "swapExactTokensForTokens",
     args: [amountIn, amountOutMin, [baseToken, weth], wallet, BigInt(deadline)] });
+  // Deadline is deliberately part of the identity so a final reverted attempt
+  // can be retried with fresh calldata. Duplicate suppression belongs to the
+  // position ledger and pending-execution gate, not to a deadline-blind ID.
   const identity = { chainId: Number(config.chainId), pool: lower(pool), router: lower(router),
     entryIntentId: String(position.entryIntentId), amountIn: amountIn.toString(),
     amountOutMin: amountOutMin.toString(), blockNumber: Number(snapshot.blockNumber), deadline };
