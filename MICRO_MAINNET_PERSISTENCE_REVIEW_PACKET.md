@@ -1,4 +1,4 @@
-# Atlas Micro-Mainnet Durable Execution State — Review Packet
+# Atlas Micro-Mainnet Durable Execution State — Review Packet (revision 2)
 
 ## Scope
 
@@ -6,6 +6,11 @@ Review branch `fix/micro-mainnet-persistence`, based on the accepted inert
 execution boundary revision 7 (`36b2c71b9e8b834356bfcdacfc86ab4707ee7868`).
 Production remains V6b `PAPER_ONLY`. This branch does not connect the dormant
 provider, add a POST route, import a signer, or enable submission.
+
+Revision 2 closes persistence-review finding P-1 from `aeb4da7`: reservation
+evidence now precedes spend, and every execution persistence failure blocks the
+live process immediately. It also documents the required future epoch
+migration and makes the shared-serializer invariant explicit.
 
 The change is limited to execution state durability, evidence reconciliation,
 restore behavior, tests, the state writer, status, and documentation.
@@ -40,23 +45,31 @@ signed or broadcast.
    non-final records in the restored execution journal. It is no longer a
    literal zero. A final confirmed/reverted record with a nonce reservation left
    by a crash is finalized during restore and checkpointed before readiness.
-5. **Spend persistence is awaited.** `DailySpendLedger.record` is now async,
-   rollback-capable, and awaited before the next lifecycle transition. UTC-day
-   rollover returns an empty current-day view without erasing the historical
-   mutation counter.
+5. **Reservation precedes spend.** The lifecycle durably journals `reserved`,
+   then awaits the rollback-capable spend record, then reserves a nonce. A
+   failed spend is finalized as a coded rejection when persistence is
+   available; otherwise the durable reservation remains pending/manual-review.
+   No orphan spend can exist without a journal record. UTC-day rollover returns
+   an empty current-day view without erasing the historical mutation counter.
 6. **Atomic state durability includes fsync.** The temporary state file is
    fsynced before rename and its directory is fsynced after rename.
 7. **Mutation checkpoints are globally serialized.** Journal transitions, spend
-   records, and nonce changes each serialize their own mutations across all
-   intents/lanes. An earlier evidence event therefore cannot accidentally
+   records, and nonce changes share one serializer across all components,
+   intents, and lanes. An earlier evidence event therefore cannot accidentally
    checkpoint a later in-memory mutation that has not produced its own evidence.
+   The production callback also sets `writeBlocked` and an automation-blocking
+   reason on any execution persistence failure before it rethrows.
 
 ## Crash windows
 
-- Spend evidence/state persisted, crash before journal reservation: restore
-  rejects the orphaned spend and remains blocked.
-- Journal reservation persisted, crash before nonce reservation: the restored
-  journal is pending and activation remains blocked.
+- Journal reservation persistence fails: no spend or nonce mutation occurs and
+  the live process is write-blocked.
+- Journal reservation persists but spend persistence fails: the spend rolls
+  back and the journal is finalized as a coded rejection. If that rejection
+  cannot persist, the durable reservation remains pending/manual-review and the
+  live process is write-blocked.
+- Journal reservation and spend persist, crash before nonce reservation: the
+  restored journal is pending and activation remains blocked.
 - Nonce reservation persisted, crash before journal status advances: the nonce
   owner and journal owner match; the record remains pending/manual-review.
 - Signed/broadcast state without a receipt: remains pending and blocks. Receipt
@@ -74,6 +87,14 @@ epoch must not be bumped while execution records exist unless a reviewed
 migration carries or archives execution state and evidence together. With the
 submission path disconnected, the current execution state is empty.
 
+The required migration ceremony is: force `PAPER_ONLY`, stop new intents, and
+require zero pending executions; archive the state file and matching evidence
+journal with their terminal sequence/hash; run a reviewed migration tool that
+verifies the pair and emits an execution-archive manifest; then begin the new
+paper epoch with empty execution counters and a new evidence file. Hand edits
+and evidence-file reuse are forbidden. Until that tool exists, non-empty
+execution history prohibits an epoch bump.
+
 ## Tests
 
 Tests cover:
@@ -85,6 +106,8 @@ Tests cover:
 - orphaned spend and nonce ownership;
 - signed state without a nonce reservation;
 - rollback on journal, nonce, and spend persistence failures;
+- reservation-before-spend ordering, final rejection after a rolled-back spend,
+  and pending/manual-review fallback when rejection cannot persist;
 - concurrent journal, spend, and cross-wallet nonce mutations producing one
   monotonically complete snapshot per evidence event;
 - UTC-day spend rollover and restored pending nonce blocking.

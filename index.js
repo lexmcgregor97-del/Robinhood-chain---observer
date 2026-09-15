@@ -184,8 +184,24 @@ const paperAutomation = {
 };
 const shadowEvaluator = new ShadowEvaluator();
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
+// These three components must always share one serializer. The persistence
+// callback intentionally checkpoints their live snapshots together, so a
+// second serializer would break cross-component checkpoint atomicity.
 const serializeExecutionMutation = createExecutionMutationSerializer();
-const executionPersist = async (_snapshot, event) => appendEvidence(event);
+const executionPersist = async (_snapshot, event) => {
+  if (persistence.writeBlocked) throw new Error("execution-persistence-blocked");
+  try {
+    return await appendEvidence(event);
+  } catch (error) {
+    // appendEvidence already blocks on journal/checkpoint failure. Keep the
+    // execution boundary independently fail-closed if that implementation
+    // changes or another persistence failure reaches this callback.
+    persistence.writeBlocked = true;
+    persistence.automationBlockedReason ||= "execution-persistence-failed";
+    persistence.lastError = error instanceof Error ? error.message : String(error);
+    throw error;
+  }
+};
 let executionJournal = new ExecutionJournal({}, {
   persist: executionPersist, serialize: serializeExecutionMutation,
 });

@@ -37,8 +37,8 @@ test("execution mutations survive restart with evidence-count reconciliation", a
     nonceLane = new NonceLane({}, { persist });
     spendLedger = new DailySpendLedger({}, { persist });
 
-    await spendLedger.record({ intentId: "entry:1", asset: "weth", amount: "10" });
     await journal.transition("entry:1", { status: "reserved" }, 1);
+    await spendLedger.record({ intentId: "entry:1", asset: "weth", amount: "10" });
     await nonceLane.reserve({ chainId: 4663, walletAddress, intentId: "entry:1" },
       async () => 7);
     await journal.transition("entry:1", { status: "nonce-reserved", nonce: 7 }, 2);

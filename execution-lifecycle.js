@@ -80,16 +80,31 @@ export class ExecutionLifecycle {
     this.running.add(intent.id);
     const state = { intentId: intent.id, status: "pending", stage: "reserved", transactionHash: null };
     try {
-      await this.ledger.record({
-        intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
-      }, now);
       await this.journal.transition(intent.id, {
         status: "reserved", chainId: intent.chainId,
         spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
       }, now);
-    } catch (error) {
+    } catch {
       this.running.delete(intent.id);
-      return Object.freeze({ status: "rejected", stage: "reservation", failures: [error.message] });
+      return Object.freeze({ status: "rejected", stage: "reservation",
+        failures: Object.freeze(["execution-reservation-persistence-failed"]) });
+    }
+    try {
+      await this.ledger.record({
+        intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
+      }, now);
+    } catch {
+      const failures = ["execution-spend-persistence-failed"];
+      try {
+        await this.journal.transition(intent.id, { status: "rejected", stage: "reservation",
+          failures, chainId: intent.chainId,
+          spendAsset: intent.spendAsset, spendAmount: intent.spendAmount }, now);
+      } catch {
+        failures.push("execution-rejection-persistence-failed");
+      }
+      this.running.delete(intent.id);
+      return Object.freeze({ status: "rejected", stage: "reservation",
+        failures: Object.freeze([...failures]) });
     }
 
     try {

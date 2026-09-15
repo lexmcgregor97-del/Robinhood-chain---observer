@@ -83,6 +83,16 @@ with a leftover nonce reservation is safely finalized during restore. Because
 execution evidence shares the cohort journal, a paper epoch must not be bumped
 while execution records exist without an explicit reviewed migration.
 
+Before the first live execution, the release runbook must include this paper
+epoch migration rule: first force `PAPER_ONLY`, stop new intents, and require
+zero pending executions; then archive the state file and its matching evidence
+journal together with the terminal sequence and hash. A reviewed migration
+tool must verify that pair and write an execution-archive manifest before it
+starts a new paper epoch with empty execution counters and a new evidence file.
+Never hand-edit either checkpoint, never reuse the old evidence file, and abort
+the epoch bump on any pending intent or reconciliation mismatch. Until that
+tool exists, any non-empty execution history prohibits a paper epoch bump.
+
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
 caps, signs, checks the signed hash, and broadcasts once. The lifecycle records

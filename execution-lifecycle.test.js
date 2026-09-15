@@ -119,6 +119,50 @@ test("persists a transaction hash before broadcast", async () => {
   assert.equal(journal.get(rawIntent.id).gas, "100000");
 });
 
+test("journals reservation before spend and finalizes a failed spend as rejected", async () => {
+  const order = [];
+  const journal = new ExecutionJournal({}, { persist: async (_state, event) => {
+    order.push(`${event.type}:${event.record.status}`);
+  } });
+  const ledger = new DailySpendLedger({}, { persist: async (_state, event) => {
+    order.push(event.type);
+    throw new Error("state-write-failed");
+  } });
+  const walletProvider = provider();
+  const lifecycle = new ExecutionLifecycle({ policy, preflight, ledger, journal,
+    nonceLane: new NonceLane(), provider: walletProvider });
+  const result = await lifecycle.submit(rawIntent, { now });
+  assert.deepEqual(result, { status: "rejected", stage: "reservation",
+    failures: ["execution-spend-persistence-failed"] });
+  assert.deepEqual(order, ["execution-transition:reserved", "execution-spend-recorded",
+    "execution-transition:rejected"]);
+  assert.equal(journal.get(rawIntent.id).status, "rejected");
+  assert.deepEqual(journal.pending(), []);
+  assert.deepEqual(ledger.snapshot(now).spent, {});
+  assert.deepEqual(walletProvider.calls, []);
+});
+
+test("keeps a durable reservation pending if spend and rejection persistence both fail", async () => {
+  let journalWrites = 0;
+  const journal = new ExecutionJournal({}, { persist: async () => {
+    journalWrites += 1;
+    if (journalWrites > 1) throw new Error("checkpoint-unavailable");
+  } });
+  const ledger = new DailySpendLedger({}, {
+    persist: async () => { throw new Error("state-write-failed"); },
+  });
+  const walletProvider = provider();
+  const lifecycle = new ExecutionLifecycle({ policy, preflight, ledger, journal,
+    nonceLane: new NonceLane(), provider: walletProvider });
+  const result = await lifecycle.submit(rawIntent, { now });
+  assert.deepEqual(result.failures, ["execution-spend-persistence-failed",
+    "execution-rejection-persistence-failed"]);
+  assert.equal(journal.get(rawIntent.id).status, "reserved");
+  assert.equal(journal.pending().length, 1);
+  assert.deepEqual(ledger.snapshot(now).spent, {});
+  assert.deepEqual(walletProvider.calls, []);
+});
+
 test("reconciles a pending transaction after restart without signing or broadcasting", async () => {
   const journal = new ExecutionJournal({ records: [{
     intentId: rawIntent.id, status: "broadcast", transactionHash: hash, createdAt: now, updatedAt: now,
