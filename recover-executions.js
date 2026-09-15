@@ -109,6 +109,9 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     journal = new ExecutionJournal(state.execution?.journal, { persist, serialize });
     nonceLane = new NonceLane(state.execution?.nonceLane, { persist, serialize });
     spendLedger = new DailySpendLedger(state.execution?.spendLedger, { persist, serialize });
+    const preExistingManualReviewIds = new Set(journal.pending()
+      .filter((record) => record.status === "manual-review")
+      .map((record) => record.intentId));
     for (const record of journal.pending()) {
       if (Number(record.chainId) !== chainId) throw new Error("execution-record-chain-mismatch");
     }
@@ -119,6 +122,9 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     let operatorResolution = null;
     const resolutionIntentId = String(env.EXECUTION_MANUAL_REVIEW_INTENT_ID || "");
     if (resolutionIntentId) {
+      if (!preExistingManualReviewIds.has(resolutionIntentId)) {
+        throw new Error("manual-review-label-not-yet-durable");
+      }
       const resolver = new ExecutionManualReviewResolver({ journal, nonceLane });
       operatorResolution = await resolver.rejectNeverSigned(resolutionIntentId, {
         now: Number(now),

@@ -129,11 +129,15 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Never-signed `manual-review` reservations can be rejected only by the isolated
+Protocol-v2 `manual-review` reservations durably proven never submitted for
+signing can be rejected only by the isolated
 recovery command with both `EXECUTION_MANUAL_REVIEW_INTENT_ID` and the exact
 `EXECUTION_MANUAL_REVIEW_CONFIRM=REJECT_ATLAS_NEVER_SIGNED_RESERVATION`
-assertion. The rejection is journaled and checkpointed before its nonce is
-released; any record containing signed bytes or a transaction hash is refused.
+assertion. The record must pre-exist as `manual-review`, carry
+`signingProtocolVersion: 2`, and have no `signingRequestedAt` marker. The
+lifecycle checkpoints that marker before calling Turnkey; marker-without-bytes
+is ambiguous and remains blocked. The rejection is journaled as its own
+evidence type before nonce release. Legacy, signed, and hashed records are refused.
 Dropped signed-transaction resolution, exact approval orchestration,
 native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final

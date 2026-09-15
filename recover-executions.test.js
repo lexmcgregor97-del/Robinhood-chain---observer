@@ -40,8 +40,10 @@ async function durableFixture() {
 async function neverSignedFixture() {
   const fixture = await durableFixture();
   const state = await loadJsonState(fixture.statePath);
-  state.execution.journal.records[0].status = "reserved";
+  state.execution.journal.records[0].status = "manual-review";
+  state.execution.journal.records[0].signingProtocolVersion = 2;
   state.execution.journal.records[0].transactionHash = null;
+  state.execution.journal.records[0].recoveryFailure = "signed-transaction-not-durable";
   await saveJsonState(fixture.statePath, state);
   return fixture;
 }
@@ -76,6 +78,37 @@ test("isolated command reconciles receipt through evidence and atomic state", as
     const evidenceLines = (await readFile(
       join(fixture.evidenceDir, "test-epoch.jsonl"), "utf8")).trim().split("\n");
     assert.equal(evidenceLines.length, 5);
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("isolated command cannot resolve a label first created in the same run", async () => {
+  const fixture = await durableFixture();
+  const state = await loadJsonState(fixture.statePath);
+  state.execution.journal.records[0].status = "reserved";
+  state.execution.journal.records[0].transactionHash = null;
+  await saveJsonState(fixture.statePath, state);
+  const noReceiptFetch = async (_url, request) => {
+    const { id, method } = JSON.parse(request.body);
+    if (method !== "eth_chainId") throw new Error("receipt-read-not-expected");
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: "0x1237" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    await assert.rejects(runExecutionRecovery({
+      env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet, RPC_URL: "https://rpc.invalid",
+        EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
+        EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0",
+        EXECUTION_MANUAL_REVIEW_INTENT_ID: "entry:1",
+        EXECUTION_MANUAL_REVIEW_CONFIRM: "REJECT_ATLAS_NEVER_SIGNED_RESERVATION" },
+      fetchImpl: noReceiptFetch, now: Date.now() + 1_000,
+    }), /manual-review-label-not-yet-durable/);
+    const restored = await loadJsonState(fixture.statePath);
+    assert.equal(restored.execution.journal.records[0].status, "manual-review");
+    assert.notEqual(restored.execution.nonceLane.lanes[0].pending, null);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
   }

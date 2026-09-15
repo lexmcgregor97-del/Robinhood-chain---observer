@@ -3,9 +3,22 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const BLOCK_NUMBER = /^0x[0-9a-fA-F]+$/;
 const MINED_FINAL = new Set(["confirmed", "reverted"]);
 
-const nonceResidueIsFinalizable = (record) => MINED_FINAL.has(record?.status)
+export const nonceResidueIsFinalizable = (record) => MINED_FINAL.has(record?.status)
   || (record?.status === "operator-rejected"
     && record?.operatorResolution?.type === "never-signed-rejection");
+
+export async function finalizeExecutionNonceResidue({ journal, nonceLane, outcomes = [] }) {
+  for (const lane of nonceLane.snapshot().lanes || []) {
+    const intentId = lane.pending?.intentId;
+    const record = intentId ? journal.get(intentId) : null;
+    if (record && nonceResidueIsFinalizable(record)) {
+      await nonceLane.finalize(intentId);
+      outcomes.push(Object.freeze({ intentId, outcome: "finalized-nonce-residue",
+        status: record.status }));
+    }
+  }
+  return outcomes;
+}
 
 function minedStatus(receipt) {
   if (!receipt) return null;
@@ -35,15 +48,8 @@ export class ExecutionRecovery {
   }
 
   async finalizeMinedNonceResidue(outcomes) {
-    for (const lane of this.nonceLane.snapshot().lanes || []) {
-      const intentId = lane.pending?.intentId;
-      const record = intentId ? this.journal.get(intentId) : null;
-      if (record && nonceResidueIsFinalizable(record)) {
-        await this.nonceLane.finalize(intentId);
-        outcomes.push(Object.freeze({ intentId, outcome: "finalized-nonce-residue",
-          status: record.status }));
-      }
-    }
+    await finalizeExecutionNonceResidue({ journal: this.journal,
+      nonceLane: this.nonceLane, outcomes });
   }
 
   async reconcile({ now = Date.now(), manualReviewAfterMs = 10 * 60_000 } = {}) {
@@ -56,12 +62,14 @@ export class ExecutionRecovery {
     for (const record of this.journal.pending()) {
       const intentId = record.intentId;
       if (!TX_HASH.test(String(record.transactionHash || ""))) {
+        const recoveryFailure = record.signingRequestedAt == null
+          ? "signed-transaction-not-durable" : "manual-review-signing-ambiguous";
         if (record.status !== "manual-review") {
           await this.journal.transition(intentId, { status: "manual-review",
-            recoveryFailure: "signed-transaction-not-durable" }, now);
+            recoveryFailure }, now);
         }
         outcomes.push(Object.freeze({ intentId, outcome: "manual-review",
-          failure: "signed-transaction-not-durable" }));
+          failure: recoveryFailure }));
         continue;
       }
       let receipt;

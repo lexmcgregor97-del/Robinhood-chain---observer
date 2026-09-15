@@ -54,6 +54,7 @@ import {
 } from "./execution-checkpoint.js";
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
+import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -493,12 +494,9 @@ async function restoreState() {
     positionLiveness = new PositionLiveness({
       state: samePaperEpoch ? (state.positionLiveness || {}) : {},
     });
-    for (const lane of persistence.writeBlocked ? [] : executionNonceLane.snapshot().lanes) {
-      const intentId = lane.pending?.intentId;
-      const record = intentId ? executionJournal.get(intentId) : null;
-      if (record && new Set(["confirmed", "reverted"]).has(record.status)) {
-        await executionNonceLane.finalize(intentId);
-      }
+    if (!persistence.writeBlocked) {
+      await finalizeExecutionNonceResidue({ journal: executionJournal,
+        nonceLane: executionNonceLane });
     }
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;

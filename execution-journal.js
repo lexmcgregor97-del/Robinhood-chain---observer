@@ -37,7 +37,8 @@ export class ExecutionJournal {
     this.records.set(id, next);
     this.transitionCount += 1;
     try {
-      await this.persist(this.snapshot(), { type: "execution-transition",
+      await this.persist(this.snapshot(), { type: next.status === "operator-rejected"
+        ? "execution-operator-rejected" : "execution-transition",
         intentId: id, record: { ...next } });
     } catch (error) {
       this.transitionCount = previousTransitionCount;

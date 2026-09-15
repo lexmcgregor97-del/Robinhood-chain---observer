@@ -9,6 +9,7 @@ const wallet = "0x1111111111111111111111111111111111111111";
 function fixture(record = {}) {
   const journal = new ExecutionJournal({ transitionCount: 2, records: [{
     intentId: "entry:1", status: "manual-review", chainId: 4663,
+    signingProtocolVersion: 2,
     recoveryFailure: "signed-transaction-not-durable", createdAt: 1, updatedAt: 2,
     ...record,
   }] });
@@ -30,6 +31,7 @@ test("journaled rejection precedes nonce release for a proven never-signed reser
   };
   journal = new ExecutionJournal({ transitionCount: 2, records: [{
     intentId: "entry:1", status: "manual-review", chainId: 4663,
+    signingProtocolVersion: 2,
     recoveryFailure: "signed-transaction-not-durable", createdAt: 1, updatedAt: 2,
   }] }, { persist });
   nonceLane = new NonceLane({ mutationCount: 1, lanes: [{
@@ -45,8 +47,8 @@ test("journaled rejection precedes nonce release for a proven never-signed reser
   assert.equal(journal.get("entry:1").operatorResolution.type, "never-signed-rejection");
   assert.equal(nonceLane.snapshot().lanes[0].pending, null);
   assert.deepEqual(events.map(({ type }) => type),
-    ["execution-transition", "execution-nonce-finalized"]);
-  assert.deepEqual(events[0], { type: "execution-transition", status: "operator-rejected",
+    ["execution-operator-rejected", "execution-nonce-finalized"]);
+  assert.deepEqual(events[0], { type: "execution-operator-rejected", status: "operator-rejected",
     pending: "entry:1" });
 });
 
@@ -60,6 +62,8 @@ test("refuses signed, hashed, and non-manual-review records", async () => {
   for (const record of [
     { transactionHash: `0x${"12".repeat(32)}` },
     { signedPayload: "0x02" },
+    { signingRequestedAt: 2 },
+    { signingProtocolVersion: 1 },
     { recoveryFailure: "execution-receipt-timeout" },
     { status: "broadcast" },
   ]) {
@@ -75,6 +79,7 @@ test("a failed rejection checkpoint leaves the nonce blocked", async () => {
   const { nonceLane } = fixture();
   const journal = new ExecutionJournal({ transitionCount: 2, records: [{
     intentId: "entry:1", status: "manual-review", chainId: 4663,
+    signingProtocolVersion: 2,
     recoveryFailure: "signed-transaction-not-durable", createdAt: 1, updatedAt: 2,
   }] }, { persist: async () => { throw new Error("disk-failed"); } });
   const resolver = new ExecutionManualReviewResolver({ journal, nonceLane });

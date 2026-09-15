@@ -17,7 +17,9 @@ export class ExecutionManualReviewResolver {
     if (!record || record.status !== "manual-review") {
       throw new Error("manual-review-record-required");
     }
-    if (record.recoveryFailure !== NEVER_SIGNED_FAILURE
+    if (record.signingProtocolVersion !== 2
+        || record.recoveryFailure !== NEVER_SIGNED_FAILURE
+        || record.signingRequestedAt != null
         || TX_HASH.test(String(record.transactionHash || ""))
         || typeof record.signedPayload === "string") {
       throw new Error("manual-review-never-signed-proof-failed");

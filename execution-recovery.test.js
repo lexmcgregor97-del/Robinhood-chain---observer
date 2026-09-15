@@ -10,10 +10,10 @@ const now = 1_000_000;
 
 function fixture({ status = "broadcast", transactionHash = hash,
   updatedAt = now - 1_000, receipt = null, getReceipt, recoveryFailure,
-  operatorResolution } = {}) {
+  operatorResolution, signingRequestedAt } = {}) {
   const journal = new ExecutionJournal({ transitionCount: 1, records: [{
     intentId: "entry:1", status, transactionHash, chainId: 4663,
-    createdAt: updatedAt, updatedAt, recoveryFailure, operatorResolution,
+    createdAt: updatedAt, updatedAt, recoveryFailure, operatorResolution, signingRequestedAt,
   }] });
   const nonceLane = new NonceLane({ mutationCount: 1, lanes: [{
     key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
@@ -67,6 +67,15 @@ test("an unsigned reservation is immediately marked for manual review", async ()
   const result = await recovery.reconcile({ now });
   assert.equal(result.outcomes[0].failure, "signed-transaction-not-durable");
   assert.equal(journal.get("entry:1").status, "manual-review");
+});
+
+test("a requested signature without durable bytes is marked ambiguous", async () => {
+  const { journal, nonceLane, recovery } = fixture({ status: "signing-requested",
+    transactionHash: null, signingRequestedAt: now - 1 });
+  const result = await recovery.reconcile({ now });
+  assert.equal(result.outcomes[0].failure, "manual-review-signing-ambiguous");
+  assert.equal(journal.get("entry:1").recoveryFailure, "manual-review-signing-ambiguous");
+  assert.notEqual(nonceLane.snapshot().lanes[0].pending, null);
 });
 
 test("RPC errors and malformed receipts cannot change durable state", async () => {
