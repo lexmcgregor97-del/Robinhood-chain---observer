@@ -11,15 +11,18 @@ const configured = {
   MICRO_MAINNET_ENABLED: "true",
   TURNKEY_SIGNING_ORGANIZATION_ID: "11111111-1111-7111-8111-111111111111",
   TURNKEY_SIGNING_WALLET_ADDRESS: wallet,
-  TURNKEY_SIGNING_POLICY_ID: "22222222-2222-7222-8222-222222222222",
+  TURNKEY_SIGNING_BUY_POLICY_ID: "22222222-2222-7222-8222-222222222222",
+  TURNKEY_SIGNING_SELL_POLICY_ID: "33333333-3333-7333-8333-333333333333",
+  TURNKEY_SIGNING_APPROVAL_POLICY_ID: "44444444-4444-7444-8444-444444444444",
   TURNKEY_SIGNING_API_PUBLIC_KEY: `02${"ab".repeat(32)}`,
-  TURNKEY_SIGNING_API_PRIVATE_KEY: "secret",
   TURNKEY_ORGANIZATION_ID: "11111111-1111-7111-8111-111111111111",
   TURNKEY_WALLET_ADDRESS: wallet,
   TURNKEY_API_PUBLIC_KEY: `03${"cd".repeat(32)}`,
   MICRO_MAINNET_V2_ROUTERS: router,
   MICRO_MAINNET_MAX_WETH_PER_TX_WEI: "1000000000000000",
   MICRO_MAINNET_MAX_WETH_DAILY_WEI: "3000000000000000",
+  MICRO_MAINNET_MAX_GAS: "400000",
+  MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
   MICRO_MAINNET_CONFIRMATION: `ENABLE_ATLAS_MICRO_MAINNET:4663:${wallet}`,
 };
 
@@ -52,7 +55,6 @@ test("requires an exact two-part activation ceremony and bounded spend", () => {
 
 test("keeps signing secrets out of public status", () => {
   const result = publicMicroMainnetConfig(microMainnetConfigFromEnv(configured));
-  assert.equal(JSON.stringify(result).includes("secret"), false);
   assert.equal(JSON.stringify(result).includes(configured.TURNKEY_SIGNING_API_PUBLIC_KEY), false);
   assert.equal(result.signingApiKeyConfigured, true);
 });
