@@ -16,12 +16,15 @@ export function microMainnetConfigFromEnv(env = process.env) {
   const enabled = envFlag(env.MICRO_MAINNET_ENABLED, false);
   const organizationId = value(env.TURNKEY_SIGNING_ORGANIZATION_ID);
   const walletAddress = value(env.TURNKEY_SIGNING_WALLET_ADDRESS).toLowerCase();
-  const policyId = value(env.TURNKEY_SIGNING_POLICY_ID);
+  const buyPolicyId = value(env.TURNKEY_SIGNING_BUY_POLICY_ID);
+  const sellPolicyId = value(env.TURNKEY_SIGNING_SELL_POLICY_ID);
+  const approvalPolicyId = value(env.TURNKEY_SIGNING_APPROVAL_POLICY_ID);
   const apiPublicKey = value(env.TURNKEY_SIGNING_API_PUBLIC_KEY).replace(/^0x/i, "");
-  const apiPrivateKey = value(env.TURNKEY_SIGNING_API_PRIVATE_KEY);
   const allowedRouters = addresses(env.MICRO_MAINNET_V2_ROUTERS);
   const maxPerTransactionWei = value(env.MICRO_MAINNET_MAX_WETH_PER_TX_WEI);
   const maxDailyWei = value(env.MICRO_MAINNET_MAX_WETH_DAILY_WEI);
+  const maxGas = value(env.MICRO_MAINNET_MAX_GAS);
+  const maxFeePerGasWei = value(env.MICRO_MAINNET_MAX_FEE_PER_GAS_WEI);
   const confirmation = value(env.MICRO_MAINNET_CONFIRMATION);
   const expectedConfirmation = walletAddress
     ? `${MICRO_MAINNET_CONFIRMATION_PREFIX}:4663:${walletAddress}` : null;
@@ -33,9 +36,10 @@ export function microMainnetConfigFromEnv(env = process.env) {
   if (requested && !enabled) failures.push("micro-mainnet-enable-flag-required");
   if (requested && !UUID.test(organizationId)) failures.push("signing-organization-id-invalid");
   if (requested && !ADDRESS.test(walletAddress)) failures.push("signing-wallet-address-invalid");
-  if (requested && !UUID.test(policyId)) failures.push("signing-policy-id-invalid");
+  const policyIds = [buyPolicyId, sellPolicyId, approvalPolicyId];
+  if (requested && (policyIds.some((id) => !UUID.test(id))
+      || new Set(policyIds).size !== policyIds.length)) failures.push("signing-policy-ids-invalid");
   if (requested && !PUBLIC_KEY.test(apiPublicKey)) failures.push("signing-api-public-key-invalid");
-  if (requested && !apiPrivateKey) failures.push("signing-api-private-key-required");
   const observerOrganizationId = value(env.TURNKEY_ORGANIZATION_ID);
   const observerWalletAddress = value(env.TURNKEY_WALLET_ADDRESS).toLowerCase();
   const observerApiPublicKey = value(env.TURNKEY_API_PUBLIC_KEY).replace(/^0x/i, "");
@@ -62,6 +66,10 @@ export function microMainnetConfigFromEnv(env = process.env) {
       && BigInt(maxDailyWei) < BigInt(maxPerTransactionWei)) {
     failures.push("daily-spend-limit-below-transaction-limit");
   }
+  if (requested && (!UINT.test(maxGas) || BigInt(maxGas) <= 0n)) failures.push("max-gas-invalid");
+  if (requested && (!UINT.test(maxFeePerGasWei) || BigInt(maxFeePerGasWei) <= 0n)) {
+    failures.push("max-fee-per-gas-invalid");
+  }
   if (requested && confirmation !== expectedConfirmation) failures.push("activation-confirmation-mismatch");
 
   return Object.freeze({
@@ -71,12 +79,13 @@ export function microMainnetConfigFromEnv(env = process.env) {
     enabled,
     organizationId,
     walletAddress,
-    policyId,
+    policyIds: Object.freeze({ buy: buyPolicyId, sell: sellPolicyId, approval: approvalPolicyId }),
     apiPublicKey,
-    apiPrivateKey,
     allowedRouters: Object.freeze(allowedRouters),
     maxPerTransactionWei,
     maxDailyWei,
+    maxGas,
+    maxFeePerGasWei,
     expectedConfirmation,
     failures: Object.freeze(failures),
   });
@@ -113,11 +122,14 @@ export function publicMicroMainnetConfig(config) {
     mode: config?.mode || "PAPER_ONLY",
     walletAddressConfigured: Boolean(config?.walletAddress),
     signingOrganizationConfigured: Boolean(config?.organizationId),
-    signingPolicyConfigured: Boolean(config?.policyId),
-    signingApiKeyConfigured: Boolean(config?.apiPublicKey && config?.apiPrivateKey),
+    signingPolicyConfigured: Boolean(config?.policyIds
+      && Object.values(config.policyIds).every(Boolean)),
+    signingApiKeyConfigured: Boolean(config?.apiPublicKey),
     allowedRouterCount: config?.allowedRouters?.length || 0,
     maxPerTransactionWei: config?.maxPerTransactionWei || null,
     maxDailyWei: config?.maxDailyWei || null,
+    maxGas: config?.maxGas || null,
+    maxFeePerGasWei: config?.maxFeePerGasWei || null,
     failures: [...(config?.failures || [])],
   });
 }
