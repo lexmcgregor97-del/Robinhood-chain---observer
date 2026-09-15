@@ -98,6 +98,8 @@ let SELL_PROBE_STATUS = {
   lastSuccessAt: null,
   checkedPool: null,
   method: null,
+  observedHolderPassed: false,
+  selfSimulationPassed: false,
   failures: [...SELL_PROBE_CONFIG.failures],
 };
 const sellProbeByPool = new Map();
@@ -785,6 +787,8 @@ function publicSellProbeStatus(now = Date.now()) {
     lastSuccessAt: SELL_PROBE_STATUS.lastSuccessAt,
     checkedPool: SELL_PROBE_STATUS.checkedPool,
     method: SELL_PROBE_STATUS.method,
+    observedHolderPassed: SELL_PROBE_STATUS.observedHolderPassed === true,
+    selfSimulationPassed: SELL_PROBE_STATUS.selfSimulationPassed === true,
     maxAgeMs: SELL_PROBE_CONFIG.maxAgeMs,
     failures: [...SELL_PROBE_STATUS.failures],
   };
@@ -794,6 +798,12 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!SELL_PROBE_CONFIG.configured) return;
   if (now - sellProbeLastAttemptAt < SELL_PROBE_CONFIG.intervalMs) return;
   sellProbeLastAttemptAt = now;
+  for (const [poolAddress, result] of sellProbeByPool) {
+    const checkedAt = Date.parse(result?.checkedAt || "");
+    if (!Number.isFinite(checkedAt) || now - checkedAt > SELL_PROBE_CONFIG.maxAgeMs) {
+      sellProbeByPool.delete(poolAddress);
+    }
+  }
   const eligible = measured.filter((candidate) => (
     candidate.version === "v2"
     && candidate.marketSafety?.buyMathOk === true
@@ -807,6 +817,7 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!eligible.length) {
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
       lastAttemptAt: new Date(now).toISOString(), checkedPool: null,
+      observedHolderPassed: false, selfSimulationPassed: false,
       failures: ["sell-probe-candidate-unavailable"] };
     return;
   }
@@ -820,6 +831,8 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       allowedRouters: SELL_PROBE_CONFIG.allowedRouters,
       maxSwapAgeBlocks: SELL_PROBE_CONFIG.maxSwapAgeBlocks,
       maxSlippageBps: SELL_PROBE_CONFIG.maxSlippageBps,
+      maxStorageSlot: SELL_PROBE_CONFIG.maxStorageSlot,
+      atlasWalletAddress: turnkeyEnvironment.config.walletAddress,
       rpc,
     });
     sellProbeByPool.set(candidate.address, result);
@@ -835,6 +848,8 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       ? lastResult.result.checkedAt : SELL_PROBE_STATUS.lastSuccessAt,
     checkedPool: lastResult?.candidate?.address || null,
     method: lastResult?.result?.method || null,
+    observedHolderPassed: lastResult?.result?.observedHolderPassed === true,
+    selfSimulationPassed: lastResult?.result?.selfSimulationPassed === true,
     failures: lastResult?.result?.failures || ["sell-probe-candidate-unavailable"],
   };
 }

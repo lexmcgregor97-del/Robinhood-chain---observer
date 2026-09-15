@@ -1,11 +1,15 @@
 import {
-  decodeFunctionResult, encodeFunctionData, getAddress, isAddress,
+  decodeFunctionResult, encodeAbiParameters, encodeFunctionData, getAddress, isAddress,
+  keccak256,
 } from "viem";
 import { validateV2RouterCalldata, V2_ROUTER_ABI } from "./router-calldata.js";
 import { quoteV2 } from "./v2-simulator.js";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const UINT_RESULT = /^0x[0-9a-fA-F]{1,64}$/;
+const BALANCE_SENTINEL = (1n << 255n) + 0x41544c4153n;
+const ALLOWANCE_SENTINEL = (1n << 254n) + 0x41544c4153n;
+const storageSlotCache = new Map();
 
 export const ERC20_SELL_PROBE_ABI = Object.freeze([
   {
@@ -26,6 +30,23 @@ const positiveInteger = (value, fallback) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const uintWord = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+
+function mappingSlot(address, slot) {
+  return keccak256(encodeAbiParameters(
+    [{ type: "address" }, { type: "uint256" }],
+    [getAddress(address), BigInt(slot)],
+  ));
+}
+
+function nestedMappingSlot(owner, spender, slot) {
+  const ownerSlot = mappingSlot(owner, slot);
+  return keccak256(encodeAbiParameters(
+    [{ type: "address" }, { type: "bytes32" }],
+    [getAddress(spender), ownerSlot],
+  ));
+}
+
 function uintResult(value, failure) {
   if (!UINT_RESULT.test(String(value || ""))) throw new Error(failure);
   return BigInt(value);
@@ -42,26 +63,80 @@ export function sellProbeConfigFromEnv(env = process.env) {
   const maxAgeMs = positiveInteger(env.SELL_PROBE_MAX_AGE_MS, 15 * 60_000);
   const maxSwapAgeBlocks = positiveInteger(env.SELL_PROBE_MAX_SWAP_AGE_BLOCKS, 1_200);
   const maxSlippageBps = positiveInteger(env.SELL_PROBE_MAX_SLIPPAGE_BPS, 500);
+  const maxStorageSlot = positiveInteger(env.SELL_PROBE_MAX_STORAGE_SLOT, 24);
   if (!intervalMs || intervalMs < 60_000) failures.push("sell-probe-interval-invalid");
   if (!maxAgeMs || maxAgeMs < intervalMs) failures.push("sell-probe-max-age-invalid");
   if (!maxSwapAgeBlocks) failures.push("sell-probe-swap-age-invalid");
   if (!maxSlippageBps || maxSlippageBps > 2_000) failures.push("sell-probe-slippage-invalid");
+  if (!maxStorageSlot || maxStorageSlot > 256) failures.push("sell-probe-storage-range-invalid");
   return Object.freeze({
     configured: failures.length === 0,
     allowedRouters: Object.freeze(allowedRouters),
-    intervalMs, maxAgeMs, maxSwapAgeBlocks, maxSlippageBps,
+    intervalMs, maxAgeMs, maxSwapAgeBlocks, maxSlippageBps, maxStorageSlot,
     failures: Object.freeze(failures),
   });
+}
+
+async function discoverStorageSlot({
+  token, callData, addressForSlot, spender = null, sentinel, maxStorageSlot, rpc,
+}) {
+  for (let slot = 0; slot <= maxStorageSlot; slot += 1) {
+    const key = spender
+      ? nestedMappingSlot(addressForSlot, spender, slot)
+      : mappingSlot(addressForSlot, slot);
+    try {
+      const result = await rpc("eth_call", [
+        { to: token, data: callData }, "latest",
+        { [token]: { stateDiff: { [key]: uintWord(sentinel) } } },
+      ]);
+      if (uintResult(result, "sell-probe-storage-result-invalid") === sentinel) {
+        return { slot, key };
+      }
+    } catch {
+      // A candidate slot can fail on unusual token layouts. Continue searching;
+      // exhaustion remains fail-closed and is reported without provider text.
+    }
+  }
+  return null;
+}
+
+function routerSellCall({ wallet, router, baseToken, quoteToken, amountIn,
+  amountOutMin, nowSeconds }) {
+  const deadline = nowSeconds + 60;
+  const path = [getAddress(baseToken), getAddress(quoteToken)];
+  const data = encodeFunctionData({
+    abi: V2_ROUTER_ABI,
+    functionName: "swapExactTokensForTokens",
+    args: [amountIn, amountOutMin, path, getAddress(wallet), BigInt(deadline)],
+  });
+  const intent = {
+    valueWei: "0", spendAsset: baseToken, spendAmount: amountIn.toString(), data,
+  };
+  const validation = validateV2RouterCalldata(intent, {
+    walletAddress: wallet, allowedPaths: [path], maxRouterDeadlineSeconds: 60,
+  }, { nowSeconds });
+  return { data, deadline, intent, path, router, validation };
+}
+
+function validRouterResult(result, amountIn, amountOutMin) {
+  const amounts = decodeFunctionResult({
+    abi: V2_ROUTER_ABI, functionName: "swapExactTokensForTokens", data: result,
+  });
+  return Array.isArray(amounts) && amounts.length >= 2
+    && BigInt(amounts[0]) === amountIn && BigInt(amounts.at(-1)) >= amountOutMin;
 }
 
 export async function probeV2Sell({
   pool, safety, lastSwap, latestBlock, allowedRouters, rpc,
   maxSwapAgeBlocks = 1_200, maxSlippageBps = 500,
+  atlasWalletAddress, maxStorageSlot = 24,
   nowSeconds = Math.floor(Date.now() / 1_000),
 }) {
   const checkedAt = new Date(nowSeconds * 1_000).toISOString();
   const fail = (...failures) => Object.freeze({
-    passed: false, checkedAt, method: "observed-holder-router-eth-call",
+    passed: false, checkedAt,
+    method: "dual-observed-holder-and-atlas-state-override-eth-call",
+    observedHolderPassed: false, selfSimulationPassed: false,
     failures: [...new Set(failures)],
   });
   if (pool?.version !== "v2") return fail("sell-probe-v2-required");
@@ -74,6 +149,10 @@ export async function probeV2Sell({
   if (!routers.length || routers.some((address) => !isAddress(address))) {
     return fail("sell-probe-router-allowlist-required");
   }
+  const atlasWallet = lower(atlasWalletAddress);
+  if (!isAddress(atlasWallet)) return fail("sell-probe-atlas-wallet-required");
+  if (!Number.isInteger(Number(maxStorageSlot)) || Number(maxStorageSlot) < 1
+      || Number(maxStorageSlot) > 256) return fail("sell-probe-storage-range-invalid");
   if (!TX_HASH.test(String(lastSwap?.transactionHash || ""))) {
     return fail("sell-probe-transaction-required");
   }
@@ -127,30 +206,64 @@ export async function probeV2Sell({
     if (uintResult(allowanceResult, "sell-probe-allowance-invalid") < amountIn) {
       return fail("sell-probe-holder-allowance-insufficient");
     }
-    const deadline = nowSeconds + 60;
-    const path = [getAddress(baseToken), getAddress(quoteToken)];
-    const data = encodeFunctionData({
-      abi: V2_ROUTER_ABI,
-      functionName: "swapExactTokensForTokens",
-      args: [amountIn, amountOutMin, path, getAddress(holder), BigInt(deadline)],
-    });
-    const intent = {
-      valueWei: "0", spendAsset: baseToken, spendAmount: amountIn.toString(), data,
-    };
-    const validation = validateV2RouterCalldata(intent, {
-      walletAddress: holder, allowedPaths: [path], maxRouterDeadlineSeconds: 60,
-    }, { nowSeconds });
+    const observedCall = routerSellCall({ wallet: holder, router, baseToken, quoteToken,
+      amountIn, amountOutMin, nowSeconds });
+    const { validation } = observedCall;
     if (!validation.approved) return fail("sell-probe-calldata-rejected");
-    const result = await rpc("eth_call", [{ from: holder, to: router, data }, "latest"]);
-    const amounts = decodeFunctionResult({
-      abi: V2_ROUTER_ABI, functionName: "swapExactTokensForTokens", data: result,
-    });
-    if (!Array.isArray(amounts) || amounts.length < 2
-        || BigInt(amounts[0]) !== amountIn || BigInt(amounts.at(-1)) < amountOutMin) {
+    const result = await rpc("eth_call", [{ from: holder, to: router,
+      data: observedCall.data }, "latest"]);
+    if (!validRouterResult(result, amountIn, amountOutMin)) {
       return fail("sell-probe-router-output-invalid");
     }
+
+    const atlasBalanceData = encodeFunctionData({
+      abi: ERC20_SELL_PROBE_ABI, functionName: "balanceOf", args: [getAddress(atlasWallet)],
+    });
+    const atlasAllowanceData = encodeFunctionData({
+      abi: ERC20_SELL_PROBE_ABI, functionName: "allowance",
+      args: [getAddress(atlasWallet), getAddress(router)],
+    });
+    let slots = storageSlotCache.get(baseToken);
+    if (!slots) {
+      const balance = await discoverStorageSlot({ token: baseToken, callData: atlasBalanceData,
+        addressForSlot: atlasWallet, sentinel: BALANCE_SENTINEL,
+        maxStorageSlot: Number(maxStorageSlot), rpc });
+      if (!balance) return Object.freeze({ ...fail("sell-probe-balance-slot-unresolved"),
+        observedHolderPassed: true });
+      const allowance = await discoverStorageSlot({ token: baseToken, callData: atlasAllowanceData,
+        addressForSlot: atlasWallet, spender: router, sentinel: ALLOWANCE_SENTINEL,
+        maxStorageSlot: Number(maxStorageSlot), rpc });
+      if (!allowance) return Object.freeze({ ...fail("sell-probe-allowance-slot-unresolved"),
+        observedHolderPassed: true });
+      slots = { balanceSlot: balance.slot, allowanceSlot: allowance.slot };
+      storageSlotCache.set(baseToken, slots);
+    }
+    const balanceKey = mappingSlot(atlasWallet, slots.balanceSlot);
+    const allowanceKey = nestedMappingSlot(atlasWallet, router, slots.allowanceSlot);
+    const atlasCall = routerSellCall({ wallet: atlasWallet, router, baseToken, quoteToken,
+      amountIn, amountOutMin, nowSeconds });
+    if (!atlasCall.validation.approved) return Object.freeze({
+      ...fail("sell-probe-self-calldata-rejected"), observedHolderPassed: true,
+    });
+    const stateOverride = { [baseToken]: { stateDiff: {
+      [balanceKey]: uintWord(amountIn), [allowanceKey]: uintWord(amountIn),
+    } } };
+    let selfResult;
+    try {
+      selfResult = await rpc("eth_call", [{ from: atlasWallet, to: router,
+        data: atlasCall.data }, "latest", stateOverride]);
+    } catch {
+      return Object.freeze({ ...fail("sell-probe-self-simulation-failed"),
+        observedHolderPassed: true });
+    }
+    if (!validRouterResult(selfResult, amountIn, amountOutMin)) {
+      return Object.freeze({ ...fail("sell-probe-self-router-output-invalid"),
+        observedHolderPassed: true });
+    }
     return Object.freeze({
-      passed: true, checkedAt, method: "observed-holder-router-eth-call",
+      passed: true, checkedAt,
+      method: "dual-observed-holder-and-atlas-state-override-eth-call",
+      observedHolderPassed: true, selfSimulationPassed: true,
       amountIn: amountIn.toString(), amountOutMin: amountOutMin.toString(),
       failures: [],
     });
@@ -158,4 +271,3 @@ export async function probeV2Sell({
     return fail("sell-probe-rpc-simulation-failed");
   }
 }
-

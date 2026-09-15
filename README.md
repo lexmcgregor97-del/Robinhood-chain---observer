@@ -22,14 +22,19 @@ Swap activity is stored as timestamped per-block counts. Signals compare a 60-se
 
 Candidate safety is measured at the paper book's actual intended notional. V2 and bounded same-tick V3 quotes determine acquired quantity, execution price, sell proceeds, fees, and price impact. These fields are explicitly named `buyMathOk` and `sellMathOk`: they are AMM arithmetic, not a honeypot or transfer-tax simulation. Any future live-entry policy must set `requireSellProbe`; without independently supplied sell evidence, the risk gate fails closed.
 
-The independent V2 sell probe uses a recent observed sell transaction to identify
-a real token holder and an allowlisted router. It verifies the holder still has
-the intended-size balance and allowance, constructs a non-zero slippage-bounded
-token-to-quote swap, validates that calldata through Atlas's execution policy,
-and simulates it with `eth_call`. It never signs or broadcasts. A stale seller,
-foreign router, insufficient balance or allowance, revert, or malformed router
-output fails closed. A passing probe is short-lived and candidate-specific; it
-does not claim that a future transaction is guaranteed to execute.
+The independent V2 sell probe requires two matching, read-only simulations for
+the same pool. First, it uses a recent observed sell transaction to identify a
+real token holder and an allowlisted router, verifies the holder's intended-size
+balance and allowance, and re-simulates that route. Second, it runs the same
+bounded sell from Atlas's configured wallet address using temporary `eth_call`
+state overrides for the token balance and allowance mappings. The overrides
+exist only inside the RPC simulation; Atlas never signs, broadcasts, approves,
+or changes chain state. This second proof prevents a privileged recent seller
+from serving as the sole evidence for a restricted token. A stale seller,
+foreign router, unresolved storage layout, unsupported override, revert, or
+malformed router output fails closed. Readiness clears only while both proofs
+remain fresh for one candidate; it does not claim that a future transaction is
+guaranteed to execute.
 
 The V6 qualifying paper policy risks 5% of remaining cash per entry, stops at
 an 8% executable loss, begins trailing after a 10% gain, takes profit at 35%,
