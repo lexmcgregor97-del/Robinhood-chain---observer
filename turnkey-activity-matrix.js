@@ -1,6 +1,6 @@
 import {
   decodeFunctionData, getAddress, isAddressEqual, parseTransaction,
-  recoverTransactionAddress,
+  recoverTransactionAddress, toFunctionSelector,
 } from "viem";
 import { APPROVE_ABI, MAX_UINT256 } from "./approval-calldata.js";
 import { ROBINHOOD } from "./chain-config.js";
@@ -14,6 +14,9 @@ export const REQUIRED_DENIAL_CASES = Object.freeze([
 ]);
 const ALLOW_CASES = Object.freeze(["buy", "sell", "approval"]);
 const DENIED = new Set(["ACTIVITY_STATUS_FAILED", "ACTIVITY_STATUS_REJECTED"]);
+const SWAP_SELECTOR = toFunctionSelector(
+  "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)",
+);
 
 const sameAddress = (left, right) => {
   try { return isAddressEqual(left, right); } catch { return false; }
@@ -123,6 +126,79 @@ function verifyDeniedActivity(activity, config, signingUserId) {
   return failures;
 }
 
+function commonDenialDeviations(transaction, config, { routerTarget = true } = {}) {
+  const deviations = [];
+  if (transaction.chainId !== ROBINHOOD.chainId) deviations.push("wrong-chain");
+  if (BigInt(transaction.value || 0n) > 0n) deviations.push("non-zero-value");
+  if (routerTarget && !allowedRouter(transaction.to, config)) deviations.push("foreign-router");
+  if (transaction.gas == null || BigInt(transaction.gas) > BigInt(config.maxGas)
+      || transaction.maxFeePerGas == null
+      || BigInt(transaction.maxFeePerGas) > BigInt(config.maxFeePerGasWei)
+      || transaction.maxPriorityFeePerGas == null
+      || BigInt(transaction.maxPriorityFeePerGas) > BigInt(config.maxFeePerGasWei)) {
+    deviations.push("excessive-gas-or-fee");
+  }
+  return deviations;
+}
+
+function buyDenialDeviations(transaction, config) {
+  const deviations = commonDenialDeviations(transaction, config);
+  const data = String(transaction.data || "0x");
+  const selectorMatches = data.slice(0, 10).toLowerCase() === SWAP_SELECTOR.toLowerCase();
+  if (!selectorMatches) deviations.push("wrong-selector");
+  let call;
+  try {
+    const normalizedData = selectorMatches ? data : `${SWAP_SELECTOR}${data.slice(10)}`;
+    call = decodeFunctionData({ abi: V2_ROUTER_ABI, data: normalizedData });
+  } catch {
+    deviations.push("malformed-swap-calldata");
+    return deviations;
+  }
+  const [amountIn, amountOutMin, path, recipient] = call.args;
+  if (BigInt(amountIn) <= 0n) deviations.push("invalid-input");
+  if (BigInt(amountIn) > BigInt(config.maxPerTransactionWei)) deviations.push("excessive-input");
+  if (BigInt(amountOutMin) === 0n) deviations.push("zero-minimum-output");
+  else if (BigInt(amountOutMin) < 0n) deviations.push("invalid-minimum-output");
+  if (path.length === 3) deviations.push("three-token-path");
+  else if (path.length !== 2) deviations.push("invalid-path-length");
+  if (!sameAddress(path[0], ROBINHOOD.weth)) {
+    deviations.push(path.length === 2 && sameAddress(path[1], ROBINHOOD.weth)
+      ? "allowed-sell-orientation" : "wrong-weth-orientation");
+  }
+  if (!sameAddress(recipient, config.walletAddress)) deviations.push("foreign-recipient");
+  return deviations;
+}
+
+function approvalDenialDeviations(transaction, config) {
+  const deviations = commonDenialDeviations(transaction, config, { routerTarget: false });
+  let call;
+  try { call = decodeFunctionData({ abi: APPROVE_ABI, data: transaction.data }); } catch {
+    deviations.push("malformed-approval-calldata");
+    return deviations;
+  }
+  const [spender, amount] = call.args;
+  if (!allowedRouter(spender, config)) deviations.push("foreign-approval-spender");
+  if (BigInt(amount) === MAX_UINT256) deviations.push("approve-max-uint");
+  else if (BigInt(amount) <= 0n) deviations.push("invalid-approval-amount");
+  return deviations;
+}
+
+function verifyDeniedCase(activity, expectedCase, config) {
+  let transaction;
+  try {
+    transaction = parseTransaction(activity?.intent?.signTransactionIntentV2?.unsignedTransaction);
+  } catch {
+    return ["matrix-denied-transaction-invalid"];
+  }
+  const approvalCase = new Set(["foreign-approval-spender", "approve-max-uint"])
+    .has(expectedCase);
+  const deviations = approvalCase
+    ? approvalDenialDeviations(transaction, config)
+    : buyDenialDeviations(transaction, config);
+  return deviations.length === 1 && deviations[0] === expectedCase
+    ? [] : ["matrix-denial-case-mismatch"];
+}
+
 export async function verifyTurnkeyActivityMatrix({
   matrix, config, signingUserId, getActivity,
 } = {}) {
@@ -155,7 +231,9 @@ export async function verifyTurnkeyActivityMatrix({
     for (const entry of denials) {
       const response = await getActivity({ organizationId: config.organizationId,
         activityId: entry.activityId });
-      failures.push(...verifyDeniedActivity(response?.activity || response, config, signingUserId));
+      const activity = response?.activity || response;
+      failures.push(...verifyDeniedActivity(activity, config, signingUserId));
+      failures.push(...verifyDeniedCase(activity, entry.case, config));
     }
   } catch {
     failures.push("behavioral-matrix-activity-read-failed");
