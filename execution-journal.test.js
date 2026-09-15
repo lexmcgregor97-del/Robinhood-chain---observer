@@ -23,3 +23,12 @@ test("final records cannot transition again", async () => {
   await journal.transition("entry:1", { status: "confirmed", transactionHash: hash }, 1);
   await assert.rejects(journal.transition("entry:1", { status: "broadcast" }, 2), /already-final/);
 });
+
+test("preflight rejections are final evidence, not pending execution", async () => {
+  const journal = new ExecutionJournal();
+  await journal.transition("entry:rejected", { status: "rejected", stage: "preflight",
+    failures: ["policy-drift"] }, 1);
+  assert.deepEqual(journal.pending(), []);
+  await assert.rejects(journal.transition("entry:rejected", { status: "reserved" }, 2),
+    /already-final/);
+});
