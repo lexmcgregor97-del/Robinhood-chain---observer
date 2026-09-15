@@ -46,6 +46,11 @@ reflects that code boundary, but neither activation flag is enabled or deployed.
 honours the same exclusive recovery lock. Candidate and readiness endpoints require a
 shared bearer token, and the worker pins their exact configured hostname.
 
+Run the isolated restart rehearsal with `npm run rehearse:live-worker`. The command refuses
+live activation flags and private signing material, passes only executable/module paths to
+its child process, and uses deterministic local accounts plus in-process chain stubs. It
+does not replace the real-organization Turnkey behavioral matrix.
+
 Position quotes are checkpointed when the trailing peak advances or a non-peak mark moves
 by at least 25 bps; smaller moves still participate in trigger evaluation without growing
 the durable journal every poll. A token that adds sell-side transfer fees or blacklists the
