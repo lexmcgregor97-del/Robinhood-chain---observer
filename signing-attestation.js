@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const VERSION = 1;
 const DEFAULT_MAX_LIFETIME_MS = 24 * 60 * 60_000;
+const MATRIX_MAX_AGE_MS = 24 * 60 * 60_000;
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -28,8 +29,24 @@ export function signingConfigFingerprint(config) {
   return createHash("sha256").update(canonical(publicConfig)).digest("hex");
 }
 
+export function summarizeBehavioralMatrix(matrix, { now = Date.now() } = {}) {
+  const runAt = Number(matrix?.runAt);
+  const allows = Array.isArray(matrix?.allows) ? matrix.allows.map(String) : [];
+  const denials = Array.isArray(matrix?.denials) ? matrix.denials.map(String) : [];
+  const activityIds = [...allows, ...denials];
+  if (!Number.isSafeInteger(runAt) || runAt > now + 5 * 60_000
+      || now - runAt > MATRIX_MAX_AGE_MS) throw new Error("behavioral-matrix-run-invalid");
+  if (allows.length !== 3 || denials.length < 12 || activityIds.some((id) => !id.trim())
+      || new Set(activityIds).size !== activityIds.length) {
+    throw new Error("behavioral-matrix-results-incomplete");
+  }
+  return Object.freeze({ runAt,
+    activityIdsSha256: createHash("sha256").update(canonical(activityIds)).digest("hex"),
+    denials: denials.length, allows: allows.length });
+}
+
 export function createSigningAttestation({
-  config, signingUserId, observerUserId, privateKeyPem,
+  config, signingUserId, observerUserId, behavioralMatrix, privateKeyPem,
   issuedAt = Date.now(), expiresAt = issuedAt + DEFAULT_MAX_LIFETIME_MS,
 } = {}) {
   if (!privateKeyPem || !signingUserId || !observerUserId || signingUserId === observerUserId) {
@@ -39,9 +56,17 @@ export function createSigningAttestation({
       || expiresAt <= issuedAt || expiresAt - issuedAt > DEFAULT_MAX_LIFETIME_MS) {
     throw new Error("invalid-signing-attestation-window");
   }
+  if (!behavioralMatrix || behavioralMatrix.denials < 12 || behavioralMatrix.allows !== 3
+      || !Number.isSafeInteger(behavioralMatrix.runAt)
+      || behavioralMatrix.runAt > issuedAt + 5 * 60_000
+      || issuedAt - behavioralMatrix.runAt > MATRIX_MAX_AGE_MS
+      || !/^[0-9a-f]{64}$/.test(String(behavioralMatrix.activityIdsSha256 || ""))) {
+    throw new Error("behavioral-matrix-attestation-required");
+  }
   const claims = Object.freeze({ version: VERSION, issuedAt, expiresAt,
     configFingerprint: signingConfigFingerprint(config),
-    signingUserId, observerUserId, verified: true });
+    signingUserId, observerUserId, behavioralMatrix: Object.freeze({ ...behavioralMatrix }),
+    verified: true });
   const signature = sign("sha256", Buffer.from(canonical(claims)), privateKeyPem).toString("base64");
   return Object.freeze({ claims, signature });
 }
@@ -63,6 +88,14 @@ export function verifySigningAttestation({ document, config, publicKeyPem, now =
       if (claims.expiresAt <= now) failures.push("signing-attestation-expired");
     }
     if (claims.signingUserId === claims.observerUserId) failures.push("signing-users-not-distinct");
+    if (!claims.behavioralMatrix || claims.behavioralMatrix.denials < 12
+        || claims.behavioralMatrix.allows !== 3
+        || !Number.isSafeInteger(claims.behavioralMatrix.runAt)
+        || claims.behavioralMatrix.runAt > now + 5 * 60_000
+        || now - claims.behavioralMatrix.runAt > MATRIX_MAX_AGE_MS
+        || !/^[0-9a-f]{64}$/.test(String(claims.behavioralMatrix.activityIdsSha256 || ""))) {
+      failures.push("behavioral-matrix-attestation-required");
+    }
     if (claims.configFingerprint !== signingConfigFingerprint(config)) {
       failures.push("signing-attestation-config-mismatch");
     }
