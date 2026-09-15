@@ -64,3 +64,11 @@ test("probe binds the authenticated signing user to policy and key ownership", a
   });
   assert.equal(result.verified, true);
 });
+
+test("approval policy pins selector and padded allowlisted spender word", () => {
+  const approval = expectedTurnkeySigningPolicies(config, userId).approval.condition;
+  const paddedRouter = config.allowedRouters[0].slice(2).padStart(64, "0");
+  assert.match(approval, /eth\.tx\.data\[0\.\.10\] == '0x095ea7b3'/);
+  assert.ok(approval.includes(`eth.tx.data[10..74] in ['${paddedRouter}']`));
+  assert.equal(approval.includes("0x5555555555555555555555555555555555555555"), false);
+});
