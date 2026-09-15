@@ -1,4 +1,4 @@
-# Atlas Turnkey Activity Listing and Restoration — Review Packet (revision 1)
+# Atlas Turnkey Activity Listing and Restoration — Review Packet (revision 2)
 
 ## Scope
 
@@ -16,6 +16,11 @@ at most 100 entries per page. Pages must be newest-first, IDs must be unique,
 timestamps must be valid and non-increasing, and pagination must terminate
 within the configured page ceiling. Scanning continues until a short page or
 until the ordered results cross below the record's signing-window lower bound.
+The first result of a later page may repeat that page's `before` cursor and is
+skipped exactly once, tolerating either inclusive or exclusive Turnkey cursor
+semantics; every other repeated ID is refused. Returned activities must also
+match both requested server-side filters, so short-page exhaustion does not
+silently rely on the server honoring them.
 
 Every listed activity is passed through the complete protocol-v3 verifier.
 Candidate counting therefore occurs only after organization, status, type,
@@ -39,6 +44,12 @@ The existing `recover:executions` command exposes the path only with:
   API key, sees its attested deny policy, and has no applicable allow policy;
 - a signing-user ID distinct from the observer user;
 - the same gas and fee caps used by micro-mainnet configuration.
+- an explicit positive `TURNKEY_ACTIVITY_MAX_PAGES` operator decision; there is
+  no command default, and reaching the ceiling fails closed.
+
+The successful command report and durable `operatorResolution` both include
+the selected activity ID, unique scanned-activity count, and exact start/end of
+the signing window.
 
 ## Safety boundary
 
@@ -56,14 +67,15 @@ The existing `recover:executions` command exposes the path only with:
 ## Validation
 
 - `npm run check`: passing
-- `npm test`: 278/278 passing on the dependency-complete runner
+- `npm test`: 279/279 passing on the dependency-complete runner
 - `git diff --check`: clean
 
 Tests cover digest-first selection in the presence of a genuine unrelated
 same-nonce signature, zero/multiple refusal, multi-page traversal through the
-window boundary, malformed order, duplicate pagination, page ceiling, ID drift,
-fresh activity use, observer-policy verification, durable restoration, stale
-label clearing, and retention of the nonce lane.
+window boundary, inclusive-cursor tolerance, malformed order, illegal
+duplicates, server-filter violations, page ceiling, ID drift, fresh activity
+use, observer-policy verification, durable discovery metadata, stale-label
+clearing, and retention of the nonce lane.
 
 ## Deliberate remaining blockers
 

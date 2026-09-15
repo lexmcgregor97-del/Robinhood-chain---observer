@@ -168,7 +168,11 @@ the record's signing-window lower bound is crossed, and applies the full intent
 digest and transaction verifier before counting candidates. Zero or multiple
 matching candidates are refused. The sole candidate is fetched again by ID and
 re-verified inside the resolver immediately before the durable transition to
-`signed`. The command never releases the nonce or broadcasts the transaction.
+`signed`. `TURNKEY_ACTIVITY_MAX_PAGES` is a required positive operator-selected
+scan ceiling; reaching it fails closed. The activity ID, unique scan count, and
+exact window bounds are returned in the report and stored in the durable
+operator resolution. The command never releases the nonce or broadcasts the
+transaction.
 
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 

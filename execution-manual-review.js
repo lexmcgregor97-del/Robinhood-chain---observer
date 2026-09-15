@@ -62,6 +62,16 @@ export class ExecutionManualReviewResolver {
       throw new Error("manual-review-turnkey-evidence-invalid");
     }
     const evidence = verification.evidence;
+    const discovery = activityEvidence?.discovery;
+    const expectedWindowEnd = record.signingRequestedAt
+      + Number(activityEvidence?.maximumActivityDelayMs ?? 5 * 60_000);
+    if (discovery?.activityId !== evidence.activityId
+        || !Number.isSafeInteger(discovery?.scannedActivityCount)
+        || discovery.scannedActivityCount < 1
+        || discovery?.windowStartAt !== record.signingRequestedAt
+        || discovery?.windowEndAt !== expectedWindowEnd) {
+      throw new Error("manual-review-turnkey-discovery-invalid");
+    }
     await this.journal.transition(record.intentId, {
       status: "signed",
       transactionHash: evidence.transactionHash,
@@ -69,7 +79,9 @@ export class ExecutionManualReviewResolver {
       signedAt: evidence.createdAt,
       turnkeySigningActivityId: evidence.activityId,
       operatorResolution: { type: "turnkey-signed-payload-restored",
-        assertedAt: Number(now) },
+        assertedAt: Number(now), activityId: evidence.activityId,
+        scannedActivityCount: discovery.scannedActivityCount,
+        windowStartAt: discovery.windowStartAt, windowEndAt: discovery.windowEndAt },
       recoveryFailure: null,
     }, now);
     return Object.freeze({ intentId: record.intentId, status: "signed",

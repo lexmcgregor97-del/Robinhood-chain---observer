@@ -136,10 +136,13 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
         const signingUserId = String(env.TURNKEY_SIGNING_USER_ID || "");
         const maxGas = String(env.MICRO_MAINNET_MAX_GAS || "");
         const maxFeePerGasWei = String(env.MICRO_MAINNET_MAX_FEE_PER_GAS_WEI || "");
+        const activityMaxPages = String(env.TURNKEY_ACTIVITY_MAX_PAGES || "");
         if (!observer.configured || !observer.identifiersValid
             || !UUID.test(signingUserId)
             || !/^[1-9][0-9]*$/.test(maxGas)
-            || !/^[1-9][0-9]*$/.test(maxFeePerGasWei)) {
+            || !/^[1-9][0-9]*$/.test(maxFeePerGasWei)
+            || !/^[1-9][0-9]*$/.test(activityMaxPages)
+            || !Number.isSafeInteger(Number(activityMaxPages))) {
           throw new Error("ambiguous-signing-observer-config-invalid");
         }
         const factory = makeTurnkeyClient || ((config) => new Turnkey({
@@ -168,7 +171,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
           evidenceConfig: { organizationId: observer.config.organizationId,
             walletAddress: expectedWalletAddress, signingUserId, maxGas, maxFeePerGasWei },
           operatorAssertion: env.EXECUTION_MANUAL_REVIEW_CONFIRM, now: Number(now),
-          maxPages: integer(env.TURNKEY_ACTIVITY_MAX_PAGES, 100) });
+          maxPages: Number(activityMaxPages) });
       } else {
         operatorResolution = await resolver.rejectNeverSigned(resolutionIntentId, {
           now: Number(now),

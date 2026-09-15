@@ -31,9 +31,15 @@ export async function findUniqueAmbiguousSigningActivity({
       throw new Error("turnkey-activity-page-invalid");
     }
     let crossedLowerBound = false;
-    for (const activity of activities) {
+    for (const [index, activity] of activities.entries()) {
       const id = String(activity?.id || "");
-      if (!id || seen.has(id)) throw new Error("turnkey-activity-page-invalid");
+      if (!id || activity?.type !== SIGN_TRANSACTION || activity?.status !== COMPLETED) {
+        throw new Error("turnkey-activity-page-invalid");
+      }
+      if (seen.has(id)) {
+        if (page > 0 && index === 0 && id === before) continue;
+        throw new Error("turnkey-activity-page-invalid");
+      }
       seen.add(id);
       let createdAt;
       try { createdAt = turnkeyActivityTimestampMs(activity.createdAt); } catch {
@@ -58,7 +64,10 @@ export async function findUniqueAmbiguousSigningActivity({
     throw new Error(matches.length ? "turnkey-activity-candidate-ambiguous"
       : "turnkey-activity-candidate-not-found");
   }
-  return Object.freeze({ activityId: matches[0].id, scannedActivityCount: seen.size });
+  return Object.freeze({ activityId: matches[0].id, scannedActivityCount: seen.size,
+    windowStartAt: Number(record.signingRequestedAt),
+    windowEndAt: Number(record.signingRequestedAt)
+      + Number(evidenceConfig?.maximumActivityDelayMs ?? 5 * 60_000) });
 }
 
 export async function restoreUniqueAmbiguousSigningActivity({
@@ -77,8 +86,9 @@ export async function restoreUniqueAmbiguousSigningActivity({
     throw new Error("turnkey-activity-refetch-mismatch");
   }
   const resolution = await resolver.restoreSignedFromTurnkey(record.intentId, {
-    activity: refreshed, ...evidenceConfig,
+    activity: refreshed, ...evidenceConfig, discovery: selected,
   }, { now, operatorAssertion });
   return Object.freeze({ ...resolution, activityId: selected.activityId,
-    scannedActivityCount: selected.scannedActivityCount });
+    scannedActivityCount: selected.scannedActivityCount,
+    windowStartAt: selected.windowStartAt, windowEndAt: selected.windowEndAt });
 }

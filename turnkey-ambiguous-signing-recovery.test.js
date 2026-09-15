@@ -39,7 +39,8 @@ test("filters by the intent digest before selecting one candidate", async () => 
   const unrelated = await activity("unrelated", { ...intended, data: "0xdeadbeef" }, 1_002_000);
   const selected = await findUniqueAmbiguousSigningActivity({ record, evidenceConfig,
     getActivities: async () => ({ activities: [unrelated, exact] }) });
-  assert.deepEqual(selected, { activityId: "exact", scannedActivityCount: 2 });
+  assert.deepEqual(selected, { activityId: "exact", scannedActivityCount: 2,
+    windowStartAt: requestedAt, windowEndAt: requestedAt + 5 * 60_000 });
 });
 
 test("refuses zero or multiple digest-matching candidates", async () => {
@@ -64,6 +65,17 @@ test("paginates newest-first until the complete signing window is covered", asyn
   assert.equal(selected.activityId, "exact");
   assert.equal(calls.length, 2);
   assert.equal(calls[1].paginationOptions.before, "exact");
+});
+
+test("tolerates only an inclusive cursor at the start of the next page", async () => {
+  const exact = await activity("exact", intended, 1_002_000);
+  const cursor = await activity("cursor", { ...intended, nonce: 8 }, 1_001_000);
+  const older = await activity("older", { ...intended, nonce: 6 }, 999_000);
+  const selected = await findUniqueAmbiguousSigningActivity({ record, evidenceConfig,
+    pageLimit: 2, getActivities: async (request) => ({ activities:
+      request.paginationOptions.before ? [cursor, older] : [exact, cursor] }) });
+  assert.equal(selected.activityId, "exact");
+  assert.equal(selected.scannedActivityCount, 3);
 });
 
 test("re-fetches the selected activity by ID before resolver mutation", async () => {
@@ -93,7 +105,10 @@ test("refuses malformed ordering, duplicate pages, and activity-ID drift", async
     getActivities: async () => ({ activities: [first, later] }) }), /order-invalid/);
   await assert.rejects(findUniqueAmbiguousSigningActivity({ record, evidenceConfig,
     pageLimit: 1, maxPages: 2, getActivities: async () => ({ activities: [first] }) }),
-  /page-invalid/);
+  /pagination-limit/);
+  await assert.rejects(findUniqueAmbiguousSigningActivity({ record, evidenceConfig,
+    getActivities: async () => ({ activities: [{ ...first,
+      status: "ACTIVITY_STATUS_PENDING" }] }) }), /page-invalid/);
   await assert.rejects(restoreUniqueAmbiguousSigningActivity({ record, evidenceConfig,
     getActivities: async () => ({ activities: [first] }),
     getActivity: async () => ({ activity: { ...first, id: "different" } }),

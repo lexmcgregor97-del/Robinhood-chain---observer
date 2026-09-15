@@ -120,11 +120,14 @@ test("restores verified Turnkey bytes without releasing or broadcasting the nonc
   const result = await resolver.restoreSignedFromTurnkey("entry:1", {
     activity, organizationId, walletAddress: signingAccount.address, signingUserId,
     maxGas: "200000", maxFeePerGasWei: "2000000000",
+    discovery: { activityId: "activity-1", scannedActivityCount: 1,
+      windowStartAt: signingRequestedAt, windowEndAt: signingRequestedAt + 300_000 },
   }, { now: 4, operatorAssertion: "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY" });
   assert.equal(result.status, "signed");
   assert.equal(journal.get("entry:1").signedPayload, signedPayload);
   assert.equal(journal.get("entry:1").turnkeySigningActivityId, "activity-1");
   assert.equal(journal.get("entry:1").recoveryFailure, null);
+  assert.equal(journal.get("entry:1").operatorResolution.scannedActivityCount, 1);
   assert.equal(nonceLane.snapshot().lanes[0].pending.intentId, "entry:1");
 });
 

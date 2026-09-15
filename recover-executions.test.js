@@ -215,12 +215,17 @@ test("isolated command lists, re-fetches, and restores one exact Turnkey activit
       TURNKEY_POLICY_ID: organizationId, TURNKEY_READ_ONLY_ATTESTED: "true",
       TURNKEY_SIGNING_USER_ID: signingUserId, MICRO_MAINNET_MAX_GAS: "200000",
       MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
+      TURNKEY_ACTIVITY_MAX_PAGES: "10",
     }, fetchImpl: noReceiptFetch, now: Date.now(), makeTurnkeyClient: () => client });
     assert.equal(report.operatorResolution.status, "signed");
+    assert.equal(report.operatorResolution.activityId, "activity-exact");
+    assert.equal(report.operatorResolution.scannedActivityCount, 1);
     assert.deepEqual(calls.map(([kind]) => kind), ["list", "get"]);
     const state = await loadJsonState(fixture.statePath);
     assert.equal(state.execution.journal.records[0].signedPayload, fixture.signedTransaction);
     assert.equal(state.execution.journal.records[0].recoveryFailure, null);
+    assert.equal(state.execution.journal.records[0].operatorResolution.activityId,
+      "activity-exact");
     assert.notEqual(state.execution.nonceLane.lanes[0].pending, null);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
