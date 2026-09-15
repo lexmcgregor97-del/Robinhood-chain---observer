@@ -1,6 +1,6 @@
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 
-const FINAL = new Set(["confirmed", "reverted", "rejected"]);
+const FINAL = new Set(["confirmed", "reverted", "rejected", "operator-rejected"]);
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 
 export class ExecutionJournal {
@@ -37,7 +37,8 @@ export class ExecutionJournal {
     this.records.set(id, next);
     this.transitionCount += 1;
     try {
-      await this.persist(this.snapshot(), { type: "execution-transition",
+      await this.persist(this.snapshot(), { type: next.status === "operator-rejected"
+        ? "execution-operator-rejected" : "execution-transition",
         intentId: id, record: { ...next } });
     } catch (error) {
       this.transitionCount = previousTransitionCount;

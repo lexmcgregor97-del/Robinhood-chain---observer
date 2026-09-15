@@ -4,6 +4,9 @@ import { ExecutionRecovery } from "./execution-recovery.js";
 import { keccak256 } from "viem";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+// Bump this whenever the ordering or meaning of the pre-sign marker changes.
+// Older protocol records must remain ineligible for never-signed resolution.
+const SIGNING_PROTOCOL_VERSION = 2;
 
 export class ExecutionLifecycleError extends Error {
   constructor(stage, cause, state) {
@@ -84,6 +87,8 @@ export class ExecutionLifecycle {
       await this.journal.transition(intent.id, {
         status: "reserved", chainId: intent.chainId,
         spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
+        signingProtocolVersion: SIGNING_PROTOCOL_VERSION,
+        reservedAt: Number(now),
       }, now);
     } catch {
       this.running.delete(intent.id);
@@ -114,6 +119,9 @@ export class ExecutionLifecycle {
         chainId: intent.chainId, walletAddress: intent.from, intentId: intent.id,
       }, () => this.provider.getPendingNonce(intent));
       await this.journal.transition(intent.id, { status: "nonce-reserved", nonce }, now);
+      await this.journal.transition(intent.id, {
+        status: "signing-requested", signingRequestedAt: Number(now),
+      }, now);
       const signed = await this.provider.sign(intent, { nonce });
       if (!signed || !TX_HASH.test(String(signed.transactionHash))) {
         throw new Error("signed-transaction-hash-required");
@@ -124,7 +132,7 @@ export class ExecutionLifecycle {
       state.transactionHash = signed.transactionHash.toLowerCase();
       await this.journal.transition(intent.id, {
         status: "signed", transactionHash: state.transactionHash,
-        signedPayload: signed.payload,
+        signedPayload: signed.payload, signedAt: Number(now),
         gas: signed.gas || null,
         maxFeePerGas: signed.maxFeePerGas || null,
         maxPriorityFeePerGas: signed.maxPriorityFeePerGas || null,
@@ -132,7 +140,9 @@ export class ExecutionLifecycle {
       state.stage = "broadcasting";
       const transactionHash = String(await this.provider.broadcast(signed.payload, intent)).toLowerCase();
       if (transactionHash !== state.transactionHash) throw new Error("broadcast-hash-mismatch");
-      await this.journal.transition(intent.id, { status: "broadcast" }, now);
+      await this.journal.transition(intent.id, {
+        status: "broadcast", broadcastAt: Number(now),
+      }, now);
       state.stage = "confirming";
       const receipt = await this.provider.waitForReceipt(state.transactionHash, intent);
       const succeeded = receipt?.status === "success" || receipt?.status === 1 || receipt?.status === "0x1";

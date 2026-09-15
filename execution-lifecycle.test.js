@@ -6,6 +6,7 @@ import { ExecutionJournal } from "./execution-journal.js";
 import { NonceLane } from "./nonce-lane.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 import { DailySpendLedger } from "./spend-ledger.js";
+import { ExecutionManualReviewResolver } from "./execution-manual-review.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const router = "0x2222222222222222222222222222222222222222";
@@ -113,10 +114,58 @@ test("persists a transaction hash before broadcast", async () => {
     provider: provider({ async broadcast() { throw new Error("network-down"); } }),
   });
   await assert.rejects(lifecycle.submit(rawIntent, { now }));
-  assert.deepEqual(transitions, ["reserved", "nonce-reserved", "signed"]);
+  assert.deepEqual(transitions, ["reserved", "nonce-reserved", "signing-requested", "signed"]);
   assert.equal(journal.get(rawIntent.id).transactionHash, hash);
   assert.equal(journal.get(rawIntent.id).signedPayload, signedPayload);
   assert.equal(journal.get(rawIntent.id).gas, "100000");
+  assert.equal(journal.get(rawIntent.id).signingRequestedAt, now);
+  assert.equal(journal.get(rawIntent.id).signedAt, now);
+  assert.equal(journal.get(rawIntent.id).reservedAt, now);
+  assert.equal(journal.get(rawIntent.id).signingProtocolVersion, 2);
+});
+
+test("a sign-then-checkpoint failure remains ambiguous and cannot be operator-rejected", async () => {
+  let signCalls = 0;
+  const journal = new ExecutionJournal({}, { persist: async (_state, event) => {
+    if (event.record?.status === "signed") throw new Error("signed-checkpoint-failed");
+  } });
+  const nonceLane = new NonceLane();
+  const walletProvider = provider({ async sign(intent, options) {
+    signCalls += 1;
+    return { payload: signedPayload, transactionHash: hash,
+      gas: "100000", maxFeePerGas: "2", maxPriorityFeePerGas: "1" };
+  } });
+  const lifecycle = new ExecutionLifecycle({ policy, preflight,
+    ledger: new DailySpendLedger(), journal, nonceLane, provider: walletProvider });
+  await assert.rejects(lifecycle.submit(rawIntent, { now }), /signed-checkpoint-failed/);
+  assert.equal(signCalls, 1);
+  assert.equal(journal.get(rawIntent.id).status, "signing-requested");
+  assert.equal(journal.get(rawIntent.id).signingRequestedAt, now);
+  const [outcome] = await lifecycle.recoverPending({ now: now + 1 });
+  assert.equal(outcome.failure, "manual-review-signing-ambiguous");
+  const resolver = new ExecutionManualReviewResolver({ journal, nonceLane });
+  await assert.rejects(resolver.rejectNeverSigned(rawIntent.id, {
+    operatorAssertion: "REJECT_ATLAS_NEVER_SIGNED_RESERVATION",
+  }), /manual-review-never-signed-proof-failed/);
+  assert.notEqual(nonceLane.snapshot().lanes[0].pending, null);
+});
+
+test("a failed signing-request marker prevents the Turnkey sign call", async () => {
+  let signCalls = 0;
+  const journal = new ExecutionJournal({}, { persist: async (_state, event) => {
+    if (event.record?.status === "signing-requested") throw new Error("marker-checkpoint-failed");
+  } });
+  const nonceLane = new NonceLane();
+  const walletProvider = provider({ async sign() {
+    signCalls += 1;
+    return { payload: signedPayload, transactionHash: hash };
+  } });
+  const lifecycle = new ExecutionLifecycle({ policy, preflight,
+    ledger: new DailySpendLedger(), journal, nonceLane, provider: walletProvider });
+  await assert.rejects(lifecycle.submit(rawIntent, { now }), /marker-checkpoint-failed/);
+  assert.equal(signCalls, 0);
+  assert.equal(journal.get(rawIntent.id).status, "nonce-reserved");
+  assert.notEqual(nonceLane.snapshot().lanes[0].pending, null);
 });
 
 test("journals reservation before spend and finalizes a failed spend as rejected", async () => {

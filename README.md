@@ -129,8 +129,20 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Journaled operator resolution for `manual-review`, exact approval
-orchestration, native-gas funding checks,
+Protocol-v2 `manual-review` reservations durably proven never submitted for
+signing can be rejected only by the isolated
+recovery command with both `EXECUTION_MANUAL_REVIEW_INTENT_ID` and the exact
+`EXECUTION_MANUAL_REVIEW_CONFIRM=REJECT_ATLAS_NEVER_SIGNED_RESERVATION`
+assertion. The record must pre-exist as `manual-review`, carry
+`signingProtocolVersion: 2`, and have no `signingRequestedAt` marker. The
+lifecycle checkpoints that marker before calling Turnkey; marker-without-bytes
+is ambiguous and remains blocked. The rejection is journaled as its own
+evidence type before nonce release. Legacy, signed, and hashed records are refused.
+The protocol version must be incremented if the ordering or meaning of the
+pre-sign marker changes. Execution evidence records `reservedAt`,
+`signingRequestedAt`, `signedAt`, and `broadcastAt` explicitly.
+Dropped signed-transaction resolution, exact approval orchestration,
+native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.

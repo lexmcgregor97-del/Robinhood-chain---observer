@@ -1,4 +1,4 @@
-const FINAL = new Set(["confirmed", "reverted", "rejected"]);
+const FINAL = new Set(["confirmed", "reverted", "rejected", "operator-rejected"]);
 
 const count = (typeCounts, type) => Number(typeCounts?.[type] || 0);
 const recordsById = (records = []) => new Map(records.map((record) => [record?.intentId, record]));
@@ -19,7 +19,8 @@ export function validateExecutionCheckpoint({ execution = {}, typeCounts = {} } 
     .every((value) => Number.isSafeInteger(value) && value >= 0)) {
     throw new Error("execution-checkpoint-invalid");
   }
-  if (transitionCount !== count(typeCounts, "execution-transition")) {
+  if (transitionCount !== count(typeCounts, "execution-transition")
+      + count(typeCounts, "execution-operator-rejected")) {
     throw new Error("execution-journal-evidence-divergence");
   }
   if (nonceMutationCount !== count(typeCounts, "execution-nonce-reserved")
@@ -61,7 +62,7 @@ export function validateExecutionCheckpoint({ execution = {}, typeCounts = {} } 
     pendingIntentIds.add(intentId);
   }
   for (const record of records.values()) {
-    if (new Set(["nonce-reserved", "signed", "broadcast"]).has(record.status)
+    if (new Set(["nonce-reserved", "signing-requested", "signed", "broadcast"]).has(record.status)
         && !pendingIntentIds.has(record.intentId)) {
       throw new Error("execution-journal-nonce-divergence");
     }
