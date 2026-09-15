@@ -6,9 +6,16 @@ import { tmpdir } from "node:os";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { runExecutionRecovery } from "./recover-executions.js";
+import { serializeTransaction } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const hash = `0x${"12".repeat(32)}`;
+const signingAccount = privateKeyToAccount(`0x${"11".repeat(32)}`);
+const organizationId = "11111111-1111-7111-8111-111111111111";
+const observerUserId = "33333333-3333-7333-8333-333333333333";
+const signingUserId = "44444444-4444-7444-8444-444444444444";
 
 async function durableFixture() {
   const dir = await mkdtemp(join(tmpdir(), "atlas-execution-recovery-"));
@@ -46,6 +53,32 @@ async function neverSignedFixture() {
   state.execution.journal.records[0].recoveryFailure = "signed-transaction-not-durable";
   await saveJsonState(fixture.statePath, state);
   return fixture;
+}
+
+async function ambiguousSigningFixture(signingRequestedAt) {
+  const fixture = await durableFixture();
+  const state = await loadJsonState(fixture.statePath);
+  const transaction = { chainId: 4663, type: "eip1559", nonce: 7,
+    to: "0x2222222222222222222222222222222222222222", data: "0x12345678",
+    value: 0n, gas: 150000n, maxFeePerGas: 1000000000n,
+    maxPriorityFeePerGas: 1000000n };
+  Object.assign(state.execution.journal.records[0], { status: "manual-review",
+    signingProtocolVersion: 3, transactionHash: null,
+    recoveryFailure: "manual-review-signing-ambiguous", signingRequestedAt,
+    nonce: 7, intentTransactionDigest: executionIntentTransactionDigest({ ...transaction,
+      from: signingAccount.address }) });
+  state.execution.nonceLane.lanes[0].walletAddress = signingAccount.address.toLowerCase();
+  state.execution.nonceLane.lanes[0].key = `4663:${signingAccount.address.toLowerCase()}`;
+  await saveJsonState(fixture.statePath, state);
+  const signedTransaction = await signingAccount.signTransaction(transaction);
+  const activity = { id: "activity-exact", organizationId,
+    status: "ACTIVITY_STATUS_COMPLETED", type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+    createdAt: { seconds: String(Math.floor((signingRequestedAt + 1000) / 1000)), nanos: "0" },
+    votes: [{ userId: signingUserId, selection: "VOTE_SELECTION_APPROVED" }],
+    intent: { signTransactionIntentV2: { signWith: signingAccount.address,
+      unsignedTransaction: serializeTransaction(transaction) } },
+    result: { signTransactionResult: { signedTransaction } } };
+  return { ...fixture, activity, signedTransaction };
 }
 
 const rpcFetch = async (_url, request) => {
@@ -143,6 +176,52 @@ test("isolated command durably rejects a proven never-signed manual review", asy
     const state = await loadJsonState(fixture.statePath);
     assert.equal(state.execution.journal.records[0].status, "operator-rejected");
     assert.equal(state.execution.nonceLane.lanes[0].pending, null);
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("isolated command lists, re-fetches, and restores one exact Turnkey activity", async () => {
+  const signingRequestedAt = Date.now() - 120_000;
+  const fixture = await ambiguousSigningFixture(signingRequestedAt);
+  const calls = [];
+  const apiPublicKey = `02${"12".repeat(32)}`;
+  const client = {
+    async getWhoami() { return { userId: observerUserId }; },
+    async getOrganizationConfigs() { return { configs: { quorum: { userIds: [] } } }; },
+    async getPolicies() { return { policies: [{ policyId: organizationId,
+      effect: "EFFECT_DENY", consensus: `approvers.any(user, user.id == '${observerUserId}')` }] }; },
+    async getUser() { return { user: { apiKeys: [{ credential: { publicKey: apiPublicKey } }],
+      userTags: [] } }; },
+    async getActivities(request) { calls.push(["list", request]); return { activities: [fixture.activity] }; },
+    async getActivity(request) { calls.push(["get", request]); return { activity: fixture.activity }; },
+  };
+  const noReceiptFetch = async (_url, request) => {
+    const { id, method } = JSON.parse(request.body);
+    if (method !== "eth_chainId") throw new Error("receipt-read-not-expected");
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: "0x1237" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const report = await runExecutionRecovery({ env: {
+      STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+      TURNKEY_WALLET_ADDRESS: signingAccount.address, RPC_URL: "https://rpc.invalid",
+      EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
+      EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "entry:1",
+      EXECUTION_MANUAL_REVIEW_CONFIRM: "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY",
+      TURNKEY_ORGANIZATION_ID: organizationId, TURNKEY_WALLET_ID: organizationId,
+      TURNKEY_API_PUBLIC_KEY: apiPublicKey, TURNKEY_API_PRIVATE_KEY: "observer-private",
+      TURNKEY_POLICY_ID: organizationId, TURNKEY_READ_ONLY_ATTESTED: "true",
+      TURNKEY_SIGNING_USER_ID: signingUserId, MICRO_MAINNET_MAX_GAS: "200000",
+      MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
+    }, fetchImpl: noReceiptFetch, now: Date.now(), makeTurnkeyClient: () => client });
+    assert.equal(report.operatorResolution.status, "signed");
+    assert.deepEqual(calls.map(([kind]) => kind), ["list", "get"]);
+    const state = await loadJsonState(fixture.statePath);
+    assert.equal(state.execution.journal.records[0].signedPayload, fixture.signedTransaction);
+    assert.equal(state.execution.journal.records[0].recoveryFailure, null);
+    assert.notEqual(state.execution.nonceLane.lanes[0].pending, null);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
   }
