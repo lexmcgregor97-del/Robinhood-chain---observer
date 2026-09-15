@@ -17,24 +17,37 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 The micro-mainnet review boundary uses a second Turnkey API user and never
 repurposes the read-only observer credential. Configuration requires an exact
 mode plus enable flag, a wallet-bound confirmation string, an explicit router
-allowlist, and integer WETH limits per transaction and per UTC day. Atlas also
-requires that the signing organization and wallet match the independently
-verified observer wallet while the signing API public key differs. At startup,
-read-only Turnkey queries verify that the signing user is non-root, owns that
-API key, and has exactly one applicable ALLOW policy: the configured policy.
-The policy text must exactly bind chain 4663, zero native value, the allowlisted
-V2 routers, `swapExactTokensForTokens`, bounded non-zero input/output, a
-two-address path beginning with WETH, and Atlas as recipient. This requires the
-V2 router ABI to be uploaded as a Turnkey Smart Contract Interface.
+allowlist, and integer WETH, gas, and fee caps. Atlas also requires that the
+signing organization and wallet match the independently verified observer
+wallet while the signing API public key differs.
 
-The branch includes a Turnkey-backed viem provider that obtains the pending
-nonce, estimates gas, signs a legacy EVM transaction, checks the signed hash,
-broadcasts once, and reconciles the receipt. It is deliberately not connected
+The signing private key must never be placed in the Railway web service. Policy
+metadata is verified only by the isolated `npm run verify:signing` command,
+using `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY` for that process. The verifier
+requires different observer and signing users and exactly three applicable
+ALLOW policies: buy swap, sell swap, and approval. Buy and sell policies bind
+chain 4663, zero native value, bounded EIP-1559 gas fields, the allowlisted V2
+routers, `swapExactTokensForTokens`, a two-address path, and Atlas as recipient;
+the buy additionally caps WETH input and begins with WETH, while the sell ends
+with WETH. The approval policy binds the ERC-20 `approve` selector and router
+spender. Application validation must bind the approval amount to the exact
+current intent and continues to reject unlimited approval. Router Smart
+Contract Interfaces are required for named swap arguments; the real Turnkey
+organization must still pass the documented allowed/denied behavioral matrix.
+
+The branch includes a dormant Turnkey-backed viem provider that obtains the
+pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
+caps, signs, checks the signed hash, and broadcasts once. The lifecycle records
+the signed payload and gas fields before broadcast. It can escalate an old
+missing receipt to manual review and offers an operator-only method that may
+rebroadcast only the identical stored bytes. It is deliberately not connected
 to candidate selection or any HTTP endpoint. Public status reports
 `boundary: review-only-disconnected` and activation fails with
 `execution-submission-path-not-connected`; adding credentials cannot cause a
-transaction. Approval orchestration, crash-persistent execution state, and the
-final strategy-to-intent binding remain required before that connection can be
+transaction. Exact approval orchestration, crash-persistent execution/nonce/
+spend state, evidence checkpoint reconciliation, native-gas funding checks,
+post-buy sell re-probing, the behavioral policy matrix, and the final
+strategy-to-intent binding remain required before that connection can be
 reviewed.
 
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
