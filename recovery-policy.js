@@ -32,3 +32,9 @@ export function planLosslessRecovery({ cursor, latest, maxBlocksPerPoll }) {
     skippedBlocks: 0,
   });
 }
+
+export function recoveryPaperCycleMode({ synchronized, openPositions }) {
+  const count = nonNegativeInteger(openPositions, "recovery-open-positions");
+  if (synchronized === true) return "full";
+  return count > 0 ? "exits-only" : "paused";
+}

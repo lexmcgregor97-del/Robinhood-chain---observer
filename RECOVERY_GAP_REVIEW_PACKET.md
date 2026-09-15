@@ -1,4 +1,4 @@
-# Atlas V6b — Lossless Recovery Review Packet
+# Atlas V6b — Lossless Recovery Review Packet (revision 2)
 
 ## Review target
 
@@ -37,7 +37,9 @@ of a failed cohort and are archived by the normal epoch-migration path.
 
 1. Replace cursor jumping with `planLosslessRecovery()`.
 2. Scan only the next contiguous range from `cursor + 1`.
-3. Bound each poll to 20,000 blocks so recovery work is finite.
+3. Bound each recovery poll to 100 blocks so exit management is interleaved at
+   roughly the existing paper-cycle cadence even on the current 10-block log
+   query tier.
 4. When more blocks remain, keep the scanner and paper evaluator not-ready and
    retry after one second.
 5. Never increment or manufacture a skip: `recoverySkippedBlocks` must remain
@@ -45,6 +47,13 @@ of a failed cohort and are archived by the normal epoch-migration path.
 6. Bump only the paper epoch identifier to
    `2026-09-15-paper-v6b-lossless-recovery`, archiving the invalid V6 books and
    starting a new evidence journal.
+7. When positions are open during recovery, run only the mark/exit portion of
+   the paper cycle between contiguous scan batches. Do not run entries, candidate
+   selection, shadow resolve/record, or the sell probe.
+8. Label any resulting close `audit.duringRecovery: true` and publish separate
+   recovery-exit cycle and exit counters.
+9. Publish current remaining blocks, active-since time, and the timestamp and
+   duration of the last completed catch-up.
 
 The V6 signal, entry, sizing, exit, cooldown, diversity, drawdown, gas, evidence,
 Turnkey, and dual sell-probe rules are unchanged.
@@ -53,11 +62,12 @@ Turnkey, and dual sell-probe rules are unchanged.
 
 - An RPC or log-query failure leaves the cursor at the last completed 500-block
   chunk and fails the poll. The next poll resumes at the next unseen block.
-- A lag above 20,000 blocks is processed across multiple contiguous polls. No
+- A lag above 100 blocks is processed across multiple contiguous polls. No
   block is discarded merely to restore availability.
-- Paper marks, shadow evaluation, and new paper entries remain paused while
-  `cursor < latestBlock`; readiness therefore favors evidence integrity over
-  sampling speed.
+- New entries, candidate selection, shadow evaluation, and sell probing remain
+  paused while `cursor < latestBlock`. Existing positions continue receiving
+  executable marks and exits. Those closes stay in P&L and are explicitly
+  identified as recovery-time observations.
 - Initial bootstrap still starts at the configured 20,000-block historical
   window before any paper epoch activity exists. This patch concerns recovery
   from an already persisted cursor.
@@ -70,9 +80,12 @@ Turnkey, and dual sell-probe rules are unchanged.
 - a 50,000-block lag is split into contiguous bounded ranges with no holes;
 - a caught-up cursor schedules no scan;
 - invalid cursor and limit inputs fail closed.
+- an unsynchronized scanner selects `exits-only` only when a position is open;
+  otherwise it remains paused, while a synchronized scanner selects the full
+  paper cycle.
 
 Local validation with locked dependencies: `npm run check` passes and `npm test`
-passes **189/189**.
+passes **191/191**.
 
 Run:
 
@@ -90,11 +103,15 @@ npm test
    processed chunk so retry cannot create a hole?
 3. Can paper or shadow evaluation run while a bounded recovery has remaining
    blocks?
-4. Is 20,000 blocks per poll a safe operational bound without weakening the
-   zero-gap cohort invariant?
+4. Does the 100-block batch bound interleave position management without
+   weakening the zero-gap cohort invariant?
 5. Does the epoch bump archive V6, reset paper automation (including the eight
    gaps), and start a distinct journal without contaminating V6b?
 6. Did any trading, readiness, evidence, Turnkey, gas, or sell-probe gate weaken?
+7. Can the recovery path reach candidate selection, entries, shadow recording,
+   or the sell probe, or does it return immediately after marks/exits?
+8. Are recovery-time closes labelled and counted without excluding or
+   reclassifying their P&L?
 
 Please provide separate Go/No-go verdicts for:
 

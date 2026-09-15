@@ -39,7 +39,7 @@ import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.j
 import {
   probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
-import { planLosslessRecovery } from "./recovery-policy.js";
+import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -53,7 +53,7 @@ const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 50);
 const BACKFILL = 20_000;
 const CHUNK = 500;
-const MAX_RECOVERY_BLOCKS_PER_POLL = BACKFILL;
+const MAX_RECOVERY_BLOCKS_PER_POLL = 100;
 const MAX_POOLS = 5_000;
 const SIGNAL_WINDOW_MS = Number(process.env.SIGNAL_WINDOW_MS || 60_000);
 const SIGNAL_BASELINE_MS = Number(process.env.SIGNAL_BASELINE_MS || 300_000);
@@ -158,6 +158,7 @@ let candidateCache = null;
 let candidatePromise = null;
 const paperAutomation = {
   cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
+  recoveryExitCycles: 0, recoveryExits: 0, lastRecoveryExitCycleAt: null,
   maxMarkedDrawdownPctByQuote: {},
   firstCycleAt: null, lastCycleAt: null, lastError: null, recentDecisions: [],
 };
@@ -167,6 +168,8 @@ let paperArchives = [];
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
   recoverySkippedBlocks: 0,
+  recoveryRemainingBlocks: 0, recoveryActiveSince: null,
+  lastRecoveryCompletedAt: null, lastRecoveryDurationMs: null,
   successfulPolls: 0, failedPolls: 0, lastError: null,
   backfill: { active: false, from: 0, to: 0, current: 0 },
   v2Pools: 0, v3Pools: 0, swaps: 0, rpcLatencyMs: 0,
@@ -540,12 +543,20 @@ async function poll() {
     if (!metrics.cursor) await bootstrap(latest);
     else if (latest > metrics.cursor) {
       caughtUp = false;
+      if (!metrics.recoveryActiveSince) metrics.recoveryActiveSince = Date.now();
       const recovery = planLosslessRecovery({
         cursor: metrics.cursor,
         latest,
         maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
       });
       await scanRange(recovery.from, recovery.to);
+    }
+    metrics.recoveryRemainingBlocks = Math.max(0, latest - metrics.cursor);
+    if (metrics.recoveryRemainingBlocks === 0 && metrics.recoveryActiveSince) {
+      const completedAt = Date.now();
+      metrics.lastRecoveryDurationMs = completedAt - metrics.recoveryActiveSince;
+      metrics.lastRecoveryCompletedAt = completedAt;
+      metrics.recoveryActiveSince = null;
     }
     const block = await rpc("eth_getBlockByNumber", [hexBlock(latest), false]);
     metrics.blockTimestamp = intHex(block?.timestamp);
@@ -556,10 +567,21 @@ async function poll() {
       latestBlock: metrics.latestBlock, cursor: metrics.cursor,
       backfillActive: metrics.backfill.active, lastError: metrics.lastError,
     });
-    if (ready.readyForPaper && !persistence.automationBlockedReason
+    if (!persistence.automationBlockedReason
         && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
-      await runPaperCycle();
-      scheduleSellProbe(latestSellProbeCandidates);
+      const openPositions = [...paperBooks.values()].reduce(
+        (total, book) => total + book.portfolio.snapshot().openPositions.length, 0,
+      );
+      const cycleMode = recoveryPaperCycleMode({
+        synchronized: ready.readyForPaper,
+        openPositions,
+      });
+      if (cycleMode === "full") {
+        await runPaperCycle();
+        scheduleSellProbe(latestSellProbeCandidates);
+      } else if (cycleMode === "exits-only") {
+        await runPaperCycle({ exitsOnly: true, duringRecovery: true });
+      }
     }
     await persistState();
   } catch (error) {
@@ -601,6 +623,10 @@ function snapshot() {
       policy: "lossless-bounded-catchup",
       maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
       skippedBlocks: metrics.recoverySkippedBlocks,
+      remainingBlocks: Math.max(0, metrics.latestBlock - metrics.cursor),
+      activeSince: metrics.recoveryActiveSince,
+      lastCompletedAt: metrics.lastRecoveryCompletedAt,
+      lastDurationMs: metrics.lastRecoveryDurationMs,
     },
     backfill,
     poolDiscovery: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
@@ -1088,11 +1114,16 @@ function updateMarkedDrawdownHistory() {
   }
 }
 
-async function runPaperCycle() {
+async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {}) {
   lastPaperCycleAt = Date.now();
-  if (!paperAutomation.firstCycleAt) paperAutomation.firstCycleAt = lastPaperCycleAt;
-  paperAutomation.lastCycleAt = lastPaperCycleAt;
-  paperAutomation.cycles += 1;
+  if (exitsOnly) {
+    paperAutomation.recoveryExitCycles += 1;
+    paperAutomation.lastRecoveryExitCycleAt = lastPaperCycleAt;
+  } else {
+    if (!paperAutomation.firstCycleAt) paperAutomation.firstCycleAt = lastPaperCycleAt;
+    paperAutomation.lastCycleAt = lastPaperCycleAt;
+    paperAutomation.cycles += 1;
+  }
   try {
     for (const [quoteToken, book] of paperBooks) {
       for (const position of book.portfolio.snapshot().openPositions) {
@@ -1126,10 +1157,11 @@ async function runPaperCycle() {
             fee: 0,
             reason: livenessReason,
             measurementFailure: livenessReason === "price-unavailable-timeout",
-            audit: { block: metrics.latestBlock, reason: livenessReason,
+            audit: { block: metrics.latestBlock, reason: livenessReason, duringRecovery,
               exitReserves: exit?.exitReserves ?? null },
           });
           paperAutomation.exits += 1;
+          if (duringRecovery) paperAutomation.recoveryExits += 1;
           await appendEvidence({ type: "paper-close", quote: book.symbol, trade });
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
@@ -1158,6 +1190,7 @@ async function runPaperCycle() {
             audit: {
               block: metrics.latestBlock,
               reason,
+              duringRecovery,
               feeRate,
               gasCostQuote: gasCost,
               returnPct: marked.returnPct,
@@ -1169,6 +1202,7 @@ async function runPaperCycle() {
             },
           });
           paperAutomation.exits += 1;
+          if (duringRecovery) paperAutomation.recoveryExits += 1;
           await appendEvidence({ type: "paper-close", quote: book.symbol, trade });
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
@@ -1179,6 +1213,11 @@ async function runPaperCycle() {
     }
 
     updateMarkedDrawdownHistory();
+
+    if (exitsOnly) {
+      paperAutomation.lastError = null;
+      return;
+    }
 
     if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;

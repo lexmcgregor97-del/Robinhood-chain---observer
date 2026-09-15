@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planLosslessRecovery } from "./recovery-policy.js";
+import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
 
 test("a 308-block runtime lag scans all blocks without an eight-block jump", () => {
   const plan = planLosslessRecovery({ cursor: 1_000, latest: 1_308, maxBlocksPerPoll: 20_000 });
@@ -39,4 +39,15 @@ test("unsafe recovery inputs fail closed", () => {
     /recovery-cursor-invalid/);
   assert.throws(() => planLosslessRecovery({ cursor: 1, latest: 10, maxBlocksPerPoll: 0 }),
     /recovery-limit-invalid/);
+});
+
+test("recovery permits only exit management for an open paper position", () => {
+  assert.equal(recoveryPaperCycleMode({ synchronized: false, openPositions: 2 }), "exits-only");
+  assert.equal(recoveryPaperCycleMode({ synchronized: false, openPositions: 0 }), "paused");
+  assert.equal(recoveryPaperCycleMode({ synchronized: true, openPositions: 2 }), "full");
+});
+
+test("invalid open-position counts fail closed", () => {
+  assert.throws(() => recoveryPaperCycleMode({ synchronized: false, openPositions: -1 }),
+    /recovery-open-positions-invalid/);
 });
