@@ -43,7 +43,6 @@ import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.
 import {
   assessMicroMainnetActivation, microMainnetConfigFromEnv, publicMicroMainnetConfig,
 } from "./micro-mainnet-config.js";
-import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -201,9 +200,9 @@ const turnkeyStatus = {
 const turnkeySigningStatus = {
   checked: false, verified: false, credentialVerified: false,
   apiKeyOwned: false, rootQuorumMember: null,
-  attestedPolicyVisible: false, attestedPolicyExact: false,
+  expectedPolicySetExact: false,
   applicableAllowPolicyCount: null,
-  failures: MICRO_MAINNET_CONFIG.requested ? ["turnkey-signing-verification-pending"] : [],
+  failures: MICRO_MAINNET_CONFIG.requested ? ["external-signing-verification-required"] : [],
   lastError: null,
 };
 
@@ -257,37 +256,6 @@ async function verifyTurnkeyConfiguration() {
     turnkeyStatus.checked = true;
     turnkeyStatus.lastError = "turnkey-verification-failed";
     console.error("Turnkey read-only verification failed");
-  }
-}
-
-async function verifyTurnkeySigningConfiguration() {
-  if (!MICRO_MAINNET_CONFIG.requested || !MICRO_MAINNET_CONFIG.configured) return;
-  try {
-    const client = new Turnkey({
-      apiBaseUrl: "https://api.turnkey.com",
-      defaultOrganizationId: MICRO_MAINNET_CONFIG.organizationId,
-      apiPublicKey: MICRO_MAINNET_CONFIG.apiPublicKey,
-      apiPrivateKey: MICRO_MAINNET_CONFIG.apiPrivateKey,
-    }).apiClient();
-    const result = await probeTurnkeySigningPolicy({
-      config: MICRO_MAINNET_CONFIG,
-      getWhoami: (request) => client.getWhoami(request),
-      getOrganizationConfigs: (request) => client.getOrganizationConfigs(request),
-      getPolicies: (request) => client.getPolicies(request),
-      getUser: (request) => client.getUser(request),
-    });
-    Object.assign(turnkeySigningStatus, result, {
-      checked: true,
-      credentialVerified: result.apiKeyOwned === true && result.rootQuorumMember === false,
-      lastError: null,
-    });
-  } catch {
-    Object.assign(turnkeySigningStatus, {
-      checked: true, verified: false, credentialVerified: false,
-      failures: ["turnkey-signing-verification-failed"],
-      lastError: "turnkey-signing-verification-failed",
-    });
-    console.error("Turnkey signing verification failed");
   }
 }
 
@@ -1411,8 +1379,7 @@ function executionStatus(operationalReady, liveReadiness = null) {
       credentialVerified: turnkeySigningStatus.credentialVerified,
       apiKeyOwned: turnkeySigningStatus.apiKeyOwned,
       rootQuorumMember: turnkeySigningStatus.rootQuorumMember,
-      attestedPolicyVisible: turnkeySigningStatus.attestedPolicyVisible,
-      attestedPolicyExact: turnkeySigningStatus.attestedPolicyExact,
+      expectedPolicySetExact: turnkeySigningStatus.expectedPolicySetExact,
       applicableAllowPolicyCount: turnkeySigningStatus.applicableAllowPolicyCount,
       failures: turnkeySigningStatus.failures,
       lastError: turnkeySigningStatus.lastError,
@@ -1509,7 +1476,6 @@ await initializeEvidenceJournal();
 await restoreState();
 await verifyConfiguredGasMeasurement();
 await verifyTurnkeyConfiguration();
-await verifyTurnkeySigningConfiguration();
 await verifySellProbeOverrideSupport();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
