@@ -34,23 +34,16 @@ test("disconnected runtime cannot touch RPC, storage, or Turnkey", async () => {
   assert.equal(touched, false);
 });
 
-test("entry-only composition cannot be armed even with both ceremonies", async () => {
-  await assert.rejects(createLiveWorkerRuntime({ env: { ...env,
-    LIVE_WORKER_SUBMISSION_CONNECTED: "true", LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED: "true",
-    LIVE_WORKER_CONFIRMATION: `CONNECT_ATLAS_PRIVATE_WORKER:4663:${WALLET}` } }),
-  /live-worker-exit-path-not-connected/);
-});
-
-test("exit gate fails before RPC, storage, or Turnkey even when secrets are present", async () => {
+test("armed composition verifies chain identity before storage or Turnkey", async () => {
   let touched = false;
   const armed = { ...env, LIVE_WORKER_SUBMISSION_CONNECTED: "true",
     LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED: "true",
     LIVE_WORKER_CONFIRMATION: `CONNECT_ATLAS_PRIVATE_WORKER:4663:${WALLET}`,
     TURNKEY_SIGNING_API_PRIVATE_KEY: "sealed-secret", RPC_URL: "https://rpc.example" };
   await assert.rejects(createLiveWorkerRuntime({ env: armed,
-    fetchImpl: async () => { touched = true; throw new Error(); },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ result: "0x1" }) }),
     openStore: async () => { touched = true; throw new Error(); },
     makeTurnkeyClient: () => { touched = true; throw new Error(); } }),
-  /live-worker-exit-path-not-connected/);
+  /live-worker-chain-mismatch/);
   assert.equal(touched, false);
 });

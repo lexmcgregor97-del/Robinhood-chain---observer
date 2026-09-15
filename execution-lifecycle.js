@@ -88,6 +88,7 @@ export class ExecutionLifecycle {
       await this.journal.transition(intent.id, {
         status: "reserved", chainId: intent.chainId,
         spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
+        intentPurpose: intent.purpose,
         signingProtocolVersion: SIGNING_PROTOCOL_VERSION,
         reservedAt: Number(now),
       }, now);

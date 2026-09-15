@@ -52,6 +52,23 @@ async function verifyPoolCreation({ candidate, chain, factory, rpc }) {
   return { discoveryBlock, discoveryTimestampMs: await blockTime(rpc, discoveryBlock) };
 }
 
+export async function identifyLiveV2Factory({ chain, rpc, config } = {}) {
+  const matches = [];
+  for (const [dex, configured] of Object.entries(config?.factories || {})) {
+    const factory = getAddress(configured);
+    const data = encodeFunctionData({ abi: FACTORY_ABI, functionName: "getPair",
+      args: [getAddress(chain.token0), getAddress(chain.token1)] });
+    const result = await rpc("eth_call", [{ to: factory, data }, chain.pinnedBlock]);
+    const pair = decodeFunctionResult({ abi: FACTORY_ABI, functionName: "getPair", data: result });
+    if (isAddressEqual(pair, chain.poolAddress)) matches.push({ dex, factory: factory.toLowerCase(),
+      feeBps: Number(config.factoryFeeBps?.[factory.toLowerCase()]) });
+  }
+  if (matches.length !== 1 || !new Set([25, 30]).has(matches[0].feeBps)) {
+    throw new Error("live-pool-factory-identity-invalid");
+  }
+  return Object.freeze(matches[0]);
+}
+
 export async function assessIndependentV2Strategy({ candidate, chain, rpc, config,
   now = Date.now() } = {}) {
   if (candidate?.version !== "v2" || typeof rpc !== "function") {

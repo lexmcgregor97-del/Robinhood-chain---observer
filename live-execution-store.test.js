@@ -41,3 +41,19 @@ test("refuses open and later mutations while the offline recovery lock exists", 
     /execution-recovery-lock-present/);
   assert.equal(store.writeBlocked, true);
 });
+
+test("checkpoints exact live positions in the same evidence-first store", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "atlas-live-store-"));
+  const paths = { statePath: join(dir, "state.json"), evidencePath: join(dir, "evidence.jsonl") };
+  const store = await openLiveExecutionStore(paths);
+  await store.livePositions.open({
+    poolAddress: "0x0000000000000000000000000000000000000001",
+    baseToken: "0x0000000000000000000000000000000000000002",
+    routerAddress: "0x0000000000000000000000000000000000000003",
+    baseUnits: "123", entryWethWei: "10", feeBps: 30,
+    entryIntentId: "buy:1", entryTransactionHash: `0x${"1".repeat(64)}`,
+  });
+  const restored = await openLiveExecutionStore(paths);
+  assert.equal(restored.livePositions.openPositions()[0].baseUnits, "123");
+  assert.equal(restored.snapshot().execution.livePositions.mutationCount, 1);
+});

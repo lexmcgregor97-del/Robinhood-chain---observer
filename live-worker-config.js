@@ -2,6 +2,7 @@ import { getAddress, isAddressEqual } from "viem";
 import { ROBINHOOD } from "./chain-config.js";
 import { microMainnetConfigFromEnv } from "./micro-mainnet-config.js";
 import { envFlag } from "./runtime-flags.js";
+import { DEFAULT_LIVE_EXIT_POLICY } from "./live-exit-policy.js";
 
 const UINT = /^(0|[1-9][0-9]*)$/;
 const positive = (value, name) => {
@@ -66,7 +67,7 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   const expectedConfirmation = execution.walletAddress
     ? `${LIVE_WORKER_CONFIRMATION_PREFIX}:${ROBINHOOD.chainId}:${execution.walletAddress}` : null;
   if (connected && confirmation !== expectedConfirmation) failures.push("live-worker-confirmation-mismatch");
-  const exitPathConnected = false;
+  const exitPathConnected = true;
   if (connected && !exitPathConnected) failures.push("live-worker-exit-path-not-connected");
   if (automatic && !connected) failures.push("live-worker-submission-path-required");
   if (connected && !execution.configured) failures.push("micro-mainnet-config-incomplete");
@@ -77,6 +78,15 @@ export function liveWorkerConfigFromEnv(env = process.env) {
     ["failureStopThreshold", env.LIVE_WORKER_FAILURE_STOP_THRESHOLD, 10],
     ["deadlineSeconds", env.LIVE_WORKER_DEADLINE_SECONDS, 60],
     ["slippageBps", env.LIVE_WORKER_SLIPPAGE_BPS, 300],
+    ["exitStopLossPct", env.LIVE_WORKER_EXIT_STOP_LOSS_PCT,
+      DEFAULT_LIVE_EXIT_POLICY.stopLossPct],
+    ["exitTakeProfitPct", env.LIVE_WORKER_EXIT_TAKE_PROFIT_PCT,
+      DEFAULT_LIVE_EXIT_POLICY.takeProfitPct],
+    ["exitTrailingActivationPct", env.LIVE_WORKER_EXIT_TRAILING_ACTIVATION_PCT,
+      DEFAULT_LIVE_EXIT_POLICY.trailingActivationPct],
+    ["exitTrailingDrawdownPct", env.LIVE_WORKER_EXIT_TRAILING_DRAWDOWN_PCT,
+      DEFAULT_LIVE_EXIT_POLICY.trailingDrawdownPct],
+    ["exitMaxHoldMs", env.LIVE_WORKER_EXIT_MAX_HOLD_MS, DEFAULT_LIVE_EXIT_POLICY.maxHoldMs],
     ["signalLookbackBlocks", env.LIVE_WORKER_SIGNAL_LOOKBACK_BLOCKS, 3_000],
     ["signalWindowMs", env.LIVE_WORKER_SIGNAL_WINDOW_MS, 60_000],
     ["signalBaselineMs", env.LIVE_WORKER_SIGNAL_BASELINE_MS, 300_000],
@@ -91,12 +101,20 @@ export function liveWorkerConfigFromEnv(env = process.env) {
   }
   if (numeric.deadlineSeconds > 60) failures.push("live-worker-deadline-too-long");
   if (numeric.slippageBps > 2_000) failures.push("live-worker-slippage-too-high");
+  if (numeric.exitStopLossPct >= 100 || numeric.exitTakeProfitPct > 10_000
+      || numeric.exitTrailingActivationPct > 10_000
+      || numeric.exitTrailingDrawdownPct >= 100) failures.push("live-worker-exit-policy-invalid");
   return Object.freeze({ ...execution, connected, automatic, exitPathConnected,
     configured: failures.length === 0, observerUrl, observerHostname, observerBearerToken,
     statePath, evidencePath,
     routerAddress, wethAddress: ROBINHOOD.weth.toLowerCase(), chainId: ROBINHOOD.chainId,
     amountInWei, maximumAllowanceWei, minimumNativeBalanceWei, confirmation,
     expectedConfirmation, ...numeric,
+    exitPolicy: Object.freeze({ stopLossPct: numeric.exitStopLossPct,
+      takeProfitPct: numeric.exitTakeProfitPct,
+      trailingActivationPct: numeric.exitTrailingActivationPct,
+      trailingDrawdownPct: numeric.exitTrailingDrawdownPct,
+      maxHoldMs: numeric.exitMaxHoldMs }),
     factories: Object.freeze(Object.fromEntries(ROBINHOOD.factories
       .filter((item) => item.version === "v2")
       .map((item) => [item.dex, item.address.toLowerCase()]))),

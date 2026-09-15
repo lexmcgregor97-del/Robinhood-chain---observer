@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { decodeFunctionData } from "viem";
-import { buildLiveV2BuyIntent } from "./live-v2-intent.js";
+import { buildLiveV2BuyIntent, buildLiveV2SellIntent } from "./live-v2-intent.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 
 const WETH = "0x0000000000000000000000000000000000000001";
@@ -45,4 +45,17 @@ test("rejects non-allowlisted routers and spend above the cap", () => {
     snapshot, config, amountInWei: "1", slippageBps: 100 }), /live-router-not-allowed/);
   assert.throws(() => buildLiveV2BuyIntent({ candidate, snapshot, config,
     amountInWei: "1001", slippageBps: 100 }), /live-amount-in-limit/);
+});
+
+test("builds a full-unit sell back to WETH from the durable position", () => {
+  const position = { poolAddress: POOL, baseToken: TOKEN, routerAddress: ROUTER,
+    baseUnits: "123", feeBps: 30, entryIntentId: "live:v2:buy:x" };
+  const intent = buildLiveV2SellIntent({ position, snapshot, config,
+    slippageBps: 100, deadlineSeconds: 60, now: 1_000_000 });
+  const decoded = decodeFunctionData({ abi: V2_ROUTER_ABI, data: intent.data });
+  assert.equal(intent.purpose, "live-v2-sell");
+  assert.equal(intent.spendAsset, TOKEN.toLowerCase());
+  assert.equal(intent.spendAmount, "123");
+  assert.deepEqual(decoded.args[2].map((item) => item.toLowerCase()),
+    [TOKEN.toLowerCase(), WETH.toLowerCase()]);
 });

@@ -53,6 +53,71 @@ test("live-worker store reaches the never-signed recovery resolver", async () =>
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("live-worker mid-sign crash state reaches Turnkey restoration", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "atlas-live-ambiguous-"));
+  const statePath = join(dir, "live.json"), evidencePath = join(dir, "live.jsonl");
+  const signingRequestedAt = Date.now() - 120_000;
+  const transaction = { chainId: 4663, type: "eip1559", nonce: 7,
+    to: "0x2222222222222222222222222222222222222222", data: "0x12345678",
+    value: 0n, gas: 150000n, maxFeePerGas: 1000000000n,
+    maxPriorityFeePerGas: 1000000n };
+  const signedTransaction = await signingAccount.signTransaction(transaction);
+  const store = await openLiveExecutionStore({ statePath, evidencePath,
+    now: () => signingRequestedAt });
+  await store.journal.transition("live:crash", { status: "reserved", chainId: 4663,
+    spendAsset: "0x0000000000000000000000000000000000000001", spendAmount: "1",
+    signingProtocolVersion: 3 }, signingRequestedAt);
+  await store.spendLedger.record({ intentId: "live:crash",
+    asset: "0x0000000000000000000000000000000000000001", amount: "1" }, signingRequestedAt);
+  await store.nonceLane.reserve({ chainId: 4663, walletAddress: signingAccount.address,
+    intentId: "live:crash" }, async () => 7);
+  await store.journal.transition("live:crash", { status: "nonce-reserved", nonce: 7 },
+    signingRequestedAt);
+  await store.journal.transition("live:crash", { status: "signing-requested",
+    signingRequestedAt, intentTransactionDigest: executionIntentTransactionDigest({
+      ...transaction, from: signingAccount.address }) }, signingRequestedAt);
+  await store.journal.transition("live:crash", { status: "manual-review",
+    recoveryFailure: "manual-review-signing-ambiguous" }, signingRequestedAt);
+  const activity = { id: "activity-live-crash", organizationId,
+    status: "ACTIVITY_STATUS_COMPLETED", type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+    createdAt: { seconds: String(Math.floor((signingRequestedAt + 1000) / 1000)), nanos: "0" },
+    votes: [{ userId: signingUserId, selection: "VOTE_SELECTION_APPROVED" }],
+    intent: { signTransactionIntentV2: { signWith: signingAccount.address,
+      unsignedTransaction: serializeTransaction(transaction) } },
+    result: { signTransactionResult: { signedTransaction } } };
+  const apiPublicKey = `02${"12".repeat(32)}`;
+  const client = { getWhoami: async () => ({ userId: observerUserId }),
+    getOrganizationConfigs: async () => ({ configs: { quorum: { userIds: [] } } }),
+    getPolicies: async () => ({ policies: [{ policyId: organizationId, effect: "EFFECT_DENY",
+      consensus: `approvers.any(user, user.id == '${observerUserId}')` }] }),
+    getUser: async () => ({ user: { apiKeys: [{ credential: { publicKey: apiPublicKey } }],
+      userTags: [] } }), getActivities: async () => ({ activities: [activity] }),
+    getActivity: async () => ({ activity }) };
+  const chainFetch = async (_url, request) => {
+    const { id } = JSON.parse(request.body);
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: "0x1237" }),
+      { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const report = await runExecutionRecovery({ env: { EXECUTION_RECOVERY_STORE: "live-worker",
+      LIVE_WORKER_STATE_FILE: statePath, LIVE_WORKER_EVIDENCE_FILE: evidencePath,
+      TURNKEY_WALLET_ADDRESS: signingAccount.address, RPC_URL: "https://rpc.invalid",
+      EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
+      EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "live:crash",
+      EXECUTION_MANUAL_REVIEW_CONFIRM: "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY",
+      TURNKEY_ORGANIZATION_ID: organizationId, TURNKEY_WALLET_ID: organizationId,
+      TURNKEY_API_PUBLIC_KEY: apiPublicKey, TURNKEY_API_PRIVATE_KEY: "observer-private",
+      TURNKEY_POLICY_ID: organizationId, TURNKEY_READ_ONLY_ATTESTED: "true",
+      TURNKEY_SIGNING_USER_ID: signingUserId, MICRO_MAINNET_MAX_GAS: "200000",
+      MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000", TURNKEY_ACTIVITY_MAX_PAGES: "10",
+    }, fetchImpl: chainFetch, now: Date.now(), makeTurnkeyClient: () => client });
+    assert.equal(report.storeKind, "live-worker");
+    assert.equal(report.operatorResolution.status, "signed");
+    assert.equal((await openLiveExecutionStore({ statePath, evidencePath }))
+      .journal.get("live:crash").signedPayload, signedTransaction);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 async function durableFixture() {
   const dir = await mkdtemp(join(tmpdir(), "atlas-execution-recovery-"));
   const statePath = join(dir, "state.json");

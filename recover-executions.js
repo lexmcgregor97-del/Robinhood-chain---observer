@@ -22,6 +22,7 @@ import { turnkeyConfigFromEnv, probeTurnkeyPolicy } from "./turnkey-probe.js";
 import { restoreUniqueAmbiguousSigningActivity } from "./turnkey-ambiguous-signing-recovery.js";
 import { ExecutionRebroadcastResolver } from "./execution-rebroadcast.js";
 import { validateExecutionCheckpoint } from "./execution-checkpoint.js";
+import { LivePositionLedger } from "./live-position-ledger.js";
 
 const CONFIRMATION = "RECONCILE_ATLAS_EXECUTIONS_OFFLINE";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -104,6 +105,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     let journal;
     let nonceLane;
     let spendLedger;
+    let livePositions;
     const persist = async (_snapshot, event) => {
       if (writeBlocked) throw new Error("execution-recovery-write-blocked");
       try {
@@ -121,7 +123,8 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
         await evidence.append({ epoch: liveStore ? "live-worker-v1" : state.paperStrategyVersion,
           recordedAt: Number(now), chainBlock: Number(state.cursor || 0), ...event });
         state.execution = { journal: journal.snapshot(), nonceLane: nonceLane.snapshot(),
-          spendLedger: spendLedger.snapshot(Number(now)) };
+          spendLedger: spendLedger.snapshot(Number(now)),
+          ...(liveStore ? { livePositions: livePositions.snapshot() } : {}) };
         state.evidenceSequence = evidence.snapshot().sequence;
         state.evidenceLastHash = evidence.snapshot().lastHash;
         await saveJsonState(statePath, state);
@@ -135,6 +138,8 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     journal = new ExecutionJournal(state.execution?.journal, { persist, serialize });
     nonceLane = new NonceLane(state.execution?.nonceLane, { persist, serialize });
     spendLedger = new DailySpendLedger(state.execution?.spendLedger, { persist, serialize });
+    if (liveStore) livePositions = new LivePositionLedger(state.execution?.livePositions,
+      { persist, serialize });
     const preExistingManualReviewIds = new Set(journal.pending()
       .filter((record) => record.status === "manual-review")
       .map((record) => record.intentId));

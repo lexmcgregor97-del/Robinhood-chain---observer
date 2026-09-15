@@ -22,6 +22,11 @@ function intentId(fields) {
   return `live:v2:buy:${digest.slice(0, 48)}`;
 }
 
+function sellIntentId(fields) {
+  const digest = createHash("sha256").update(JSON.stringify(fields)).digest("hex");
+  return `live:v2:sell:${digest.slice(0, 48)}`;
+}
+
 export function buildLiveV2BuyIntent({
   candidate,
   snapshot,
@@ -86,5 +91,52 @@ export function buildLiveV2BuyIntent({
   return normalizeExecutionIntent({ id: intentId(identity), purpose: "live-v2-buy",
     chainId: config.chainId, from: wallet, to: router, valueWei: "0",
     spendAsset: weth, spendAmount: amountIn.toString(), data,
+    expiresAt: now + ttl * 1_000 });
+}
+
+export function buildLiveV2SellIntent({ position, snapshot, config, slippageBps,
+  now = Date.now(), deadlineSeconds = 60 } = {}) {
+  const pool = address(position?.poolAddress, "live-position-pool-invalid");
+  const baseToken = address(position?.baseToken, "live-position-token-invalid");
+  const router = address(position?.routerAddress, "live-position-router-invalid");
+  const wallet = address(config?.walletAddress, "live-wallet-invalid");
+  const weth = address(config?.wethAddress, "live-weth-invalid");
+  if (!(config?.allowedRouters || []).some((allowed) => isAddressEqual(allowed, router))) {
+    throw new Error("live-router-not-allowed");
+  }
+  if (!snapshot || !isAddressEqual(snapshot.poolAddress, pool)) {
+    throw new Error("live-position-chain-mismatch");
+  }
+  const baseIsToken0 = isAddressEqual(snapshot.token0, baseToken);
+  const baseIsToken1 = isAddressEqual(snapshot.token1, baseToken);
+  if (baseIsToken0 === baseIsToken1
+      || !(isAddressEqual(baseIsToken0 ? snapshot.token1 : snapshot.token0, weth))) {
+    throw new Error("live-position-chain-mismatch");
+  }
+  const amountIn = uint(position.baseUnits, "live-position-units-invalid");
+  if (amountIn <= 0n) throw new Error("live-position-units-invalid");
+  const reserveIn = uint(baseIsToken0 ? snapshot.reserve0 : snapshot.reserve1,
+    "live-reserve-invalid");
+  const reserveOut = uint(baseIsToken0 ? snapshot.reserve1 : snapshot.reserve0,
+    "live-reserve-invalid");
+  const feeBps = Number(position.feeBps);
+  if (!new Set([25, 30]).has(feeBps)) throw new Error("live-factory-fee-invalid");
+  const bps = Number(slippageBps);
+  if (!Number.isSafeInteger(bps) || bps <= 0 || bps > 2_000) throw new Error("live-slippage-invalid");
+  const ttl = Number(deadlineSeconds);
+  if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > 60) throw new Error("live-deadline-invalid");
+  const quoted = quoteV2({ reserveIn, reserveOut, amountIn, feeBps });
+  const amountOutMin = quoted.amountOut * BigInt(10_000 - bps) / 10_000n;
+  if (amountOutMin <= 0n) throw new Error("live-minimum-output-invalid");
+  const deadline = Math.floor(now / 1_000) + ttl;
+  const data = encodeFunctionData({ abi: V2_ROUTER_ABI,
+    functionName: "swapExactTokensForTokens",
+    args: [amountIn, amountOutMin, [baseToken, weth], wallet, BigInt(deadline)] });
+  const identity = { chainId: Number(config.chainId), pool: lower(pool), router: lower(router),
+    entryIntentId: String(position.entryIntentId), amountIn: amountIn.toString(),
+    amountOutMin: amountOutMin.toString(), blockNumber: Number(snapshot.blockNumber) };
+  return normalizeExecutionIntent({ id: sellIntentId(identity), purpose: "live-v2-sell",
+    chainId: config.chainId, from: wallet, to: router, valueWei: "0",
+    spendAsset: baseToken, spendAmount: amountIn.toString(), data,
     expiresAt: now + ttl * 1_000 });
 }
