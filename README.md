@@ -35,7 +35,10 @@ signing-user vote, wallet, status, type, policy-denial failure, and the decoded
 transaction before issuing anything. Successful activities are checked from
 their signed bytes. Every denied activity's unsigned transaction must differ
 from an otherwise allowed request in exactly its named way; relabelled denials
-and requests with multiple defects are rejected. Policy-denial recognition is
+and requests with multiple defects are rejected. Turnkey transaction payloads
+are validated as even-length hex and normalized to a `0x` prefix before parsing,
+so either documented response form is accepted without relaxing validation.
+Policy-denial recognition is
 temporarily conservative text matching over Turnkey's failure object; the
 first real-organization ceremony must capture and pin the exact structured
 failure field before execution is connected. The signed claims contain only
