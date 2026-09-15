@@ -95,3 +95,11 @@ test("cleans a crash-left nonce only for an already mined final record", async (
   assert.equal(journal.get("entry:1").status, "confirmed");
   assert.equal(nonceLane.snapshot().lanes[0].pending, null);
 });
+
+test("cleans a nonce left after a durable operator cancellation", async () => {
+  const { journal, nonceLane, recovery } = fixture({ status: "cancelled" });
+  journal.records.get("entry:1").operatorResolution = "unsigned-reservation-cancelled";
+  const result = await recovery.reconcile({ now });
+  assert.equal(result.outcomes[0].outcome, "finalized-nonce-residue");
+  assert.equal(nonceLane.snapshot().lanes[0].pending, null);
+});

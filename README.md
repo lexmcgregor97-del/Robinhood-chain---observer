@@ -113,6 +113,40 @@ runtime checks for the same lock at startup and immediately before every
 evidence append; finding it permanently write-blocks that process until a clean
 restart after recovery.
 
+If a hard-killed recovery command leaves the adjacent lock behind, keep the web
+service scaled to zero, read the lock JSON, record its `pid` and `startedAt`, and
+verify that no recovery process is alive and that the state file has remained
+unchanged for at least 60 seconds. Only then remove the stale lock and restart
+the receipt-recovery command. Never remove a lock merely to make Atlas resume;
+if process ownership or checkpoint state is uncertain, preserve the files and
+keep automation blocked.
+
+`manual-review` resolution is a separate offline ceremony using
+`npm run resolve:execution` on the same stopped service volume. It refuses all
+private material, shares the recovery lock and evidence-first checkpoint, and
+requires `EXECUTION_MANUAL_REVIEW_ACTION`, `EXECUTION_MANUAL_REVIEW_INTENT_ID`,
+and an exact intent-bound `EXECUTION_MANUAL_REVIEW_CONFIRM`:
+
+- `reject-unsigned` requires
+  `REJECT_UNSIGNED_ATLAS_EXECUTION:<intentId>`. It accepts only a record with no
+  durable signed identity, writes the final `cancelled` state, preserves any
+  conservative daily-spend charge, and then releases its nonce lane.
+- `rebroadcast-identical` requires
+  `REBROADCAST_ATLAS_EXECUTION:<intentId>:<transactionHash>`. It re-derives the
+  hash of the persisted signed bytes, broadcasts exactly those bytes once, and
+  returns the record to `broadcast` without re-signing or releasing its nonce.
+- `prove-nonce-cancel` requires a different mined transaction hash plus
+  `CONFIRM_ATLAS_NONCE_CANCEL:<intentId>:<replacementHash>`. The replacement
+  must be from Atlas, at the exact reserved nonce, to Atlas itself, with zero
+  value and empty calldata on chain 4663. The command does not create or sign
+  that cancel; it only verifies an already-mined self-cancel before writing the
+  final `cancelled` state and releasing the lane.
+
+Every operator resolution is hash-chained into evidence. A crash after the
+final record but before nonce cleanup leaves a recognized residue that receipt
+recovery can safely finalize. Never configure any manual-resolution variable
+on the long-running Railway service.
+
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
 caps, signs, checks the signed hash, and broadcasts once. The lifecycle records
@@ -129,8 +163,7 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Journaled operator resolution for `manual-review`, exact approval
-orchestration, native-gas funding checks,
+Exact approval orchestration, native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.

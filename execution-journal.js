@@ -1,6 +1,6 @@
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 
-const FINAL = new Set(["confirmed", "reverted", "rejected"]);
+const FINAL = new Set(["confirmed", "reverted", "rejected", "cancelled"]);
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 
 export class ExecutionJournal {

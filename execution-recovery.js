@@ -2,6 +2,9 @@ const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const BLOCK_NUMBER = /^0x[0-9a-fA-F]+$/;
 const MINED_FINAL = new Set(["confirmed", "reverted"]);
+const OPERATOR_FINAL = new Set([
+  "unsigned-reservation-cancelled", "nonce-consumed-by-self-cancel",
+]);
 
 function minedStatus(receipt) {
   if (!receipt) return null;
@@ -34,7 +37,8 @@ export class ExecutionRecovery {
     for (const lane of this.nonceLane.snapshot().lanes || []) {
       const intentId = lane.pending?.intentId;
       const record = intentId ? this.journal.get(intentId) : null;
-      if (record && MINED_FINAL.has(record.status)) {
+      if (record && (MINED_FINAL.has(record.status)
+          || (record.status === "cancelled" && OPERATOR_FINAL.has(record.operatorResolution)))) {
         await this.nonceLane.finalize(intentId);
         outcomes.push(Object.freeze({ intentId, outcome: "finalized-nonce-residue",
           status: record.status }));

@@ -1,4 +1,4 @@
-const FINAL = new Set(["confirmed", "reverted", "rejected"]);
+const FINAL = new Set(["confirmed", "reverted", "rejected", "cancelled"]);
 
 const count = (typeCounts, type) => Number(typeCounts?.[type] || 0);
 const recordsById = (records = []) => new Map(records.map((record) => [record?.intentId, record]));
