@@ -96,6 +96,7 @@ export function assessMicroMainnetActivation({
   liveReadiness,
   signingCredentialVerified = false,
   signingPolicyVerified = false,
+  walletWethBalanceWei = null,
   pendingExecutions = 0,
   submissionPathConnected = false,
 } = {}) {
@@ -105,6 +106,13 @@ export function assessMicroMainnetActivation({
   if (liveReadiness?.eligibleForMicroMainnet !== true) failures.push("live-readiness-not-satisfied");
   if (signingCredentialVerified !== true) failures.push("signing-credential-not-verified");
   if (signingPolicyVerified !== true) failures.push("signing-policy-not-verified");
+  if (config?.requested === true) {
+    const balance = String(walletWethBalanceWei ?? "");
+    if (!UINT.test(balance)) failures.push("wallet-balance-not-verified");
+    else if (UINT.test(config?.maxDailyWei) && BigInt(balance) > BigInt(config.maxDailyWei)) {
+      failures.push("wallet-balance-exceeds-daily-cap");
+    }
+  }
   if (submissionPathConnected !== true) failures.push("execution-submission-path-not-connected");
   if (!Number.isSafeInteger(Number(pendingExecutions)) || Number(pendingExecutions) !== 0) {
     failures.push("pending-execution-review-required");
