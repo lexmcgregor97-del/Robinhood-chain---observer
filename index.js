@@ -40,6 +40,10 @@ import {
   probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
 import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
+import {
+  assessMicroMainnetActivation, microMainnetConfigFromEnv, publicMicroMainnetConfig,
+} from "./micro-mainnet-config.js";
+import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -82,6 +86,7 @@ const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
+const MICRO_MAINNET_CONFIG = microMainnetConfigFromEnv(process.env);
 const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6b-lossless-recovery";
 const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
@@ -193,6 +198,14 @@ const turnkeyStatus = {
   checked: false, authenticated: false, walletVisible: false, addressMatch: false,
   walletAccountId: null, accountCount: 0, lastError: null,
 };
+const turnkeySigningStatus = {
+  checked: false, verified: false, credentialVerified: false,
+  apiKeyOwned: false, rootQuorumMember: null,
+  attestedPolicyVisible: false, attestedPolicyExact: false,
+  applicableAllowPolicyCount: null,
+  failures: MICRO_MAINNET_CONFIG.requested ? ["turnkey-signing-verification-pending"] : [],
+  lastError: null,
+};
 
 async function appendEvidence(payload) {
   const records = await appendEvidenceBatch([payload]);
@@ -244,6 +257,37 @@ async function verifyTurnkeyConfiguration() {
     turnkeyStatus.checked = true;
     turnkeyStatus.lastError = "turnkey-verification-failed";
     console.error("Turnkey read-only verification failed");
+  }
+}
+
+async function verifyTurnkeySigningConfiguration() {
+  if (!MICRO_MAINNET_CONFIG.requested || !MICRO_MAINNET_CONFIG.configured) return;
+  try {
+    const client = new Turnkey({
+      apiBaseUrl: "https://api.turnkey.com",
+      defaultOrganizationId: MICRO_MAINNET_CONFIG.organizationId,
+      apiPublicKey: MICRO_MAINNET_CONFIG.apiPublicKey,
+      apiPrivateKey: MICRO_MAINNET_CONFIG.apiPrivateKey,
+    }).apiClient();
+    const result = await probeTurnkeySigningPolicy({
+      config: MICRO_MAINNET_CONFIG,
+      getWhoami: (request) => client.getWhoami(request),
+      getOrganizationConfigs: (request) => client.getOrganizationConfigs(request),
+      getPolicies: (request) => client.getPolicies(request),
+      getUser: (request) => client.getUser(request),
+    });
+    Object.assign(turnkeySigningStatus, result, {
+      checked: true,
+      credentialVerified: result.apiKeyOwned === true && result.rootQuorumMember === false,
+      lastError: null,
+    });
+  } catch {
+    Object.assign(turnkeySigningStatus, {
+      checked: true, verified: false, credentialVerified: false,
+      failures: ["turnkey-signing-verification-failed"],
+      lastError: "turnkey-signing-verification-failed",
+    });
+    console.error("Turnkey signing verification failed");
   }
 }
 
@@ -611,6 +655,7 @@ function snapshot() {
     latestBlock: metrics.latestBlock, cursor: metrics.cursor,
     backfillActive: backfill.active, lastError: metrics.lastError,
   });
+  const execution = executionStatus(readiness.readyForPaper);
   return {
     mode: PAPER_ENTRIES_PAUSED ? "PAPER_ENTRIES_PAUSED" : "PAPER_ONLY",
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
@@ -646,6 +691,7 @@ function snapshot() {
     gasMeasurement: GAS_MEASUREMENT,
     sellProbe: publicSellProbeStatus(),
     turnkey: turnkeyStatus,
+    execution,
   };
 }
 
@@ -1332,13 +1378,63 @@ function paperBookStatus(book) {
   };
 }
 
+function currentLiveReadiness(operationalReady, books = null, shadow = null) {
+  const currentBooks = books || Object.fromEntries([...paperBooks.values()].map((book) => [
+    book.symbol, paperBookStatus(book),
+  ]));
+  const currentShadow = shadow || shadowEvaluator.snapshot();
+  const escape = currentShadow.byRule?.["escape-activity"] || {};
+  return assessLiveReadiness({
+    paper: currentBooks.WETH.analytics,
+    shadow: { uniquePools: escape.uniquePools, eligible: escape.promotion?.eligible },
+    sellProbeReady: sellProbeReady(),
+    walletConfigured: turnkeyStatus.authenticated && turnkeyStatus.addressMatch,
+    turnkeyPolicyAttested: turnkeyStatus.readOnlyAttested === true,
+    turnkeyPolicyVerified: turnkeyStatus.readOnlyVerified === true,
+    rpcEndpointCount: rpcTransport.snapshot().endpointCount,
+    operationalReady,
+    evidenceJournalReady: evidenceJournal.snapshot().healthy,
+    recoverySkippedBlocks: paperAutomation.recoverySkippedBlocks,
+  });
+}
+
+function executionStatus(operationalReady, liveReadiness = null) {
+  const readiness = liveReadiness || currentLiveReadiness(operationalReady);
+  return {
+    boundary: "review-only-disconnected",
+    submissionPathConnected: false,
+    automaticSubmissionEnabled: false,
+    config: publicMicroMainnetConfig(MICRO_MAINNET_CONFIG),
+    signingVerification: {
+      checked: turnkeySigningStatus.checked,
+      verified: turnkeySigningStatus.verified,
+      credentialVerified: turnkeySigningStatus.credentialVerified,
+      apiKeyOwned: turnkeySigningStatus.apiKeyOwned,
+      rootQuorumMember: turnkeySigningStatus.rootQuorumMember,
+      attestedPolicyVisible: turnkeySigningStatus.attestedPolicyVisible,
+      attestedPolicyExact: turnkeySigningStatus.attestedPolicyExact,
+      applicableAllowPolicyCount: turnkeySigningStatus.applicableAllowPolicyCount,
+      failures: turnkeySigningStatus.failures,
+      lastError: turnkeySigningStatus.lastError,
+    },
+    activation: assessMicroMainnetActivation({
+      config: MICRO_MAINNET_CONFIG,
+      liveReadiness: readiness,
+      signingCredentialVerified: turnkeySigningStatus.credentialVerified,
+      signingPolicyVerified: turnkeySigningStatus.verified,
+      pendingExecutions: 0,
+      submissionPathConnected: false,
+    }),
+  };
+}
+
 function paperStatus() {
   const books = Object.fromEntries([...paperBooks.values()].map((book) => [
     book.symbol, paperBookStatus(book),
   ]));
   const shadow = shadowEvaluator.snapshot();
-  const escape = shadow.byRule?.["escape-activity"] || {};
   const operational = snapshot().readiness;
+  const liveReadiness = currentLiveReadiness(operational.readyForPaper, books, shadow);
   return {
     mode: "PAPER_ONLY",
     newEntriesPaused: PAPER_ENTRIES_PAUSED,
@@ -1364,18 +1460,8 @@ function paperStatus() {
     gasMeasurement: GAS_MEASUREMENT,
     sellProbe: publicSellProbeStatus(),
     shadow,
-    liveReadiness: assessLiveReadiness({
-      paper: books.WETH.analytics,
-      shadow: { uniquePools: escape.uniquePools, eligible: escape.promotion?.eligible },
-      sellProbeReady: sellProbeReady(),
-      walletConfigured: turnkeyStatus.authenticated && turnkeyStatus.addressMatch,
-      turnkeyPolicyAttested: turnkeyStatus.readOnlyAttested === true,
-      turnkeyPolicyVerified: turnkeyStatus.readOnlyVerified === true,
-      rpcEndpointCount: rpcTransport.snapshot().endpointCount,
-      operationalReady: operational.readyForPaper,
-      evidenceJournalReady: evidenceJournal.snapshot().healthy,
-      recoverySkippedBlocks: paperAutomation.recoverySkippedBlocks,
-    }),
+    liveReadiness,
+    execution: executionStatus(operational.readyForPaper, liveReadiness),
   };
 }
 
@@ -1423,6 +1509,7 @@ await initializeEvidenceJournal();
 await restoreState();
 await verifyConfiguredGasMeasurement();
 await verifyTurnkeyConfiguration();
+await verifyTurnkeySigningConfiguration();
 await verifySellProbeOverrideSupport();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
