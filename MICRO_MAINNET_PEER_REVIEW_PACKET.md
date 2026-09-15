@@ -1,14 +1,14 @@
-# Atlas Micro-Mainnet Execution Boundary — Revision 5 Review Packet
+# Atlas Micro-Mainnet Execution Boundary — Revision 6 Review Packet
 
 ## Scope
 
-Review branch `fix/micro-mainnet-execution`, revision 5, based on production
-commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 4
-`ca5faba11120a631e3dc8361536fce925ba49a5b`. Production remains V6b
+Review branch `fix/micro-mainnet-execution`, revision 6, based on production
+commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 5
+`2629a5c75fbb742c93426b051b7869fe4568646d`. Production remains V6b
 `PAPER_ONLY`. This branch remains inert and is not an execution release.
 
-Revision 5 responds only to B-1 through B-3. It changes the isolated verifier,
-dormant lifecycle/journal, tests, and documentation.
+Revision 6 responds only to C-1 through C-3. It changes the isolated matrix
+verifier, tests, and documentation. The dormant lifecycle/journal is unchanged.
 
 ## Safety boundary
 
@@ -18,27 +18,23 @@ web runtime. `submissionPathConnected` and `automaticSubmissionEnabled` remain
 literal `false`. No signing or attestation private material can coexist with
 the web runtime.
 
-## Changes since revision 4
+## Changes since revision 5
 
-1. **Turnkey outcomes, not strings, are attested (B-1).** The one-shot verifier
-   calls `getActivity` for every matrix entry. Each success must be a completed
-   `ACTIVITY_TYPE_SIGN_TRANSACTION_V2` in the configured organization, for the
-   configured wallet, with an approving vote from the independently identified
-   signing user. The returned signed transaction must recover to Atlas, decode
-   as the named buy/sell/approval case, and satisfy router, path, recipient,
-   amount, chain, gas, and fee bounds. Each denial must be failed/rejected and
-   carry a policy-denial failure. Fabricated IDs or unrelated failures cannot
-   produce an attestation.
-2. **Daily matrix cadence is explicit (B-2).** The runtime intentionally checks
-   `matrix.runAt` on every attestation validation. Early micro-mainnet operation
-   therefore requires the complete matrix to be rerun at least every 24 hours.
-   This is documented as a manual operator safety ceremony.
-3. **Preflight refusals become durable evidence (B-3).** A preflight denial or
-   exception is recorded as a final `rejected` execution-journal record with
-   stage and coded failures before returning. It is excluded from pending
-   executions. If rejection persistence fails, the lifecycle returns
-   `preflight-rejection-journal-failed`; it still performs no spend, nonce, or
-   provider action.
+1. **Denied activities prove the named case (C-1).** The verifier parses each
+   `SignTransactionIntentV2.unsignedTransaction` and independently classifies
+   its deviations from an otherwise allowed request. The deviation set must be
+   exactly the matrix entry's case. Relabelled denials and requests containing
+   a second defect fail with `matrix-denial-case-mismatch`. Approval cases are
+   decoded separately from buy-shaped swap cases.
+2. **Policy-denial parsing remains provisional (C-2).** Organization, status,
+   type, approving signing-user vote, wallet, and the exact unsigned request are
+   structural checks. Recognition of the denial reason remains a conservative
+   regex over serialized `Activity.failure`. The first real matrix run must pin
+   Turnkey's actual failure field/code before execution is connected.
+3. **Rejected-record persistence is scoped honestly (C-3).** Revision 5 made a
+   preflight rejection a final execution-journal record. The dormant journal
+   still must be wired into checkpointed state and evidence, and evidence
+   consumers must accept `rejected` records before submission is connected.
 
 ## Matrix input contract
 
@@ -61,7 +57,9 @@ The twelve required denial case names are: `wrong-chain`, `non-zero-value`,
 `zero-minimum-output`, `three-token-path`, `wrong-weth-orientation`,
 `foreign-recipient`, `excessive-gas-or-fee`, `foreign-approval-spender`, and
 `approve-max-uint`. More denial entries are allowed, but every activity ID must
-be unique. The digest is computed from the verified ordered activity-ID set.
+be unique. Each denied unsigned transaction must contain exactly the defect
+named by its case and otherwise satisfy the allowed buy or approval shape. The
+digest is computed from the verified ordered activity-ID set.
 
 The activity response fields used by the verifier match Turnkey's public
 OpenAPI schema: `Activity.organizationId/status/type/intent/result/votes/failure`
@@ -70,7 +68,8 @@ and `SignTransactionIntentV2.signWith/unsignedTransaction`.
 ## Deliberate remaining blockers
 
 1. Run the behavioral matrix against the real organization and independently
-   review the sanitized activities before creating the first attestation.
+   review the sanitized activities before creating the first attestation. Pin
+   the exact structured Turnkey policy-denial field/code observed in that run.
 2. Persist and reconcile `ExecutionJournal`, `NonceLane`, and `SpendLedger`
    through the state/evidence checkpoint protocol; source pending executions
    from the restored journal.
@@ -83,13 +82,11 @@ and `SignTransactionIntentV2.signWith/unsignedTransaction`.
 
 ## Reviewer questions
 
-1. Can fabricated IDs, wrong users/wallets, unrelated failures, or malformed
-   successful transactions satisfy the matrix?
-2. Are all three successful transactions decoded and bound to the configured
-   limits and expected case?
-3. Does a preflight refusal become final evidence without reserving spend or a
-   nonce and without provider access?
-4. Is the daily operator cadence explicit and fail-closed?
+1. Can one denied transaction be relabelled as multiple required cases?
+2. Does every denial contain exactly its named deviation while remaining valid
+   in every other policy-bound field?
+3. Is the provisional failure regex clearly blocked on real-org schema capture?
+4. Is rejected-record checkpoint/evidence integration still listed as required?
 5. Is the branch still incapable of transaction submission?
 
 ## Expected verdict
