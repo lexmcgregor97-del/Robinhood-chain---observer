@@ -18,8 +18,8 @@ test("builds four allowed activities and every exact named denial without RPC", 
   const cases = buildTurnkeyBehavioralCases(config, token);
   assert.deepEqual(cases.allows.map((entry) => entry.case),
     ["buy", "sell", "approval", "approval-reset"]);
-  assert.equal(cases.denials.length, 12);
-  assert.equal(new Set(cases.denials.map((entry) => entry.case)).size, 12);
+  assert.equal(cases.denials.length, 13);
+  assert.equal(new Set(cases.denials.map((entry) => entry.case)).size, 13);
   const buy = parseTransaction(cases.allows[0].unsignedTransaction);
   const call = decodeFunctionData({ abi: V2_ROUTER_ABI, data: buy.data });
   assert.equal(buy.chainId, ROBINHOOD.chainId);
@@ -41,8 +41,13 @@ test("refuses before client construction without the exact isolated confirmation
 });
 
 test("refuses live-worker activation flags before reading private configuration", async () => {
-  await assert.rejects(runTurnkeyBehavioralMatrix({
-    TURNKEY_MATRIX_CONFIRMATION: "RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST",
-    LIVE_WORKER_EXECUTION_CONNECTED: "true",
-  }), /turnkey-matrix-live-flags-forbidden/);
+  for (const flag of [
+    "LIVE_WORKER_SUBMISSION_CONNECTED",
+    "LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED",
+  ]) {
+    await assert.rejects(runTurnkeyBehavioralMatrix({
+      TURNKEY_MATRIX_CONFIRMATION: "RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST",
+      [flag]: "true",
+    }), /turnkey-matrix-live-flags-forbidden/);
+  }
 });

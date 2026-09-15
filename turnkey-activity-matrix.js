@@ -10,6 +10,7 @@ export const REQUIRED_DENIAL_CASES = Object.freeze([
   "wrong-chain", "non-zero-value", "foreign-router", "wrong-selector",
   "excessive-input", "zero-minimum-output", "three-token-path",
   "wrong-weth-orientation", "foreign-recipient", "excessive-gas-or-fee",
+  "excessive-fee",
   "foreign-approval-spender", "approve-max-uint",
 ]);
 const ALLOW_CASES = Object.freeze(["buy", "sell", "approval", "approval-reset"]);
@@ -144,12 +145,14 @@ function commonDenialDeviations(transaction, config, { routerTarget = true } = {
   if (transaction.chainId !== ROBINHOOD.chainId) deviations.push("wrong-chain");
   if (BigInt(transaction.value || 0n) > 0n) deviations.push("non-zero-value");
   if (routerTarget && !allowedRouter(transaction.to, config)) deviations.push("foreign-router");
-  if (transaction.gas == null || BigInt(transaction.gas) > BigInt(config.maxGas)
-      || transaction.maxFeePerGas == null
+  if (transaction.gas == null || BigInt(transaction.gas) > BigInt(config.maxGas)) {
+    deviations.push("excessive-gas-or-fee");
+  }
+  if (transaction.maxFeePerGas == null
       || BigInt(transaction.maxFeePerGas) > BigInt(config.maxFeePerGasWei)
       || transaction.maxPriorityFeePerGas == null
       || BigInt(transaction.maxPriorityFeePerGas) > BigInt(config.maxFeePerGasWei)) {
-    deviations.push("excessive-gas-or-fee");
+    deviations.push("excessive-fee");
   }
   return deviations;
 }

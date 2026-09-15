@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { Turnkey } from "@turnkey/sdk-server";
 import { encodeFunctionData, serializeTransaction } from "viem";
@@ -78,6 +78,9 @@ export function buildTurnkeyBehavioralCases(config, tokenAddress) {
       { case: "excessive-gas-or-fee", unsignedTransaction: buy({
         gas: BigInt(config.maxGas) + 1n,
       }) },
+      { case: "excessive-fee", unsignedTransaction: buy({
+        maxFeePerGas: BigInt(config.maxFeePerGasWei) + 1n,
+      }) },
       { case: "foreign-approval-spender", unsignedTransaction: approval(foreign, 1n) },
       { case: "approve-max-uint", unsignedTransaction: approval(router, MAX_UINT256) },
     ],
@@ -110,8 +113,8 @@ export async function runTurnkeyBehavioralMatrix(env = process.env, {
   if (env.TURNKEY_MATRIX_CONFIRMATION !== CONFIRMATION) {
     throw new Error("turnkey-matrix-confirmation-required");
   }
-  if (String(env.LIVE_WORKER_EXECUTION_CONNECTED || "").toLowerCase() === "true"
-      || String(env.LIVE_WORKER_AUTOMATIC_EXECUTION_ENABLED || "").toLowerCase() === "true") {
+  if (String(env.LIVE_WORKER_SUBMISSION_CONNECTED || "").toLowerCase() === "true"
+      || String(env.LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED || "").toLowerCase() === "true") {
     throw new Error("turnkey-matrix-live-flags-forbidden");
   }
   const config = microMainnetConfigFromEnv(env);
@@ -140,6 +143,7 @@ export async function runTurnkeyBehavioralMatrix(env = process.env, {
     getActivity: (request) => client.getActivity(request) });
   if (!verified.verified) throw new Error(`turnkey-matrix-verification-failed:${verified.failures.join(",")}`);
   await writeMatrix(output, `${JSON.stringify(matrix, null, 2)}\n`, { mode: 0o600 });
+  await chmod(output, 0o600);
   return { verified: true, runAt: matrix.runAt,
     allowCount: matrix.allows.length, denialCount: matrix.denials.length,
     activityIds: [...matrix.allows, ...matrix.denials].map((entry) => entry.activityId),

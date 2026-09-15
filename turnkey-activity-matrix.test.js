@@ -52,6 +52,7 @@ function deniedTransactions() {
     ["wrong-weth-orientation", unsigned({ data: swapData({ path: [token, foreign] }) })],
     ["foreign-recipient", unsigned({ data: swapData({ recipient: foreign }) })],
     ["excessive-gas-or-fee", unsigned({ data: allowedBuy, gas: 400001n })],
+    ["excessive-fee", unsigned({ data: allowedBuy, maxFeePerGas: 2000000001n })],
     ["foreign-approval-spender", unsigned({ to: token,
       data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
         args: [foreign, 100n] }) })],
@@ -111,7 +112,7 @@ test("verifies real completed signing outcomes and policy-denied activities", as
   assert.equal(result.verified, true);
   assert.deepEqual(result.normalized.allows,
     ["allow-buy", "allow-sell", "allow-approval", "allow-approval-reset"]);
-  assert.equal(result.normalized.denials.length, 12);
+  assert.equal(result.normalized.denials.length, 13);
 });
 
 test("accepts Turnkey transaction payloads without a 0x prefix", async () => {
