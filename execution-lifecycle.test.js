@@ -121,7 +121,8 @@ test("persists a transaction hash before broadcast", async () => {
   assert.equal(journal.get(rawIntent.id).signingRequestedAt, now);
   assert.equal(journal.get(rawIntent.id).signedAt, now);
   assert.equal(journal.get(rawIntent.id).reservedAt, now);
-  assert.equal(journal.get(rawIntent.id).signingProtocolVersion, 2);
+  assert.equal(journal.get(rawIntent.id).signingProtocolVersion, 3);
+  assert.match(journal.get(rawIntent.id).intentTransactionDigest, /^0x[0-9a-f]{64}$/);
 });
 
 test("a sign-then-checkpoint failure remains ambiguous and cannot be operator-rejected", async () => {

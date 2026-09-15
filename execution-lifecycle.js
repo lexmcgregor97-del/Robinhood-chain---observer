@@ -2,11 +2,12 @@ import { evaluateExecutionPolicy } from "./execution-policy.js";
 import { validateV2RouterCalldata } from "./router-calldata.js";
 import { ExecutionRecovery } from "./execution-recovery.js";
 import { keccak256 } from "viem";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 // Bump this whenever the ordering or meaning of the pre-sign marker changes.
 // Older protocol records must remain ineligible for never-signed resolution.
-const SIGNING_PROTOCOL_VERSION = 2;
+const SIGNING_PROTOCOL_VERSION = 3;
 
 export class ExecutionLifecycleError extends Error {
   constructor(stage, cause, state) {
@@ -121,6 +122,10 @@ export class ExecutionLifecycle {
       await this.journal.transition(intent.id, { status: "nonce-reserved", nonce }, now);
       await this.journal.transition(intent.id, {
         status: "signing-requested", signingRequestedAt: Number(now),
+        intentTransactionDigest: executionIntentTransactionDigest({
+          chainId: intent.chainId, from: intent.from, to: intent.to,
+          data: intent.data, value: intent.valueWei,
+        }),
       }, now);
       const signed = await this.provider.sign(intent, { nonce });
       if (!signed || !TX_HASH.test(String(signed.transactionHash))) {
