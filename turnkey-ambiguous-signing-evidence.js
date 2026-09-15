@@ -19,7 +19,7 @@ const normalizedHex = (value) => {
   return `0x${body}`;
 };
 
-const timestampMs = (value) => {
+export const turnkeyActivityTimestampMs = (value) => {
   const seconds = BigInt(String(value?.seconds ?? "-1"));
   const nanos = BigInt(String(value?.nanos ?? "0"));
   if (seconds < 0n || nanos < 0n || nanos >= 1_000_000_000n) {
@@ -72,7 +72,7 @@ export async function verifyAmbiguousSigningActivity({
 
   let createdAt;
   try {
-    createdAt = timestampMs(activity?.createdAt);
+    createdAt = turnkeyActivityTimestampMs(activity?.createdAt);
     if (Number.isFinite(record?.signingRequestedAt)
         && (createdAt < record.signingRequestedAt
           || createdAt > record.signingRequestedAt + maximumActivityDelayMs)) {

@@ -15,8 +15,12 @@ import { forbiddenRuntimeSecretFailures } from "./micro-mainnet-config.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { ROBINHOOD } from "./chain-config.js";
+import { Turnkey } from "@turnkey/sdk-server";
+import { turnkeyConfigFromEnv, probeTurnkeyPolicy } from "./turnkey-probe.js";
+import { restoreUniqueAmbiguousSigningActivity } from "./turnkey-ambiguous-signing-recovery.js";
 
 const CONFIRMATION = "RECONCILE_ATLAS_EXECUTIONS_OFFLINE";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer = (value, fallback) => {
   const parsed = Number(value ?? fallback);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("invalid-recovery-number");
@@ -24,7 +28,7 @@ const integer = (value, fallback) => {
 };
 
 export async function runExecutionRecovery({ env = process.env, fetchImpl = fetch,
-  now = Date.now(), output = () => {} } = {}) {
+  now = Date.now(), output = () => {}, makeTurnkeyClient } = {}) {
   if (env.EXECUTION_RECOVERY_CONFIRM !== CONFIRMATION) {
     throw new Error("execution-recovery-offline-confirmation-required");
   }
@@ -126,10 +130,54 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
         throw new Error("manual-review-label-not-yet-durable");
       }
       const resolver = new ExecutionManualReviewResolver({ journal, nonceLane });
-      operatorResolution = await resolver.rejectNeverSigned(resolutionIntentId, {
-        now: Number(now),
-        operatorAssertion: env.EXECUTION_MANUAL_REVIEW_CONFIRM,
-      });
+      if (env.EXECUTION_MANUAL_REVIEW_CONFIRM
+          === "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY") {
+        const observer = turnkeyConfigFromEnv(env);
+        const signingUserId = String(env.TURNKEY_SIGNING_USER_ID || "");
+        const maxGas = String(env.MICRO_MAINNET_MAX_GAS || "");
+        const maxFeePerGasWei = String(env.MICRO_MAINNET_MAX_FEE_PER_GAS_WEI || "");
+        const activityMaxPages = String(env.TURNKEY_ACTIVITY_MAX_PAGES || "");
+        if (!observer.configured || !observer.identifiersValid
+            || !UUID.test(signingUserId)
+            || !/^[1-9][0-9]*$/.test(maxGas)
+            || !/^[1-9][0-9]*$/.test(maxFeePerGasWei)
+            || !/^[1-9][0-9]*$/.test(activityMaxPages)
+            || !Number.isSafeInteger(Number(activityMaxPages))) {
+          throw new Error("ambiguous-signing-observer-config-invalid");
+        }
+        const factory = makeTurnkeyClient || ((config) => new Turnkey({
+          apiBaseUrl: "https://api.turnkey.com",
+          defaultOrganizationId: config.organizationId,
+          apiPublicKey: config.apiPublicKey,
+          apiPrivateKey: config.apiPrivateKey,
+        }).apiClient());
+        const client = factory(observer.config);
+        const [observerPolicy, observerIdentity] = await Promise.all([
+          probeTurnkeyPolicy({ config: observer.config,
+            getWhoami: (request) => client.getWhoami(request),
+            getOrganizationConfigs: (request) => client.getOrganizationConfigs(request),
+            getPolicies: (request) => client.getPolicies(request),
+            getUser: (request) => client.getUser(request) }),
+          client.getWhoami({ organizationId: observer.config.organizationId }),
+        ]);
+        if (!observerPolicy.readOnlyVerified || !UUID.test(String(observerIdentity?.userId || ""))
+            || observerIdentity.userId === signingUserId) {
+          throw new Error("ambiguous-signing-observer-boundary-invalid");
+        }
+        const record = journal.get(resolutionIntentId);
+        operatorResolution = await restoreUniqueAmbiguousSigningActivity({ record, resolver,
+          getActivities: (request) => client.getActivities(request),
+          getActivity: (request) => client.getActivity(request),
+          evidenceConfig: { organizationId: observer.config.organizationId,
+            walletAddress: expectedWalletAddress, signingUserId, maxGas, maxFeePerGasWei },
+          operatorAssertion: env.EXECUTION_MANUAL_REVIEW_CONFIRM, now: Number(now),
+          maxPages: Number(activityMaxPages) });
+      } else {
+        operatorResolution = await resolver.rejectNeverSigned(resolutionIntentId, {
+          now: Number(now),
+          operatorAssertion: env.EXECUTION_MANUAL_REVIEW_CONFIRM,
+        });
+      }
     }
     validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
     const report = Object.freeze({ ...result,
