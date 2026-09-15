@@ -1,91 +1,96 @@
-# Atlas Micro-Mainnet Execution Boundary — Revision 4 Review Packet
+# Atlas Micro-Mainnet Execution Boundary — Revision 5 Review Packet
 
 ## Scope
 
-Review branch `fix/micro-mainnet-execution`, revision 4, based on production
-commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 3
-`5842cbac5b8110cca57ed1c641b9afed91da891f`. Production remains V6b
-`PAPER_ONLY`. This branch is inert and is not an execution release.
+Review branch `fix/micro-mainnet-execution`, revision 5, based on production
+commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 4
+`ca5faba11120a631e3dc8361536fce925ba49a5b`. Production remains V6b
+`PAPER_ONLY`. This branch remains inert and is not an execution release.
 
-This revision responds only to A-1 through A-4. It changes dormant execution
-scaffolding, external verification, startup safety, tests, and documentation.
+Revision 5 responds only to B-1 through B-3. It changes the isolated verifier,
+dormant lifecycle/journal, tests, and documentation.
 
 ## Safety boundary
 
 No transaction can be submitted. There is no POST endpoint or
 candidate-to-intent call; the provider and lifecycle are not imported by the
 web runtime. `submissionPathConnected` and `automaticSubmissionEnabled` remain
-literal `false`. The web runtime cannot read a signing private key and now
-refuses to start if one-shot signing or attestation private material is present.
+literal `false`. No signing or attestation private material can coexist with
+the web runtime.
 
-## Changes since revision 3
+## Changes since revision 4
 
-1. **Behavioral proof is bound into the attestation (A-1).** The one-shot
-   verifier requires a recent JSON matrix containing three allowed Turnkey
-   activity IDs and at least twelve distinct denied activity IDs. It refuses to
-   issue an attestation without that evidence. Signed claims contain the run
-   timestamp, counts, and SHA-256 digest of the ordered IDs, not the IDs.
-2. **Public failures are fixed codes (A-2).** Attestation I/O, Turnkey
-   revalidation, and WETH balance failures map to
-   `signing-attestation-read-failed`, `turnkey-revalidation-failed`, and
-   `weth-balance-read-failed`. SDK/RPC error text no longer reaches status.
-3. **Private-key custody is enforced (A-3).** Startup rejects
-   `TURNKEY_SIGNING_API_PRIVATE_KEY`,
-   `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY`, or
-   `TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64`. The web service may hold
-   only the observer credential, signing public key, attestation public key,
-   and signed attestation document.
-4. **Per-intent revalidation is structural (A-4).** `ExecutionLifecycle`
-   requires a `preflight` callback. It runs after static policy/calldata checks
-   and before spend or nonce reservation. A denial or exception fails closed
-   without provider access. When connected, the callback must perform fresh
-   Turnkey policy and wallet-balance reads on every intent.
+1. **Turnkey outcomes, not strings, are attested (B-1).** The one-shot verifier
+   calls `getActivity` for every matrix entry. Each success must be a completed
+   `ACTIVITY_TYPE_SIGN_TRANSACTION_V2` in the configured organization, for the
+   configured wallet, with an approving vote from the independently identified
+   signing user. The returned signed transaction must recover to Atlas, decode
+   as the named buy/sell/approval case, and satisfy router, path, recipient,
+   amount, chain, gas, and fee bounds. Each denial must be failed/rejected and
+   carry a policy-denial failure. Fabricated IDs or unrelated failures cannot
+   produce an attestation.
+2. **Daily matrix cadence is explicit (B-2).** The runtime intentionally checks
+   `matrix.runAt` on every attestation validation. Early micro-mainnet operation
+   therefore requires the complete matrix to be rerun at least every 24 hours.
+   This is documented as a manual operator safety ceremony.
+3. **Preflight refusals become durable evidence (B-3).** A preflight denial or
+   exception is recorded as a final `rejected` execution-journal record with
+   stage and coded failures before returning. It is excluded from pending
+   executions. If rejection persistence fails, the lifecycle returns
+   `preflight-rejection-journal-failed`; it still performs no spend, nonce, or
+   provider action.
 
-## Behavioral matrix contract
-
-Input JSON:
+## Matrix input contract
 
 ```json
 {
   "runAt": 0,
-  "allows": ["allowed-buy-activity-id", "allowed-sell-activity-id", "allowed-approval-activity-id"],
-  "denials": ["denied-activity-id-1", "... eleven or more distinct IDs"]
+  "allows": [
+    { "case": "buy", "activityId": "..." },
+    { "case": "sell", "activityId": "..." },
+    { "case": "approval", "activityId": "...", "token": "0x...", "amount": "1" }
+  ],
+  "denials": [
+    { "case": "wrong-chain", "activityId": "..." }
+  ]
 }
 ```
 
-`runAt` must be within 24 hours and no more than five minutes in the future.
-The operator must actually test valid buy, sell, and allowlisted exact approval.
-Denials must cover wrong chain, native value, foreign router, wrong selector,
-excessive input, zero minimum output, three-token path, wrong WETH orientation,
-foreign recipient, excessive gas/fee, foreign approval spender, and
-`approve(MAX_UINT)`. The attestation proves the supplied activity-ID set was
-bound to the reviewed configuration; it does not replace independent review of
-the sanitized activity results.
+The twelve required denial case names are: `wrong-chain`, `non-zero-value`,
+`foreign-router`, `wrong-selector`, `excessive-input`,
+`zero-minimum-output`, `three-token-path`, `wrong-weth-orientation`,
+`foreign-recipient`, `excessive-gas-or-fee`, `foreign-approval-spender`, and
+`approve-max-uint`. More denial entries are allowed, but every activity ID must
+be unique. The digest is computed from the verified ordered activity-ID set.
+
+The activity response fields used by the verifier match Turnkey's public
+OpenAPI schema: `Activity.organizationId/status/type/intent/result/votes/failure`
+and `SignTransactionIntentV2.signWith/unsignedTransaction`.
 
 ## Deliberate remaining blockers
 
-1. Execute the matrix against the real Turnkey organization and independently
-   review the sanitized activity outcomes before creating the attestation.
+1. Run the behavioral matrix against the real organization and independently
+   review the sanitized activities before creating the first attestation.
 2. Persist and reconcile `ExecutionJournal`, `NonceLane`, and `SpendLedger`
    through the state/evidence checkpoint protocol; source pending executions
-   from the journal.
+   from the restored journal.
 3. Implement journaled exact-approval orchestration, including zero-first and
    residue cleanup where required.
-4. Supply the preflight implementation: exact policy revalidation, WETH and
-   native-gas balance checks, daily spend state, and post-buy sell re-probe.
-5. Bind an eligible strategy decision to an immutable intent and complete a
+4. Implement the mandatory preflight with fresh policy-set, WETH/native-balance,
+   daily-spend, and post-buy sell-probe checks.
+5. Bind eligible strategy decisions to immutable intents and complete a
    qualifying V6b cohort.
 
 ## Reviewer questions
 
-1. Can an attestation be issued or accepted without a recent complete matrix?
-2. Can an SDK, filesystem, or RPC error expose raw text through public status?
-3. Can either signing or attestation private material coexist with the web
-   runtime?
-4. Can an intent reserve spend, reserve a nonce, or call the provider without a
-   successful fresh preflight?
+1. Can fabricated IDs, wrong users/wallets, unrelated failures, or malformed
+   successful transactions satisfy the matrix?
+2. Are all three successful transactions decoded and bound to the configured
+   limits and expected case?
+3. Does a preflight refusal become final evidence without reserving spend or a
+   nonce and without provider access?
+4. Is the daily operator cadence explicit and fail-closed?
 5. Is the branch still incapable of transaction submission?
-6. What persistence and approval work remains before connecting the provider?
 
 ## Expected verdict
 
