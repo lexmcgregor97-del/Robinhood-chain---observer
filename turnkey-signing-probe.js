@@ -13,14 +13,22 @@ function consensusMayIncludeUser(consensus, userId, userTags = []) {
   return explicitIds.length === 0;
 }
 
-export function expectedTurnkeySigningPolicy(config, userId) {
+export function expectedTurnkeySigningPolicies(config, userId) {
   const routers = [...config.allowedRouters].map((router) => `'${router}'`).join(", ");
+  const routerWords = [...config.allowedRouters]
+    .map((router) => `'${router.slice(2).toLowerCase().padStart(64, "0")}'`).join(", ");
   const wallet = config.walletAddress.toLowerCase();
   const weth = ROBINHOOD.weth.toLowerCase();
+  const common = `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.gas <= ${config.maxGas} && eth.tx.max_fee_per_gas <= ${config.maxFeePerGasWei} && eth.tx.max_priority_fee_per_gas <= ${config.maxFeePerGasWei}`;
+  const swap = `${common} && eth.tx.to in [${routers}] && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
+  const consensus = `approvers.any(user, user.id == '${userId}')`;
   return Object.freeze({
-    effect: "EFFECT_ALLOW",
-    consensus: `approvers.any(user, user.id == '${userId}')`,
-    condition: `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.to in [${routers}] && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] <= ${config.maxPerTransactionWei} && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'][0] == '${weth}' && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`,
+    buy: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
+      condition: `${swap} && eth.tx.contract_call_args['amountIn'] <= ${config.maxPerTransactionWei} && eth.tx.contract_call_args['path'][0] == '${weth}'` }),
+    sell: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
+      condition: `${swap} && eth.tx.contract_call_args['path'][1] == '${weth}'` }),
+    approval: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
+      condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && eth.tx.data[10..74] in [${routerWords}]` }),
   });
 }
 
@@ -36,27 +44,42 @@ export function assessTurnkeySigningPolicy({ config, whoami, organizationConfigs
   const listedPolicies = Array.isArray(policies?.policies) ? policies.policies : [];
   const applicableAllows = listedPolicies.filter((policy) => policy?.effect === "EFFECT_ALLOW"
     && consensusMayIncludeUser(policy.consensus, userId, userTags));
-  const attestedPolicy = listedPolicies.find((policy) => policy.policyId === config?.policyId);
-  const expected = userId ? expectedTurnkeySigningPolicy(config, userId) : null;
-  const attestedPolicyExact = Boolean(attestedPolicy && expected
-    && attestedPolicy.effect === expected.effect
-    && compact(attestedPolicy.consensus) === compact(expected.consensus)
-    && compact(attestedPolicy.condition) === compact(expected.condition));
-  const onlyAttestedAllowApplies = applicableAllows.length === 1
-    && applicableAllows[0]?.policyId === config?.policyId;
+  const expected = userId ? expectedTurnkeySigningPolicies(config, userId) : null;
+  const expectedEntries = expected ? Object.entries(expected) : [];
+  const policyChecks = Object.fromEntries(expectedEntries.map(([kind, expectedPolicy]) => {
+    const policyId = config?.policyIds?.[kind];
+    const policy = listedPolicies.find((candidate) => candidate.policyId === policyId);
+    return [kind, Object.freeze({
+      policyId,
+      visible: Boolean(policy),
+      exact: Boolean(policy
+        && policy.effect === expectedPolicy.effect
+        && compact(policy.consensus) === compact(expectedPolicy.consensus)
+        && compact(policy.condition) === compact(expectedPolicy.condition)),
+    })];
+  }));
+  const exactPolicyIds = new Set(Object.values(config?.policyIds || {}));
+  const expectedPolicySetExact = Object.values(policyChecks).length === 3
+    && Object.values(policyChecks).every((check) => check.visible && check.exact)
+    && applicableAllows.length === 3
+    && applicableAllows.every((policy) => exactPolicyIds.has(policy.policyId));
   const failures = [];
   if (!userId) failures.push("turnkey-signing-user-unresolved");
   if (!apiKeyOwned) failures.push("turnkey-signing-api-key-ownership-unverified");
   if (rootQuorumMember) failures.push("turnkey-signing-user-in-root-quorum");
-  if (!attestedPolicy) failures.push("turnkey-signing-policy-not-visible");
-  else if (!attestedPolicyExact) failures.push("turnkey-signing-policy-not-exact");
-  if (!onlyAttestedAllowApplies) failures.push("turnkey-signing-additional-or-missing-allow-policy");
+  if (!Object.values(policyChecks).every((check) => check.visible)) {
+    failures.push("turnkey-signing-policy-set-not-visible");
+  }
+  if (Object.values(policyChecks).some((check) => check.visible && !check.exact)) {
+    failures.push("turnkey-signing-policy-set-not-exact");
+  }
+  if (!expectedPolicySetExact) failures.push("turnkey-signing-applicable-allow-set-mismatch");
   return Object.freeze({
     verified: failures.length === 0,
     apiKeyOwned,
     rootQuorumMember,
-    attestedPolicyVisible: Boolean(attestedPolicy),
-    attestedPolicyExact,
+    policyChecks,
+    expectedPolicySetExact,
     applicableAllowPolicyCount: applicableAllows.length,
     userId: userId || null,
     failures: Object.freeze(failures),
