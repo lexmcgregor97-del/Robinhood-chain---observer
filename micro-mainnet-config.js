@@ -11,6 +11,21 @@ const addresses = (input) => [...new Set(value(input).split(/[\s,]+/).filter(Boo
 
 export const MICRO_MAINNET_CONFIRMATION_PREFIX = "ENABLE_ATLAS_MICRO_MAINNET";
 
+export function forbiddenRuntimeSecretFailures(env = process.env) {
+  const signingSecrets = [
+    "TURNKEY_SIGNING_API_PRIVATE_KEY",
+    "TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY",
+  ];
+  const failures = [];
+  if (signingSecrets.some((name) => value(env[name]))) {
+    failures.push("signing-private-key-must-not-be-configured");
+  }
+  if (value(env.TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64)) {
+    failures.push("attestation-private-key-must-not-be-configured");
+  }
+  return Object.freeze(failures);
+}
+
 export function microMainnetConfigFromEnv(env = process.env) {
   const mode = value(env.ATLAS_EXECUTION_MODE || "PAPER_ONLY").toUpperCase();
   const enabled = envFlag(env.MICRO_MAINNET_ENABLED, false);
