@@ -110,6 +110,34 @@ test("verifies real completed signing outcomes and policy-denied activities", as
   assert.equal(result.normalized.denials.length, 12);
 });
 
+test("accepts Turnkey transaction payloads without a 0x prefix", async () => {
+  const { matrix, activities } = await fixture();
+  for (const entry of matrix.allows) {
+    const activity = activities.get(entry.activityId);
+    activity.result.signTransactionResult.signedTransaction =
+      activity.result.signTransactionResult.signedTransaction.slice(2);
+  }
+  for (const entry of matrix.denials) {
+    const intent = activities.get(entry.activityId).intent.signTransactionIntentV2;
+    intent.unsignedTransaction = intent.unsignedTransaction.slice(2);
+  }
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, true);
+});
+
+test("rejects malformed serialized hex before parsing", async () => {
+  const { matrix, activities } = await fixture();
+  activities.get("allow-buy").result.signTransactionResult.signedTransaction = "not-hex";
+  activities.get("deny-1").intent.signTransactionIntentV2.unsignedTransaction = "abc";
+  activities.get("deny-2").intent.signTransactionIntentV2.unsignedTransaction = "";
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, false);
+  assert.ok(result.failures.includes("matrix-signed-transaction-invalid"));
+  assert.ok(result.failures.includes("matrix-denied-transaction-invalid"));
+});
+
 test("rejects fabricated IDs, missing cases, and non-policy failures", async () => {
   const malformed = await verifyTurnkeyActivityMatrix({ matrix: {
     runAt: Date.now(), allows: ["a", "b", "c"], denials: Array(12).fill("d") },
