@@ -28,13 +28,17 @@ const policy = {
   maxExpiryMs: 60_000,
   maxRouterDeadlineSeconds: 60,
 };
-const hash = `0x${"ab".repeat(32)}`;
+const signedPayload = `0x${"ab".repeat(100)}`;
+const { keccak256 } = await import("viem");
+const hash = keccak256(signedPayload);
 
 function provider(overrides = {}) {
   return {
     calls: [],
     async getPendingNonce() { this.calls.push(["nonce"]); return 7; },
-    async sign(intent, options) { this.calls.push(["sign", intent.id, options.nonce]); return { payload: "signed", transactionHash: hash }; },
+    async sign(intent, options) { this.calls.push(["sign", intent.id, options.nonce]); return {
+      payload: signedPayload, transactionHash: hash, gas: "100000", maxFeePerGas: "2",
+      maxPriorityFeePerGas: "1" }; },
     async broadcast(signed) { this.calls.push(["broadcast", signed]); return hash; },
     async waitForReceipt(txHash) { this.calls.push(["receipt", txHash]); return { status: "success" }; },
     async getReceipt(txHash) { this.calls.push(["getReceipt", txHash]); return null; },
@@ -106,6 +110,8 @@ test("persists a transaction hash before broadcast", async () => {
   await assert.rejects(lifecycle.submit(rawIntent, { now }));
   assert.deepEqual(transitions, ["reserved", "nonce-reserved", "signed"]);
   assert.equal(journal.get(rawIntent.id).transactionHash, hash);
+  assert.equal(journal.get(rawIntent.id).signedPayload, signedPayload);
+  assert.equal(journal.get(rawIntent.id).gas, "100000");
 });
 
 test("reconciles a pending transaction after restart without signing or broadcasting", async () => {
@@ -136,4 +142,32 @@ test("never rebroadcasts when recovery cannot find a receipt", async () => {
   const [result] = await lifecycle.recoverPending({ now: now + 1 });
   assert.equal(result.recovery, "still-pending");
   assert.deepEqual(walletProvider.calls.map(([name]) => name), ["getReceipt"]);
+});
+
+test("escalates an old missing receipt to manual review", async () => {
+  const journal = new ExecutionJournal({ records: [{
+    intentId: rawIntent.id, status: "broadcast", transactionHash: hash,
+    createdAt: now, updatedAt: now,
+  }] });
+  const lifecycle = new ExecutionLifecycle({
+    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(), provider: provider(),
+  });
+  const [result] = await lifecycle.recoverPending({ now: now + 11 * 60_000 });
+  assert.equal(result.recovery, "manual-review");
+});
+
+test("operator recovery can broadcast only the identical persisted signed bytes", async () => {
+  const journal = new ExecutionJournal({ records: [{
+    intentId: rawIntent.id, status: "signed", transactionHash: hash,
+    signedPayload, createdAt: now, updatedAt: now,
+  }] });
+  const walletProvider = provider();
+  const lifecycle = new ExecutionLifecycle({
+    policy, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane(),
+    provider: walletProvider,
+  });
+  const result = await lifecycle.rebroadcastIdentical(rawIntent.id, { now: now + 1 });
+  assert.equal(result.transactionHash, hash);
+  assert.equal(journal.get(rawIntent.id).status, "broadcast");
+  assert.deepEqual(walletProvider.calls.map(([name]) => name), ["broadcast"]);
 });
