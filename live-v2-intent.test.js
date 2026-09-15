@@ -59,3 +59,19 @@ test("builds a full-unit sell back to WETH from the durable position", () => {
   assert.deepEqual(decoded.args[2].map((item) => item.toLowerCase()),
     [TOKEN.toLowerCase(), WETH.toLowerCase()]);
 });
+
+test("binds buy and sell intent identities to their exact calldata deadline", () => {
+  const later = 1_001_000;
+  const buyA = buildLiveV2BuyIntent({ candidate, snapshot, config,
+    amountInWei: "100", slippageBps: 100, now: 1_000_000 });
+  const buyB = buildLiveV2BuyIntent({ candidate, snapshot, config,
+    amountInWei: "100", slippageBps: 100, now: later });
+  const position = { poolAddress: POOL, baseToken: TOKEN, routerAddress: ROUTER,
+    baseUnits: "123", feeBps: 30, entryIntentId: "live:v2:buy:x" };
+  const sellA = buildLiveV2SellIntent({ position, snapshot, config,
+    slippageBps: 100, now: 1_000_000 });
+  const sellB = buildLiveV2SellIntent({ position, snapshot, config,
+    slippageBps: 100, now: later });
+  assert.notEqual(buyA.id, buyB.id);
+  assert.notEqual(sellA.id, sellB.id);
+});
