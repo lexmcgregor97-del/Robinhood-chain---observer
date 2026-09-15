@@ -40,7 +40,7 @@ export class ExecutionLifecycle {
     }
 
     const { intent } = evaluated;
-    if (this.running.has(intent.id)) {
+    if (this.running.has(intent.id) || this.journal.get(intent.id)) {
       return Object.freeze({ status: "rejected", stage: "replay", failures: ["duplicate-intent"] });
     }
     const calldata = this.validateCalldata(intent, this.policy, { nowSeconds: Math.floor(now / 1000) });
@@ -53,10 +53,26 @@ export class ExecutionLifecycle {
       if (preflight?.approved !== true) {
         const failures = Array.isArray(preflight?.failures) && preflight.failures.length
           ? preflight.failures : ["execution-preflight-rejected"];
+        try {
+          await this.journal.transition(intent.id, { status: "rejected", stage: "preflight",
+            failures: [...new Set(failures)], chainId: intent.chainId,
+            spendAsset: intent.spendAsset, spendAmount: intent.spendAmount }, now);
+        } catch {
+          return Object.freeze({ status: "rejected", stage: "preflight",
+            failures: Object.freeze(["preflight-rejection-journal-failed"]) });
+        }
         return Object.freeze({ status: "rejected", stage: "preflight",
           failures: Object.freeze([...new Set(failures)]) });
       }
     } catch {
+      try {
+        await this.journal.transition(intent.id, { status: "rejected", stage: "preflight",
+          failures: ["execution-preflight-failed"], chainId: intent.chainId,
+          spendAsset: intent.spendAsset, spendAmount: intent.spendAmount }, now);
+      } catch {
+        return Object.freeze({ status: "rejected", stage: "preflight",
+          failures: Object.freeze(["preflight-rejection-journal-failed"]) });
+      }
       return Object.freeze({ status: "rejected", stage: "preflight",
         failures: Object.freeze(["execution-preflight-failed"]) });
     }
