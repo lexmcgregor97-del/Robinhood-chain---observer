@@ -32,7 +32,13 @@ configuration and a recent behavioral-matrix summary. Set
 `runAt`, structured buy/sell/approval successes, and the twelve named denial
 cases. The verifier fetches every activity from Turnkey and checks organization,
 signing-user vote, wallet, status, type, policy-denial failure, and the decoded
-signed transaction before issuing anything. The signed claims contain only
+transaction before issuing anything. Successful activities are checked from
+their signed bytes. Every denied activity's unsigned transaction must differ
+from an otherwise allowed request in exactly its named way; relabelled denials
+and requests with multiple defects are rejected. Policy-denial recognition is
+temporarily conservative text matching over Turnkey's failure object; the
+first real-organization ceremony must capture and pin the exact structured
+failure field before execution is connected. The signed claims contain only
 their counts, timestamp, and SHA-256 digest. The
 web runtime holds only the attestation public key, reads the attestation file,
 and uses the observer credential to re-check the signing user and exact policy
@@ -56,7 +62,10 @@ Every future execution lifecycle must receive an explicit asynchronous
 preflight. It runs after static policy/calldata validation but before spend or
 nonce reservation, and rejection or error stops the intent without touching the
 provider. Rejections are written as final, coded execution-journal evidence and
-are not counted as pending transactions. When the submission path is eventually connected, this preflight must
+are not counted as pending transactions. The dormant journal semantics are
+ready, but persistence still must be wired through the state/evidence checkpoint
+before any submission path is connected; public evidence consumers must accept
+final `rejected` execution records. When the submission path is eventually connected, this preflight must
 re-read Turnkey policy state and wallet balances for every intent; hourly status
 revalidation alone is not sufficient.
 
