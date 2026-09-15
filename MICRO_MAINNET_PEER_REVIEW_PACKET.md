@@ -1,100 +1,94 @@
-# Atlas Micro-Mainnet Execution Boundary — Revision 3 Review Packet
+# Atlas Micro-Mainnet Execution Boundary — Revision 4 Review Packet
 
 ## Scope
 
-Review branch `fix/micro-mainnet-execution`, revision 3, based on production
-commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 2
-`1fdabe80b5a4dfac6150669022b2222c97005074`. Production remains V6b
-`PAPER_ONLY`. This branch remains inert and must not be treated as an execution
-release.
+Review branch `fix/micro-mainnet-execution`, revision 4, based on production
+commit `5fa5fd91ebe53069eb5ba0582451f95a0e58f7cf` and compared with revision 3
+`5842cbac5b8110cca57ed1c641b9afed91da891f`. Production remains V6b
+`PAPER_ONLY`. This branch is inert and is not an execution release.
 
-This revision responds to findings N-1 through N-4 from the second independent
-review. It changes only dormant execution scaffolding, status, tests, and docs.
+This revision responds only to A-1 through A-4. It changes dormant execution
+scaffolding, external verification, startup safety, tests, and documentation.
 
-## Safety claim
+## Safety boundary
 
-This revision cannot submit a transaction. It creates no POST endpoint and no
-candidate-to-execution call. `submissionPathConnected` and
-`automaticSubmissionEnabled` remain literal `false`; activation retains
-`execution-submission-path-not-connected`. The signing private key is not loaded
-by the web runtime.
+No transaction can be submitted. There is no POST endpoint or
+candidate-to-intent call; the provider and lifecycle are not imported by the
+web runtime. `submissionPathConnected` and `automaticSubmissionEnabled` remain
+literal `false`. The web runtime cannot read a signing private key and now
+refuses to start if one-shot signing or attestation private material is present.
 
-## Changes since revision 2
+## Changes since revision 3
 
-1. **Wallet funding is the compromise bound (N-1).** Activation requires a
-   verified WETH balance and fails with `wallet-balance-exceeds-daily-cap` when
-   it exceeds `maxDailyWei`. A missing measurement fails separately. The docs
-   now state the honest invariant: direct transfer-out is forbidden, but hostile
-   swaps can lose the funded wallet balance. Just-in-time funding and a
-   pre-intent balance recheck remain required when execution is connected.
-2. **Dropped broadcasts are recoverable (N-2).** Operator-only identical-byte
-   rebroadcast accepts both `signed` and `broadcast` journal states. Payload
-   hashing, exact returned-hash matching, no re-signing, and no automatic
-   rebroadcast remain unchanged.
-3. **Approval slice semantics are pinned (N-3).** A regression test requires the
-   exact selector slice and padded spender word. The real Turnkey behavioral
-   matrix explicitly requires a positive allowlisted approval and a negative
-   foreign-spender approval.
-4. **Signed external verification attestation (N-4).** The one-shot command can
-   issue a P-256-signed attestation with a maximum 24-hour lifetime, bound by a
-   SHA-256 fingerprint to the complete public execution configuration and to
-   distinct observer/signing user IDs. The runtime reads only the attestation
-   public key, validates signature/expiry/configuration, and uses the observer
-   Turnkey credential to revalidate the signing user and exact policy set
-   hourly. No signing private key enters the web process.
+1. **Behavioral proof is bound into the attestation (A-1).** The one-shot
+   verifier requires a recent JSON matrix containing three allowed Turnkey
+   activity IDs and at least twelve distinct denied activity IDs. It refuses to
+   issue an attestation without that evidence. Signed claims contain the run
+   timestamp, counts, and SHA-256 digest of the ordered IDs, not the IDs.
+2. **Public failures are fixed codes (A-2).** Attestation I/O, Turnkey
+   revalidation, and WETH balance failures map to
+   `signing-attestation-read-failed`, `turnkey-revalidation-failed`, and
+   `weth-balance-read-failed`. SDK/RPC error text no longer reaches status.
+3. **Private-key custody is enforced (A-3).** Startup rejects
+   `TURNKEY_SIGNING_API_PRIVATE_KEY`,
+   `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY`, or
+   `TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64`. The web service may hold
+   only the observer credential, signing public key, attestation public key,
+   and signed attestation document.
+4. **Per-intent revalidation is structural (A-4).** `ExecutionLifecycle`
+   requires a `preflight` callback. It runs after static policy/calldata checks
+   and before spend or nonce reservation. A denial or exception fails closed
+   without provider access. When connected, the callback must perform fresh
+   Turnkey policy and wallet-balance reads on every intent.
 
-## Turnkey policy and funding model
+## Behavioral matrix contract
 
-The expected applicable ALLOW set remains exactly buy swap, sell swap, and
-approval. Buy and sell return assets to Atlas; approval permits only an
-allowlisted router, while application validation binds the exact amount and
-rejects `MAX_UINT`.
+Input JSON:
 
-This blocks direct exfiltration but does not bound hostile-pool slippage. A
-compromised signing credential can trade the wallet's WETH into an attacker pool
-at a negligible minimum output. The economic loss bound is therefore the funded
-wallet balance. Production execution must use just-in-time funding, keep WETH at
-or below the daily cap, and re-read the balance immediately before each intent.
+```json
+{
+  "runAt": 0,
+  "allows": ["allowed-buy-activity-id", "allowed-sell-activity-id", "allowed-approval-activity-id"],
+  "denials": ["denied-activity-id-1", "... eleven or more distinct IDs"]
+}
+```
 
-Exact policy-text matching remains fail-closed metadata validation, not proof of
-Turnkey policy semantics. A real-organization behavioral signing matrix remains
-mandatory before any execution decision.
+`runAt` must be within 24 hours and no more than five minutes in the future.
+The operator must actually test valid buy, sell, and allowlisted exact approval.
+Denials must cover wrong chain, native value, foreign router, wrong selector,
+excessive input, zero minimum output, three-token path, wrong WETH orientation,
+foreign recipient, excessive gas/fee, foreign approval spender, and
+`approve(MAX_UINT)`. The attestation proves the supplied activity-ID set was
+bound to the reviewed configuration; it does not replace independent review of
+the sanitized activity results.
 
 ## Deliberate remaining blockers
 
-1. Run the real Turnkey behavioral matrix: valid buy, sell, and allowlisted
-   exact-approval requests must succeed. Wrong chain, non-zero value, foreign
-   router, wrong selector, excessive input, zero minimum output, three-token
-   path, wrong WETH orientation, foreign recipient, excessive gas/fee, foreign
-   approval spender, and `approve(MAX_UINT)` must be denied. Record sanitized
-   activity IDs.
-2. Persist and reconcile `ExecutionJournal`, `NonceLane`, and `SpendLedger` with
-   the state/evidence checkpoint protocol. Activation's pending count is still
-   deliberately supplied as zero because no runtime lifecycle exists.
-3. Implement exact approval orchestration: allowance read, optional zero-first,
-   exact approval, swap, post-swap allowance check, and zero cleanup on failure
-   or residue. Each action must be its own journaled intent.
-4. Add native-gas balance checks, enforce the WETH funding check immediately
-   before every intent, add a post-buy sell re-probe, and complete the final
-   strategy-to-intent binding.
+1. Execute the matrix against the real Turnkey organization and independently
+   review the sanitized activity outcomes before creating the attestation.
+2. Persist and reconcile `ExecutionJournal`, `NonceLane`, and `SpendLedger`
+   through the state/evidence checkpoint protocol; source pending executions
+   from the journal.
+3. Implement journaled exact-approval orchestration, including zero-first and
+   residue cleanup where required.
+4. Supply the preflight implementation: exact policy revalidation, WETH and
+   native-gas balance checks, daily spend state, and post-buy sell re-probe.
+5. Bind an eligible strategy decision to an immutable intent and complete a
+   qualifying V6b cohort.
 
 ## Reviewer questions
 
-1. Does activation reject an unmeasured or over-cap WETH balance, and is the
-   documentation honest about hostile-swap loss exposure?
-2. Can identical-byte recovery handle both pre-broadcast and dropped-broadcast
-   states without re-signing or automatic submission?
-3. Is the signed attestation cryptographically bound to expiry, distinct users,
-   and every public execution-policy input?
-4. Can the observer credential safely revalidate the signing user's API-key
-   ownership and exact policy set in the real Turnkey organization?
-5. Does public status expose any private key or user ID? The non-public
-   attestation necessarily binds both user IDs; confirm it is never served.
-6. What persistence or behavioral evidence remains required before connecting
-   the dormant provider?
+1. Can an attestation be issued or accepted without a recent complete matrix?
+2. Can an SDK, filesystem, or RPC error expose raw text through public status?
+3. Can either signing or attestation private material coexist with the web
+   runtime?
+4. Can an intent reserve spend, reserve a nonce, or call the provider without a
+   successful fresh preflight?
+5. Is the branch still incapable of transaction submission?
+6. What persistence and approval work remains before connecting the provider?
 
 ## Expected verdict
 
 - Merge as inert scaffolding: reviewer decision.
-- Deploy to production: no operational benefit; do not configure a signing key.
+- Deploy to production: no operational benefit; do not configure private keys.
 - Enable micro-mainnet: **NO-GO**.
