@@ -46,6 +46,13 @@ import {
 } from "./micro-mainnet-config.js";
 import { assessTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 import { readSigningAttestation, verifySigningAttestation } from "./signing-attestation.js";
+import { ExecutionJournal } from "./execution-journal.js";
+import { NonceLane } from "./nonce-lane.js";
+import { DailySpendLedger } from "./spend-ledger.js";
+import {
+  executionPendingCount, validateExecutionCheckpoint,
+} from "./execution-checkpoint.js";
+import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -177,6 +184,17 @@ const paperAutomation = {
 };
 const shadowEvaluator = new ShadowEvaluator();
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
+const serializeExecutionMutation = createExecutionMutationSerializer();
+const executionPersist = async (_snapshot, event) => appendEvidence(event);
+let executionJournal = new ExecutionJournal({}, {
+  persist: executionPersist, serialize: serializeExecutionMutation,
+});
+let executionNonceLane = new NonceLane({}, {
+  persist: executionPersist, serialize: serializeExecutionMutation,
+});
+let executionSpendLedger = new DailySpendLedger({}, {
+  persist: executionPersist, serialize: serializeExecutionMutation,
+});
 let paperArchives = [];
 const metrics = {
   startedAt: Date.now(), latestBlock: 0, blockTimestamp: 0, cursor: 0,
@@ -360,6 +378,11 @@ function persistedState() {
     shadow: shadowEvaluator.serialize(),
     processedLogs: logDeduplicator.serialize(),
     positionLiveness: positionLiveness.serialize(),
+    execution: {
+      journal: executionJournal.snapshot(),
+      nonceLane: executionNonceLane.snapshot(),
+      spendLedger: executionSpendLedger.snapshot(),
+    },
     evidenceSequence: evidenceJournal.snapshot().sequence,
     evidenceLastHash: evidenceJournal.snapshot().lastHash,
   };
@@ -402,6 +425,16 @@ async function restoreState() {
     if (samePaperEpoch) validateEvidenceCheckpoint({
       state, journal: evidenceJournal.snapshot(),
     });
+    if (!samePaperEpoch && state.execution) {
+      validateExecutionCheckpoint({ execution: state.execution,
+        typeCounts: evidenceJournal.snapshot().typeCounts });
+    }
+    executionJournal = new ExecutionJournal(state.execution?.journal,
+      { persist: executionPersist, serialize: serializeExecutionMutation });
+    executionNonceLane = new NonceLane(state.execution?.nonceLane,
+      { persist: executionPersist, serialize: serializeExecutionMutation });
+    executionSpendLedger = new DailySpendLedger(state.execution?.spendLedger,
+      { persist: executionPersist, serialize: serializeExecutionMutation });
     if (state.paperBooks && samePaperEpoch) {
       for (const [quoteToken, saved] of Object.entries(state.paperBooks)) {
         const book = paperBooks.get(quoteToken.toLowerCase());
@@ -424,6 +457,13 @@ async function restoreState() {
     positionLiveness = new PositionLiveness({
       state: samePaperEpoch ? (state.positionLiveness || {}) : {},
     });
+    for (const lane of executionNonceLane.snapshot().lanes) {
+      const intentId = lane.pending?.intentId;
+      const record = intentId ? executionJournal.get(intentId) : null;
+      if (record && new Set(["confirmed", "reverted"]).has(record.status)) {
+        await executionNonceLane.finalize(intentId);
+      }
+    }
     persistence.restored = true;
     persistence.restoredCursor = metrics.cursor;
     persistence.restoredPoolCount = pools.size;
@@ -1449,10 +1489,19 @@ function currentLiveReadiness(operationalReady, books = null, shadow = null) {
 
 function executionStatus(operationalReady, liveReadiness = null) {
   const readiness = liveReadiness || currentLiveReadiness(operationalReady);
+  const executionState = { journal: executionJournal.snapshot() };
+  const pendingExecutions = executionPendingCount(executionState);
   return {
     boundary: "review-only-disconnected",
     submissionPathConnected: false,
     automaticSubmissionEnabled: false,
+    durability: {
+      restored: persistence.restored,
+      journalRecords: executionJournal.snapshot().records.length,
+      pendingExecutions,
+      nonceLaneCount: executionNonceLane.snapshot().lanes.length,
+      spendIntentCount: executionSpendLedger.snapshot().intentIds.length,
+    },
     config: publicMicroMainnetConfig(MICRO_MAINNET_CONFIG),
     signingVerification: {
       checked: turnkeySigningStatus.checked,
@@ -1477,7 +1526,7 @@ function executionStatus(operationalReady, liveReadiness = null) {
       signingCredentialVerified: turnkeySigningStatus.credentialVerified,
       signingPolicyVerified: turnkeySigningStatus.verified,
       walletWethBalanceWei: turnkeySigningStatus.walletWethBalanceWei,
-      pendingExecutions: 0,
+      pendingExecutions,
       submissionPathConnected: false,
     }),
   };

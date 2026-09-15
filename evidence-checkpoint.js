@@ -1,3 +1,5 @@
+import { validateExecutionCheckpoint } from "./execution-checkpoint.js";
+
 const ZERO_HASH = "0".repeat(64);
 
 export function paperLedgerTradeCount(paperBooks = {}) {
@@ -24,5 +26,7 @@ export function validateEvidenceCheckpoint({ state, journal }) {
       !== paperJournalRecordCount(journal?.typeCounts)) {
     throw new Error("evidence-ledger-divergence");
   }
+  validateExecutionCheckpoint({ execution: state?.execution,
+    typeCounts: journal?.typeCounts });
   return true;
 }

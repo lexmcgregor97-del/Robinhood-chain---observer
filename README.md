@@ -72,6 +72,17 @@ final `rejected` execution records. When the submission path is eventually conne
 re-read Turnkey policy state and wallet balances for every intent; hourly status
 revalidation alone is not sufficient.
 
+The dormant execution journal, nonce lane, and daily spend ledger are included
+in the atomic state checkpoint. Every mutation first appends a typed record to
+the hash-chained evidence journal and then fsyncs and atomically replaces state;
+a failure rolls the component's in-memory mutation back and blocks on checkpoint
+divergence after a crash. Restore reconciles evidence counts, intent ownership,
+and nonce ownership before readiness. Pending activation state is derived from
+the restored execution journal, never a literal. A finalized journal record
+with a leftover nonce reservation is safely finalized during restore. Because
+execution evidence shares the cohort journal, a paper epoch must not be bumped
+while execution records exist without an explicit reviewed migration.
+
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
 caps, signs, checks the signed hash, and broadcasts once. The lifecycle records
@@ -88,8 +99,7 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Exact approval orchestration, crash-persistent execution/nonce/
-spend state, evidence checkpoint reconciliation, native-gas funding checks,
+Exact approval orchestration, receipt-aware execution recovery, native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.

@@ -45,5 +45,22 @@ test("restored pending nonce keeps the lane blocked", async () => {
 test("persistence failure rolls the reservation back", async () => {
   const lane = new NonceLane({}, { persist: async () => { throw new Error("disk-full"); } });
   await assert.rejects(lane.reserve(request, async () => 1), /disk-full/);
-  assert.deepEqual(lane.snapshot(), { lanes: [] });
+  assert.deepEqual(lane.snapshot(), { mutationCount: 0, lanes: [] });
+});
+
+test("serializes durable snapshots across different wallet lanes", async () => {
+  const snapshots = [];
+  const lane = new NonceLane({}, { persist: async (state) => {
+    await Promise.resolve();
+    snapshots.push(state);
+  } });
+  await Promise.all([
+    lane.reserve(request, async () => 1),
+    lane.reserve({ ...request, walletAddress:
+      "0x2222222222222222222222222222222222222222", intentId: "entry:2" }, async () => 4),
+  ]);
+  assert.equal(snapshots[0].mutationCount, 1);
+  assert.equal(snapshots[0].lanes.length, 1);
+  assert.equal(snapshots[1].mutationCount, 2);
+  assert.equal(snapshots[1].lanes.length, 2);
 });

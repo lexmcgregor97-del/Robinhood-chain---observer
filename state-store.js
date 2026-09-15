@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export async function loadJsonState(path) {
@@ -21,7 +21,18 @@ export async function saveJsonState(path, state) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp`;
   const payload = JSON.stringify({ ...state, version: 1, savedAt: Date.now() });
-  await writeFile(temporary, payload, { encoding: "utf8", mode: 0o600 });
+  const handle = await open(temporary, "w", 0o600);
+  try {
+    await handle.writeFile(payload, { encoding: "utf8" });
+    await handle.sync();
+  } catch (error) {
+    await handle.close();
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+  await handle.close();
   await rename(temporary, path);
+  const directory = await open(dirname(path), "r");
+  try { await directory.sync(); } finally { await directory.close(); }
   return true;
 }

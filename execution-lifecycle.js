@@ -80,7 +80,7 @@ export class ExecutionLifecycle {
     this.running.add(intent.id);
     const state = { intentId: intent.id, status: "pending", stage: "reserved", transactionHash: null };
     try {
-      this.ledger.record({
+      await this.ledger.record({
         intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
       }, now);
       await this.journal.transition(intent.id, {
