@@ -9,6 +9,7 @@ import { runExecutionRecovery } from "./recover-executions.js";
 import { keccak256, serializeTransaction } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
+import { openLiveExecutionStore } from "./live-execution-store.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const hash = `0x${"12".repeat(32)}`;
@@ -16,6 +17,41 @@ const signingAccount = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const organizationId = "11111111-1111-7111-8111-111111111111";
 const observerUserId = "33333333-3333-7333-8333-333333333333";
 const signingUserId = "44444444-4444-7444-8444-444444444444";
+
+test("live-worker store reaches the never-signed recovery resolver", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "atlas-live-recovery-"));
+  const statePath = join(dir, "live.json");
+  const evidencePath = join(dir, "live.jsonl");
+  const store = await openLiveExecutionStore({ statePath, evidencePath, now: () => 1_000 });
+  await store.journal.transition("live:1", { status: "reserved", chainId: 4663,
+    spendAsset: "0x0000000000000000000000000000000000000001", spendAmount: "1",
+    signingProtocolVersion: 3 }, 1_000);
+  await store.spendLedger.record({ intentId: "live:1",
+    asset: "0x0000000000000000000000000000000000000001", amount: "1" }, 1_000);
+  await store.nonceLane.reserve({ chainId: 4663, walletAddress: wallet,
+    intentId: "live:1" }, async () => 7);
+  await store.journal.transition("live:1", { status: "nonce-reserved", nonce: 7 }, 1_000);
+  await store.journal.transition("live:1", { status: "manual-review",
+    recoveryFailure: "signed-transaction-not-durable" }, 1_000);
+  const fetchImpl = async (_url, request) => {
+    const { id, method } = JSON.parse(request.body);
+    const result = method === "eth_chainId" ? "0x1237" : null;
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { status: 200 });
+  };
+  try {
+    const report = await runExecutionRecovery({ env: {
+      EXECUTION_RECOVERY_STORE: "live-worker", LIVE_WORKER_STATE_FILE: statePath,
+      LIVE_WORKER_EVIDENCE_FILE: evidencePath, TURNKEY_WALLET_ADDRESS: wallet,
+      EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
+      EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "live:1",
+      EXECUTION_MANUAL_REVIEW_CONFIRM: "REJECT_ATLAS_NEVER_SIGNED_RESERVATION",
+      RPC_URL: "https://rpc.invalid",
+    }, fetchImpl, now: Date.now() + 100 });
+    assert.equal(report.storeKind, "live-worker");
+    assert.equal(report.operatorResolution.status, "operator-rejected");
+    assert.equal(report.pendingExecutions, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 async function durableFixture() {
   const dir = await mkdtemp(join(tmpdir(), "atlas-execution-recovery-"));
@@ -242,7 +278,9 @@ test("isolated command checkpoints and rebroadcasts only the journaled payload",
   const transactionHash = keccak256(signedPayload);
   const state = await loadJsonState(fixture.statePath);
   Object.assign(state.execution.journal.records[0], { status: "signed", nonce: 7,
-    signedPayload, transactionHash, updatedAt: Date.now() });
+    signedPayload, transactionHash, signingProtocolVersion: 3,
+    intentTransactionDigest: executionIntentTransactionDigest({ ...transaction,
+      from: signingAccount.address }), updatedAt: Date.now() });
   state.execution.nonceLane.lanes[0].walletAddress = signingAccount.address.toLowerCase();
   state.execution.nonceLane.lanes[0].key = `4663:${signingAccount.address.toLowerCase()}`;
   await saveJsonState(fixture.statePath, state);
@@ -269,6 +307,8 @@ test("isolated command checkpoints and rebroadcasts only the journaled payload",
       EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
       EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "entry:1",
       EXECUTION_MANUAL_REVIEW_CONFIRM: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD",
+      MICRO_MAINNET_V2_ROUTERS: transaction.to, MICRO_MAINNET_MAX_GAS: "200000",
+      MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
     }, fetchImpl: rebroadcastFetch, now: Date.now() + 1 });
     assert.equal(report.operatorResolution.status, "broadcast");
     assert.equal(methods.filter((method) => method === "eth_sendRawTransaction").length, 1);

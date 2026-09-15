@@ -1,6 +1,7 @@
 import {
   isAddressEqual, keccak256, parseTransaction, recoverTransactionAddress,
 } from "viem";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const ELIGIBLE = new Set(["signed", "broadcast", "rebroadcast-requested"]);
@@ -17,10 +18,16 @@ const quantity = (value) => {
 };
 
 export class ExecutionRebroadcastResolver {
-  constructor({ journal, nonceLane, expectedWalletAddress, getTransactionCount, broadcastRaw }) {
+  constructor({ journal, nonceLane, expectedWalletAddress, getTransactionCount, broadcastRaw,
+    allowedRouters, maxGas, maxFeePerGasWei }) {
+    let gasLimit;
+    let feeLimit;
+    try { gasLimit = BigInt(maxGas); feeLimit = BigInt(maxFeePerGasWei); } catch {}
     if (!journal || !nonceLane || typeof getTransactionCount !== "function"
         || typeof broadcastRaw !== "function"
-        || !/^0x[0-9a-fA-F]{40}$/.test(String(expectedWalletAddress || ""))) {
+        || !/^0x[0-9a-fA-F]{40}$/.test(String(expectedWalletAddress || ""))
+        || !Array.isArray(allowedRouters) || !allowedRouters.length
+        || !(gasLimit > 0n) || !(feeLimit > 0n)) {
       throw new Error("invalid-execution-rebroadcast-config");
     }
     this.journal = journal;
@@ -28,6 +35,9 @@ export class ExecutionRebroadcastResolver {
     this.expectedWalletAddress = expectedWalletAddress.toLowerCase();
     this.getTransactionCount = getTransactionCount;
     this.broadcastRaw = broadcastRaw;
+    this.allowedRouters = allowedRouters.map((address) => String(address).toLowerCase());
+    this.gasLimit = gasLimit;
+    this.feeLimit = feeLimit;
   }
 
   async rebroadcastIdentical(intentId, { now = Date.now(), operatorAssertion } = {}) {
@@ -59,6 +69,21 @@ export class ExecutionRebroadcastResolver {
         || transaction.nonce !== Number(record.nonce)) {
       throw new Error("execution-rebroadcast-transaction-mismatch");
     }
+    let intentDigest;
+    try {
+      intentDigest = executionIntentTransactionDigest({ chainId: transaction.chainId,
+        from: signer, to: transaction.to, data: transaction.data,
+        value: transaction.value || 0n });
+    } catch {}
+    if (record.signingProtocolVersion !== 3
+        || intentDigest?.toLowerCase() !== String(record.intentTransactionDigest || "").toLowerCase()
+        || !this.allowedRouters.includes(String(transaction.to || "").toLowerCase())
+        || transaction.type !== "eip1559" || transaction.gas == null
+        || transaction.maxFeePerGas == null || transaction.maxPriorityFeePerGas == null
+        || transaction.gas > this.gasLimit || transaction.maxFeePerGas > this.feeLimit
+        || transaction.maxPriorityFeePerGas > this.feeLimit) {
+      throw new Error("execution-rebroadcast-policy-mismatch");
+    }
     const lane = (this.nonceLane.snapshot().lanes || []).find((item) =>
       item?.pending?.intentId === record.intentId);
     if (!lane || Number(lane.chainId) !== Number(record.chainId)
@@ -70,9 +95,10 @@ export class ExecutionRebroadcastResolver {
       this.getTransactionCount(this.expectedWalletAddress, "latest"),
       this.getTransactionCount(this.expectedWalletAddress, "pending"),
     ]).then((values) => values.map(quantity));
-    if (latest > record.nonce || pending > record.nonce) {
-      const failure = latest > record.nonce
-        ? "execution-nonce-consumed-without-receipt" : "execution-nonce-pending-conflict";
+    if (latest !== record.nonce || pending !== record.nonce) {
+      const failure = latest > record.nonce ? "execution-nonce-consumed-without-receipt"
+        : pending > record.nonce ? "execution-nonce-pending-conflict"
+          : "execution-nonce-gap-below-journaled-nonce";
       await this.journal.transition(record.intentId, { status: "manual-review",
         recoveryFailure: failure, operatorResolution: { type: "rebroadcast-refused-nonce-conflict",
           assertedAt: Number(now), latestNonce: latest, pendingNonce: pending,

@@ -1,9 +1,9 @@
-# Atlas Identical-Payload Rebroadcast — Review Packet (revision 1)
+# Atlas Identical-Payload Rebroadcast — Review Packet (revision 2)
 
 ## Scope
 
-Review branch `fix/identical-payload-rebroadcast` against production `main` at
-`ada0139919ba131af230e045c9fd1da6eb16a94a`. Production remains V6b
+Review branch `fix/final-live-wiring` against production `main` at
+`a8c74ed1fe5af987501ea9b9204d51d10bf03480`. Production remains V6b
 `PAPER_ONLY`. This adds a state-changing RPC call only to the existing isolated
 offline recovery command. The web runtime remains disconnected.
 
@@ -18,14 +18,18 @@ offline recovery command. The web runtime remains disconnected.
 - `keccak256(signedPayload)` exactly equal to the stored hash;
 - parseable signed bytes whose recovered signer is the configured wallet;
 - parsed chain ID and nonce equal to the journal record;
+- protocol-v3 intent digest recomputed from the signed bytes and wallet;
+- signed target in the configured router allowlist;
+- EIP-1559 type with gas and both fee fields inside the configured caps;
 - exact pending nonce-lane ownership for intent, chain, wallet, and nonce;
 - valid `latest` and `pending` account nonce reads, neither advanced beyond the
   journaled nonce.
 
 If `latest > nonce`, the command records
 `execution-nonce-consumed-without-receipt`. If only `pending > nonce`, it records
-`execution-nonce-pending-conflict`. Both remain `manual-review`, retain the lane,
-and make no send call.
+`execution-nonce-pending-conflict`. If either value is below the journaled nonce,
+it records `execution-nonce-gap-below-journaled-nonce`. All remain
+`manual-review`, retain the lane, and make no send call.
 
 ## Evidence-before-network ordering
 
@@ -41,6 +45,8 @@ The returned RPC hash must equal the derived/stored hash before the `broadcast`
 checkpoint. The isolated command immediately runs the existing receipt
 reconciler after a successful send. Only a validated mined receipt transitions
 to `confirmed`/`reverted` and finalizes the nonce.
+Top-level `safeToRestart` is the conjunction of the opening reconciliation and
+post-send reconciliation, so a post-send RPC error cannot produce exit code 0.
 
 ## Command and safety boundary
 
@@ -59,13 +65,13 @@ to `confirmed`/`reverted` and finalizes the nonce.
 ## Validation
 
 - `npm run check`: passing
-- `npm test`: 285/285 passing on the dependency-complete runner
+- `npm test`: 286/286 passing on the dependency-complete runner
 - `git diff --check`: clean
 
 Tests cover exact-byte send, evidence-before-send ordering, hash/chain/nonce/lane
-drift, confirmed and pending nonce conflicts, failed checkpoint preventing send,
-crash-left retry, command-level raw payload equality, post-send receipt recovery,
-and retention of the nonce until a mined receipt.
+drift, off-policy payload refusal, confirmed/pending/gap nonce conflicts, failed
+checkpoint preventing send, crash-left retry, command-level raw payload equality,
+post-send receipt recovery, and retention of the nonce until a mined receipt.
 
 ## Deliberate remaining blockers
 

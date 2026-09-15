@@ -14,6 +14,31 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 - Existing paper positions are marked and closed only in the virtual ledger.
 - The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, inconsistent spend declarations, and native value. ERC-20 approval validation permits only the exact planned amount to an approved router; unlimited allowances fail closed. Neither boundary is connected to a signer.
 
+The final live path is composed as a separate private Railway worker. The public
+web service remains an observer and exposes candidate hints only. The worker discards
+all derived safety fields from that response, re-reads the pool and strategy inputs,
+constructs an immutable exact-spend V2 intent, and performs a second fresh preflight
+immediately before signing. A pending execution blocks the next worker cycle.
+All direct chain reads used by the worker are pinned to one block, and its execution
+state is stored separately from the observer in a hash-chained worker evidence journal.
+The worker also verifies the pair against its configured factory and creation event,
+then derives signal velocity and market-safety measurements from independently fetched
+Swap logs rather than accepting the observer's score.
+
+The automated buy path requires an existing bounded WETH allowance. It neither creates
+nor enlarges an approval; approval remains an isolated operator action governed by the
+distinct Turnkey approval policy.
+The private worker has an additional exact connection ceremony; complete micro-mainnet
+configuration by itself leaves the worker submission path and automatic cycles disabled.
+Its Railway start command is `npm run start:live-worker`. Keep both worker activation
+flags false through peer review and the disabled deployment rehearsal. This entry-only
+revision is structurally unarmable: the configuration fails with
+`live-worker-exit-path-not-connected` until a position ledger, sell-intent builder,
+and exit triggers exist and are independently reviewed. Worker recovery uses
+`EXECUTION_RECOVERY_STORE=live-worker` and the worker state/evidence paths; the worker
+honours the same exclusive recovery lock. Candidate and readiness endpoints require a
+shared bearer token, and the worker pins their exact configured hostname.
+
 The micro-mainnet review boundary uses a second Turnkey API user and never
 repurposes the read-only observer credential. Configuration requires an exact
 mode plus enable flag, a wallet-bound confirmation string, an explicit router
@@ -179,9 +204,11 @@ transaction only with the exact
 `REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD` assertion. Before any network send,
 it re-derives the stored payload hash, parses the transaction, recovers the
 configured wallet signer, binds chain and nonce to the journal, and requires
-exact ownership of the pending nonce lane. It reads both confirmed and pending
-account nonces; any advancement past the journaled nonce is durably returned to
-manual review without broadcasting. Otherwise it durably checkpoints
+exact ownership of the pending nonce lane. Immediately before sending it also
+rechecks the protocol-v3 intent digest, router allowlist, EIP-1559 type, gas,
+and fee caps. It reads both confirmed and pending account nonces; any
+advancement past—or gap below—the journaled nonce is durably returned to manual
+review without broadcasting. Otherwise it durably checkpoints
 `rebroadcast-requested` before sending the exact stored bytes with
 `eth_sendRawTransaction`, requires the RPC's returned hash to match, checkpoints
 `broadcast`, and immediately runs receipt reconciliation. The nonce is released
