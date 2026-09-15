@@ -242,7 +242,9 @@ test("isolated command checkpoints and rebroadcasts only the journaled payload",
   const transactionHash = keccak256(signedPayload);
   const state = await loadJsonState(fixture.statePath);
   Object.assign(state.execution.journal.records[0], { status: "signed", nonce: 7,
-    signedPayload, transactionHash, updatedAt: Date.now() });
+    signedPayload, transactionHash, signingProtocolVersion: 3,
+    intentTransactionDigest: executionIntentTransactionDigest({ ...transaction,
+      from: signingAccount.address }), updatedAt: Date.now() });
   state.execution.nonceLane.lanes[0].walletAddress = signingAccount.address.toLowerCase();
   state.execution.nonceLane.lanes[0].key = `4663:${signingAccount.address.toLowerCase()}`;
   await saveJsonState(fixture.statePath, state);
@@ -269,6 +271,8 @@ test("isolated command checkpoints and rebroadcasts only the journaled payload",
       EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
       EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "entry:1",
       EXECUTION_MANUAL_REVIEW_CONFIRM: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD",
+      MICRO_MAINNET_V2_ROUTERS: transaction.to, MICRO_MAINNET_MAX_GAS: "200000",
+      MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: "2000000000",
     }, fetchImpl: rebroadcastFetch, now: Date.now() + 1 });
     assert.equal(report.operatorResolution.status, "broadcast");
     assert.equal(methods.filter((method) => method === "eth_sendRawTransaction").length, 1);

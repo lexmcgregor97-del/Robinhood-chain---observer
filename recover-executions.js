@@ -11,7 +11,9 @@ import { ExecutionManualReviewResolver } from "./execution-manual-review.js";
 import {
   executionRecoveryLockPath,
 } from "./execution-recovery-lock.js";
-import { forbiddenRuntimeSecretFailures } from "./micro-mainnet-config.js";
+import {
+  forbiddenRuntimeSecretFailures, microMainnetConfigFromEnv,
+} from "./micro-mainnet-config.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { ROBINHOOD } from "./chain-config.js";
@@ -145,6 +147,9 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
         } else {
           const rebroadcast = new ExecutionRebroadcastResolver({ journal, nonceLane,
             expectedWalletAddress,
+            allowedRouters: microMainnetConfigFromEnv(env).allowedRouters,
+            maxGas: env.MICRO_MAINNET_MAX_GAS,
+            maxFeePerGasWei: env.MICRO_MAINNET_MAX_FEE_PER_GAS_WEI,
             getTransactionCount: (address, tag) =>
               transport.request("eth_getTransactionCount", [address, tag]),
             broadcastRaw: (payload) => transport.request("eth_sendRawTransaction", [payload]) });
@@ -205,7 +210,9 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
       }
     }
     validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
-    const report = Object.freeze({ ...result,
+    const safeToRestart = result.safeToRestart
+      && (postBroadcastRecovery?.safeToRestart ?? true);
+    const report = Object.freeze({ ...result, safeToRestart,
       pendingExecutions: journal.pending().length,
       operatorResolution, postBroadcastRecovery,
       rpc: transport.snapshot(), writeBlocked });

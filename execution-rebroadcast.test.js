@@ -5,6 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { ExecutionJournal } from "./execution-journal.js";
 import { NonceLane } from "./nonce-lane.js";
 import { ExecutionRebroadcastResolver } from "./execution-rebroadcast.js";
+import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const transaction = { chainId: 4663, type: "eip1559", nonce: 7,
@@ -17,7 +18,9 @@ async function fixture(record = {}, overrides = {}) {
   const transactionHash = keccak256(signedPayload);
   const journal = new ExecutionJournal({ transitionCount: 1, records: [{
     intentId: "entry:1", status: "signed", chainId: 4663, nonce: 7,
-    signedPayload, transactionHash, createdAt: 1, updatedAt: 2, ...record,
+    signedPayload, transactionHash, signingProtocolVersion: 3,
+    intentTransactionDigest: executionIntentTransactionDigest({ ...transaction,
+      from: account.address }), createdAt: 1, updatedAt: 2, ...record,
   }] }, overrides.journalOptions);
   const nonceLane = new NonceLane({ mutationCount: 1, lanes: [{
     key: `4663:${account.address.toLowerCase()}`, chainId: 4663,
@@ -28,6 +31,8 @@ async function fixture(record = {}, overrides = {}) {
   return { journal, nonceLane, signedPayload, transactionHash, calls,
     resolver: new ExecutionRebroadcastResolver({ journal, nonceLane,
       expectedWalletAddress: account.address,
+      allowedRouters: [transaction.to], maxGas: "200000",
+      maxFeePerGasWei: "2000000000",
       getTransactionCount: async (_address, tag) => overrides[tag] || "0x7",
       broadcastRaw: async (payload) => { calls.push(payload);
         return overrides.returnedHash || transactionHash; } }) };
@@ -68,13 +73,15 @@ test("refuses hash, signer, chain, nonce, and lane drift before network send", a
 });
 
 test("a confirmed or pending nonce conflict is journaled and never broadcast", async () => {
-  for (const overrides of [{ latest: "0x8" }, { pending: "0x8" }]) {
+  for (const overrides of [{ latest: "0x8" }, { pending: "0x8" },
+    { latest: "0x6", pending: "0x6" }]) {
     const item = await fixture({}, overrides);
     const result = await item.resolver.rebroadcastIdentical("entry:1", { now: 10,
       operatorAssertion: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD" });
     assert.equal(result.status, "manual-review");
     assert.equal(item.calls.length, 0);
-    assert.match(item.journal.get("entry:1").recoveryFailure, /nonce-(consumed|pending)/);
+    assert.match(item.journal.get("entry:1").recoveryFailure,
+      /nonce-(consumed|pending|gap)/);
     assert.notEqual(item.nonceLane.snapshot().lanes[0].pending, null);
   }
 });
@@ -95,4 +102,11 @@ test("a crash-left rebroadcast request can retry the same bytes", async () => {
     operatorAssertion: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD" });
   assert.equal(result.status, "broadcast");
   assert.deepEqual(item.calls, [item.signedPayload]);
+});
+
+test("refuses an off-policy payload even when its hash and signer are authentic", async () => {
+  const item = await fixture({ intentTransactionDigest: `0x${"12".repeat(32)}` });
+  await assert.rejects(item.resolver.rebroadcastIdentical("entry:1", {
+    operatorAssertion: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD" }), /policy-mismatch/);
+  assert.equal(item.calls.length, 0);
 });
