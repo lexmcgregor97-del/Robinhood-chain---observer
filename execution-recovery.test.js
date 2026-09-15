@@ -9,10 +9,11 @@ const hash = `0x${"12".repeat(32)}`;
 const now = 1_000_000;
 
 function fixture({ status = "broadcast", transactionHash = hash,
-  updatedAt = now - 1_000, receipt = null, getReceipt } = {}) {
+  updatedAt = now - 1_000, receipt = null, getReceipt, recoveryFailure,
+  operatorResolution } = {}) {
   const journal = new ExecutionJournal({ transitionCount: 1, records: [{
     intentId: "entry:1", status, transactionHash, chainId: 4663,
-    createdAt: updatedAt, updatedAt,
+    createdAt: updatedAt, updatedAt, recoveryFailure, operatorResolution,
   }] });
   const nonceLane = new NonceLane({ mutationCount: 1, lanes: [{
     key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
@@ -93,5 +94,16 @@ test("cleans a crash-left nonce only for an already mined final record", async (
   const result = await recovery.reconcile({ now });
   assert.equal(result.outcomes[0].outcome, "finalized-nonce-residue");
   assert.equal(journal.get("entry:1").status, "confirmed");
+  assert.equal(nonceLane.snapshot().lanes[0].pending, null);
+});
+
+test("cleans crash residue after a durable never-signed operator rejection", async () => {
+  const { journal, nonceLane, recovery } = fixture({ status: "operator-rejected",
+    recoveryFailure: "signed-transaction-not-durable",
+    operatorResolution: { type: "never-signed-rejection", assertedAt: now - 1 },
+  });
+  const result = await recovery.reconcile({ now });
+  assert.equal(result.outcomes[0].outcome, "finalized-nonce-residue");
+  assert.equal(journal.get("entry:1").status, "operator-rejected");
   assert.equal(nonceLane.snapshot().lanes[0].pending, null);
 });

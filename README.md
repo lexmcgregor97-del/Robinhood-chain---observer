@@ -129,8 +129,13 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Journaled operator resolution for `manual-review`, exact approval
-orchestration, native-gas funding checks,
+Never-signed `manual-review` reservations can be rejected only by the isolated
+recovery command with both `EXECUTION_MANUAL_REVIEW_INTENT_ID` and the exact
+`EXECUTION_MANUAL_REVIEW_CONFIRM=REJECT_ATLAS_NEVER_SIGNED_RESERVATION`
+assertion. The rejection is journaled and checkpointed before its nonce is
+released; any record containing signed bytes or a transaction hash is refused.
+Dropped signed-transaction resolution, exact approval orchestration,
+native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.
