@@ -11,10 +11,11 @@ test("disabled rehearsal refuses activation flags and private signing material",
 
 test("disabled rehearsal reports only local stub execution and named restart boundaries", async () => {
   const report = await runDisabledLiveWorkerRehearsal({ env: {}, now: () => 0,
-    runTests: async () => ({ code: 0 }) });
+    runTests: async () => ({ code: 0, stdout: "# pass 2\n# fail 0\n" }) });
   assert.equal(report.mode, "LOCAL_STUBS_ONLY");
-  assert.equal(report.networkAccess, false);
+  assert.equal(report.networkConfigurationWithheld, true);
   assert.equal(report.signingMaterialLoaded, false);
   assert.equal(report.boundaries.length, 5);
+  assert.deepEqual(report.testCounts, { pass: 2, fail: 0 });
   assert.equal(report.result, "pass");
 });

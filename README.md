@@ -48,7 +48,8 @@ shared bearer token, and the worker pins their exact configured hostname.
 
 Run the isolated restart rehearsal with `npm run rehearse:live-worker`. The command refuses
 live activation flags and private signing material, passes only executable/module paths to
-its child process, and uses deterministic local accounts plus in-process chain stubs. It
+its child process (withholding all network configuration), and uses deterministic local
+accounts plus in-process chain stubs. It
 does not replace the real-organization Turnkey behavioral matrix.
 
 Position quotes are checkpointed when the trailing peak advances or a non-peak mark moves

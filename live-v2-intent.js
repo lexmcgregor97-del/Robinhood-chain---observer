@@ -87,7 +87,7 @@ export function buildLiveV2BuyIntent({
   }
   const identity = Object.freeze({ chainId: Number(config.chainId), pool: lower(pool),
     router: lower(router), blockNumber, amountIn: amountIn.toString(),
-    amountOutMin: amountOutMin.toString(), baseToken: lower(baseToken) });
+    amountOutMin: amountOutMin.toString(), baseToken: lower(baseToken), deadline });
   return normalizeExecutionIntent({ id: intentId(identity), purpose: "live-v2-buy",
     chainId: config.chainId, from: wallet, to: router, valueWei: "0",
     spendAsset: weth, spendAmount: amountIn.toString(), data,
@@ -134,7 +134,7 @@ export function buildLiveV2SellIntent({ position, snapshot, config, slippageBps,
     args: [amountIn, amountOutMin, [baseToken, weth], wallet, BigInt(deadline)] });
   const identity = { chainId: Number(config.chainId), pool: lower(pool), router: lower(router),
     entryIntentId: String(position.entryIntentId), amountIn: amountIn.toString(),
-    amountOutMin: amountOutMin.toString(), blockNumber: Number(snapshot.blockNumber) };
+    amountOutMin: amountOutMin.toString(), blockNumber: Number(snapshot.blockNumber), deadline };
   return normalizeExecutionIntent({ id: sellIntentId(identity), purpose: "live-v2-sell",
     chainId: config.chainId, from: wallet, to: router, valueWei: "0",
     spendAsset: baseToken, spendAmount: amountIn.toString(), data,

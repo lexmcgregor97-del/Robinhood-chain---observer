@@ -38,12 +38,19 @@ export async function runDisabledLiveWorkerRehearsal({ env = process.env,
   if (failures.length) throw new Error(failures.join(","));
   const result = await runTests();
   if (result?.code !== 0) throw new Error("live-worker-disabled-rehearsal-failed");
-  return Object.freeze({ version: 1, mode: "LOCAL_STUBS_ONLY", networkAccess: false,
+  const pass = Number(result.stdout?.match(/(?:#|ℹ)\s*pass\s+(\d+)/)?.[1]);
+  const fail = Number(result.stdout?.match(/(?:#|ℹ)\s*fail\s+(\d+)/)?.[1]);
+  if (!Number.isSafeInteger(pass) || pass <= 0 || fail !== 0) {
+    throw new Error("live-worker-disabled-rehearsal-counts-invalid");
+  }
+  return Object.freeze({ version: 1, mode: "LOCAL_STUBS_ONLY",
+    networkConfigurationWithheld: true,
     signingMaterialLoaded: false, activationFlagsRequiredFalse: true,
     runAt: new Date(Number(now())).toISOString(), tests: TESTS,
     boundaries: Object.freeze(["buy-receipt-before-position-open",
       "position-open-before-allowance-handling", "zero-reset-before-exact-approval",
       "exact-approval-before-exit-send", "sell-receipt-before-position-close"]),
+    testCounts: Object.freeze({ pass, fail }),
     result: "pass" });
 }
 
