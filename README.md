@@ -14,6 +14,29 @@ A compact, safety-first multichain trading core. Its first adapter is a read-onl
 - Existing paper positions are marked and closed only in the virtual ledger.
 - The dormant execution policy decodes supported V2 router calldata and rejects foreign recipients, unapproved paths, zero minimum output, long deadlines, inconsistent spend declarations, and native value. ERC-20 approval validation permits only the exact planned amount to an approved router; unlimited allowances fail closed. Neither boundary is connected to a signer.
 
+The micro-mainnet review boundary uses a second Turnkey API user and never
+repurposes the read-only observer credential. Configuration requires an exact
+mode plus enable flag, a wallet-bound confirmation string, an explicit router
+allowlist, and integer WETH limits per transaction and per UTC day. Atlas also
+requires that the signing organization and wallet match the independently
+verified observer wallet while the signing API public key differs. At startup,
+read-only Turnkey queries verify that the signing user is non-root, owns that
+API key, and has exactly one applicable ALLOW policy: the configured policy.
+The policy text must exactly bind chain 4663, zero native value, the allowlisted
+V2 routers, `swapExactTokensForTokens`, bounded non-zero input/output, a
+two-address path beginning with WETH, and Atlas as recipient. This requires the
+V2 router ABI to be uploaded as a Turnkey Smart Contract Interface.
+
+The branch includes a Turnkey-backed viem provider that obtains the pending
+nonce, estimates gas, signs a legacy EVM transaction, checks the signed hash,
+broadcasts once, and reconciles the receipt. It is deliberately not connected
+to candidate selection or any HTTP endpoint. Public status reports
+`boundary: review-only-disconnected` and activation fails with
+`execution-submission-path-not-connected`; adding credentials cannot cause a
+transaction. Approval orchestration, crash-persistent execution state, and the
+final strategy-to-intent binding remain required before that connection can be
+reviewed.
+
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
 ## Measurement model
