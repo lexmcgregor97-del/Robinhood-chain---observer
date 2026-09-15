@@ -60,6 +60,16 @@ test("runs an approved intent through sign, broadcast, and confirmation", async 
   assert.equal(ledger.snapshot(now).spent.native, "100");
 });
 
+test("can explicitly omit position-unit exits from the entry risk-spend ledger", async () => {
+  const ledger = new DailySpendLedger();
+  const lifecycle = new ExecutionLifecycle({ policy: { ...policy, recordSpend: false,
+    spendLimits: { native: { maxPerTransaction: "200", trackDaily: false } } },
+  ledger, journal: new ExecutionJournal(), nonceLane: new NonceLane(),
+  provider: provider(), preflight });
+  assert.equal((await lifecycle.submit({ ...rawIntent, id: "exit:1" }, { now })).status, "confirmed");
+  assert.deepEqual(ledger.snapshot(now).spent, {});
+});
+
 test("rejects unsafe calldata before reserving spend or calling the provider", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();

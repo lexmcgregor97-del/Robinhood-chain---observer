@@ -12,10 +12,12 @@ export function validateExecutionCheckpoint({ execution = {}, typeCounts = {} } 
   const journal = execution.journal || {};
   const nonceLane = execution.nonceLane || {};
   const spendLedger = execution.spendLedger || {};
+  const livePositions = execution.livePositions || {};
   const transitionCount = Number(journal.transitionCount || 0);
   const nonceMutationCount = Number(nonceLane.mutationCount || 0);
   const spendMutationCount = Number(spendLedger.mutationCount || 0);
-  if (![transitionCount, nonceMutationCount, spendMutationCount]
+  const positionMutationCount = Number(livePositions.mutationCount || 0);
+  if (![transitionCount, nonceMutationCount, spendMutationCount, positionMutationCount]
     .every((value) => Number.isSafeInteger(value) && value >= 0)) {
     throw new Error("execution-checkpoint-invalid");
   }
@@ -29,6 +31,13 @@ export function validateExecutionCheckpoint({ execution = {}, typeCounts = {} } 
   }
   if (spendMutationCount !== count(typeCounts, "execution-spend-recorded")) {
     throw new Error("execution-spend-evidence-divergence");
+  }
+  if (positionMutationCount !== count(typeCounts, "live-position-opened")
+      + count(typeCounts, "live-position-marked")
+      + count(typeCounts, "live-position-exit-requested")
+      + count(typeCounts, "live-position-exit-cancelled")
+      + count(typeCounts, "live-position-closed")) {
+    throw new Error("live-position-evidence-divergence");
   }
 
   const records = recordsById(journal.records || []);

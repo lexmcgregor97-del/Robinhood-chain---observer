@@ -25,19 +25,34 @@ The worker also verifies the pair against its configured factory and creation ev
 then derives signal velocity and market-safety measurements from independently fetched
 Swap logs rather than accepting the observer's score.
 
-The automated buy path requires an existing bounded WETH allowance. It neither creates
-nor enlarges an approval; approval remains an isolated operator action governed by the
-distinct Turnkey approval policy.
+The automated buy path requires an existing bounded WETH allowance. After a confirmed
+buy, Atlas derives the exact acquired base-token units from the durable receipt, verifies
+the pool against a configured factory, and creates only the exact router allowance needed
+to exit that position. A different nonzero allowance is first reset with a separately
+journaled `approve(router, 0)` intent; the exact-unit approval follows only on a later
+cycle. Zero is permitted only for that exact-spender reset purpose. Atlas simulates every
+approval from the real wallet before signing; unlimited or mismatched approvals remain
+forbidden by application policy and the distinct Turnkey approval boundary. Approval and
+sell retries are bounded by the durable position units rather than being misrepresented as
+daily entry-risk spend, so they do not debit the WETH daily-spend ledger.
 The private worker has an additional exact connection ceremony; complete micro-mainnet
 configuration by itself leaves the worker submission path and automatic cycles disabled.
 Its Railway start command is `npm run start:live-worker`. Keep both worker activation
-flags false through peer review and the disabled deployment rehearsal. This entry-only
-revision is structurally unarmable: the configuration fails with
-`live-worker-exit-path-not-connected` until a position ledger, sell-intent builder,
-and exit triggers exist and are independently reviewed. Worker recovery uses
+flags false through peer review and the disabled deployment rehearsal. The worker now
+contains a durable exact-unit position ledger, full-position sell builder, and the frozen
+V6 stop-loss, take-profit, trailing-stop, and maximum-hold rules. `exitPathConnected`
+reflects that code boundary, but neither activation flag is enabled or deployed. Worker recovery uses
 `EXECUTION_RECOVERY_STORE=live-worker` and the worker state/evidence paths; the worker
 honours the same exclusive recovery lock. Candidate and readiness endpoints require a
 shared bearer token, and the worker pins their exact configured hostname.
+
+Position quotes are checkpointed when the trailing peak advances or a non-peak mark moves
+by at least 25 bps; smaller moves still participate in trigger evaluation without growing
+the durable journal every poll. A token that adds sell-side transfer fees or blacklists the
+wallet after entry may make the deliberately narrow `swapExactTokensForTokens` policy
+unusable. Atlas then retains the position and blocks new entries. It does not widen the
+Turnkey selector policy or fabricate a close; any disposition requires a separately
+audited operator procedure with durable evidence.
 
 The micro-mainnet review boundary uses a second Turnkey API user and never
 repurposes the read-only observer credential. Configuration requires an exact

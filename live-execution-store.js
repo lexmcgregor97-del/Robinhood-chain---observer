@@ -6,6 +6,7 @@ import { NonceLane } from "./nonce-lane.js";
 import { DailySpendLedger } from "./spend-ledger.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
+import { LivePositionLedger } from "./live-position-ledger.js";
 
 const ZERO_HASH = "0".repeat(64);
 
@@ -37,13 +38,14 @@ export async function openLiveExecutionStore({ statePath, evidencePath,
   let journal;
   let nonceLane;
   let spendLedger;
+  let livePositions;
   const persist = async (_snapshot, event) => {
     if (writeBlocked) throw new Error("live-execution-store-write-blocked");
     try {
       if (await lockPresent(statePath)) throw new Error("execution-recovery-lock-present");
       await evidence.append({ epoch: "live-worker-v1", recordedAt: Number(now()), ...event });
       state.execution = { journal: journal.snapshot(), nonceLane: nonceLane.snapshot(),
-        spendLedger: spendLedger.snapshot(Number(now())) };
+        spendLedger: spendLedger.snapshot(Number(now())), livePositions: livePositions.snapshot() };
       state.evidenceSequence = evidence.snapshot().sequence;
       state.evidenceLastHash = evidence.snapshot().lastHash;
       await saveJsonState(statePath, state);
@@ -56,11 +58,12 @@ export async function openLiveExecutionStore({ statePath, evidencePath,
   journal = new ExecutionJournal(state.execution?.journal, { persist, serialize });
   nonceLane = new NonceLane(state.execution?.nonceLane, { persist, serialize });
   spendLedger = new DailySpendLedger(state.execution?.spendLedger, { persist, serialize });
-  return Object.freeze({ journal, nonceLane, spendLedger, evidence,
+  livePositions = new LivePositionLedger(state.execution?.livePositions, { persist, serialize });
+  return Object.freeze({ journal, nonceLane, spendLedger, livePositions, evidence,
     get writeBlocked() { return writeBlocked; },
     snapshot() { return Object.freeze({ execution: {
       journal: journal.snapshot(), nonceLane: nonceLane.snapshot(),
-      spendLedger: spendLedger.snapshot(Number(now())),
+      spendLedger: spendLedger.snapshot(Number(now())), livePositions: livePositions.snapshot(),
     }, evidenceSequence: evidence.snapshot().sequence,
     evidenceLastHash: evidence.snapshot().lastHash }); },
   });

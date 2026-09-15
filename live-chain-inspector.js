@@ -1,4 +1,5 @@
 import { decodeFunctionResult, encodeFunctionData, getAddress, isAddressEqual } from "viem";
+import { APPROVE_ABI } from "./approval-calldata.js";
 
 const V2_PAIR_ABI = Object.freeze([
   { type: "function", name: "token0", stateMutability: "view", inputs: [],
@@ -86,6 +87,23 @@ export async function readLiveV2ChainSnapshot({ candidate, config, rpc, now = Da
     observedAt: Number(now), pinnedBlock });
 }
 
+export async function readLiveV2ExitSnapshot({ position, config, rpc, now = Date.now() } = {}) {
+  const candidate = { address: position?.poolAddress };
+  const chain = await readLiveV2ChainSnapshot({ candidate, config, rpc, now });
+  const baseToken = getAddress(position?.baseToken);
+  if (!(isAddressEqual(baseToken, chain.token0) || isAddressEqual(baseToken, chain.token1))) {
+    throw new Error("live-position-chain-mismatch");
+  }
+  const wallet = getAddress(config.walletAddress);
+  const router = getAddress(position.routerAddress);
+  const [baseBalance, baseAllowance] = await Promise.all([
+    call(rpc, baseToken, ERC20_READ_ABI, "balanceOf", [wallet], chain.pinnedBlock),
+    call(rpc, baseToken, ERC20_READ_ABI, "allowance", [wallet, router], chain.pinnedBlock),
+  ]);
+  return Object.freeze({ ...chain, baseBalanceWei: BigInt(baseBalance).toString(),
+    baseAllowanceWei: BigInt(baseAllowance).toString(), feeBps: Number(position.feeBps) });
+}
+
 export function createLiveCandidateInspector({
   config,
   rpc,
@@ -108,12 +126,23 @@ export function createLiveCandidateInspector({
     if (phase === "construction") return Object.freeze({ ...chain,
       strategyApproved: strategy?.approved === true, feeBps: strategy?.feeBps,
       strategyFailures: Object.freeze([...(strategy?.failures || [])]) });
+    let approvalProbePassed = false;
+    try {
+      const baseToken = isAddressEqual(chain.token0, config.wethAddress) ? chain.token1 : chain.token0;
+      const amount = BigInt(strategy?.marketSafety?.buyAmountOut || "0");
+      if (amount <= 0n) throw new Error();
+      const data = encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
+        args: [getAddress(config.routerAddress), amount] });
+      await rpc("eth_call", [{ from: config.walletAddress, to: baseToken, data,
+        value: "0x0" }, chain.pinnedBlock]);
+      approvalProbePassed = true;
+    } catch {}
     const [readiness, signing, sellProbe] = await Promise.all([
       assessReadiness({ candidate, chain, strategy, intent, plan, now }),
       verifySigning({ candidate, chain, strategy, intent, plan, now }),
       probeSell({ candidate, chain, strategy, intent, plan, now }),
     ]);
-    return Object.freeze({ chain, strategy, readiness, signing, sellProbe,
+    return Object.freeze({ chain, strategy, readiness, signing, sellProbe, approvalProbePassed,
       minimumNativeBalanceWei, maximumAllowanceWei, maxSnapshotAgeMs, maxBlockLag });
   };
 }

@@ -88,6 +88,7 @@ export class ExecutionLifecycle {
       await this.journal.transition(intent.id, {
         status: "reserved", chainId: intent.chainId,
         spendAsset: intent.spendAsset, spendAmount: intent.spendAmount,
+        intentPurpose: intent.purpose,
         signingProtocolVersion: SIGNING_PROTOCOL_VERSION,
         reservedAt: Number(now),
       }, now);
@@ -97,7 +98,7 @@ export class ExecutionLifecycle {
         failures: Object.freeze(["execution-reservation-persistence-failed"]) });
     }
     try {
-      await this.ledger.record({
+      if (this.policy.recordSpend !== false) await this.ledger.record({
         intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
       }, now);
     } catch {

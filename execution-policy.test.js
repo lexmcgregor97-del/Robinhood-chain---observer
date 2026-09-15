@@ -40,3 +40,10 @@ test("rejects wrong wallet, chain, selector, expiry, and value", () => {
     "expiry-too-distant", "transaction-value-limit", "transaction-spend-limit",
   ]);
 });
+
+test("supports an explicit position-unit limit without claiming a daily risk budget", () => {
+  const exitPolicy = { ...policy,
+    spendLimits: { native: { maxPerTransaction: "200", trackDaily: false } } };
+  assert.equal(evaluateExecutionPolicy(intent, exitPolicy,
+    { now: 1_000, dailySpent: "999999" }).approved, true);
+});

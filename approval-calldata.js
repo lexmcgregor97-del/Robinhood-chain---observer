@@ -32,7 +32,7 @@ export function validateApprovalCalldata(intent, policy, expected) {
   }
   if (!expected || !sameAddress(expected.spender, spender)) failures.push("approval-spender-mismatch");
   if (!expected || amount !== BigInt(String(expected.amount))) failures.push("approval-amount-mismatch");
-  if (amount === 0n) failures.push("zero-approval");
+  if (amount === 0n && expected?.allowZero !== true) failures.push("zero-approval");
   if (amount === MAX_UINT256) failures.push("unlimited-approval");
   if (tokenLimit && amount > BigInt(String(tokenLimit.maxAmount))) failures.push("approval-amount-limit");
 

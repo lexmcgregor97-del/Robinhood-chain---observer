@@ -15,6 +15,7 @@ export function assessLiveExecutionPreflight({
   readiness,
   signing,
   sellProbe,
+  approvalProbePassed,
   now = Date.now(),
   maxSnapshotAgeMs = 15_000,
   maxBlockLag = 2,
@@ -38,6 +39,7 @@ export function assessLiveExecutionPreflight({
   if (plan?.strategyApproved !== true) failures.push("live-strategy-not-approved");
   if (strategy?.approved !== true) failures.push("live-strategy-no-longer-approved");
   if (sellProbe?.passed !== true) failures.push("live-sell-probe-failed");
+  if (approvalProbePassed !== true) failures.push("live-exit-approval-probe-failed");
   const sellCheckedAt = Date.parse(String(sellProbe?.checkedAt || ""));
   if (!Number.isFinite(sellCheckedAt) || sellCheckedAt > now
       || now - sellCheckedAt > maxSnapshotAgeMs) failures.push("live-sell-probe-stale");

@@ -30,15 +30,14 @@ test("stays disconnected by default even with complete execution configuration",
   assert.equal(result.automatic, false);
 });
 
-test("requires an independent exact worker ceremony and a real exit path before connection", () => {
+test("requires the independent exact worker ceremony before connection", () => {
   const wrong = liveWorkerConfigFromEnv({ ...base, LIVE_WORKER_SUBMISSION_CONNECTED: "true" });
   assert.ok(wrong.failures.includes("live-worker-confirmation-mismatch"));
   const exact = liveWorkerConfigFromEnv({ ...base, LIVE_WORKER_SUBMISSION_CONNECTED: "true",
     LIVE_WORKER_CONFIRMATION: `CONNECT_ATLAS_PRIVATE_WORKER:4663:${WALLET}` });
-  assert.equal(exact.configured, false);
+  assert.equal(exact.configured, true);
   assert.equal(exact.connected, true);
-  assert.equal(exact.exitPathConnected, false);
-  assert.ok(exact.failures.includes("live-worker-exit-path-not-connected"));
+  assert.equal(exact.exitPathConnected, true);
 });
 
 test("refuses allowance wider than the daily loss boundary", () => {
