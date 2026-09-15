@@ -128,7 +128,7 @@ export class ExecutionLifecycle {
 
   async rebroadcastIdentical(intentId, { now = Date.now() } = {}) {
     const record = this.journal.get(intentId);
-    if (!record || record.status !== "signed" || !record.signedPayload
+    if (!record || !new Set(["signed", "broadcast"]).has(record.status) || !record.signedPayload
         || !TX_HASH.test(String(record.transactionHash))) {
       throw new Error("signed-payload-not-rebroadcastable");
     }
