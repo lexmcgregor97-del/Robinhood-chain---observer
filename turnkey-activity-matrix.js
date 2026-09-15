@@ -30,6 +30,15 @@ const policyDenied = (activity) => {
   return /policy/i.test(failure) && /(denied|deny|rejected|reject)/i.test(failure);
 };
 
+function normalizedSerializedTransaction(value) {
+  if (typeof value !== "string") throw new Error("serialized-transaction-required");
+  const body = /^0x/i.test(value) ? value.slice(2) : value;
+  if (!body || body.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(body)) {
+    throw new Error("serialized-transaction-invalid");
+  }
+  return `0x${body}`;
+}
+
 function commonTransactionFailures(transaction, config) {
   const failures = [];
   if (transaction.chainId !== ROBINHOOD.chainId) failures.push("matrix-chain-mismatch");
@@ -103,8 +112,9 @@ async function verifyAllowedActivity(activity, entry, config, signingUserId) {
   const signedTransaction = activity?.result?.signTransactionResult?.signedTransaction;
   let transaction;
   try {
-    transaction = parseTransaction(signedTransaction);
-    const signer = await recoverTransactionAddress({ serializedTransaction: signedTransaction });
+    const serialized = normalizedSerializedTransaction(signedTransaction);
+    transaction = parseTransaction(serialized);
+    const signer = await recoverTransactionAddress({ serializedTransaction: serialized });
     if (!sameAddress(signer, config.walletAddress)) failures.push("matrix-signer-mismatch");
   } catch {
     failures.push("matrix-signed-transaction-invalid");
@@ -186,7 +196,10 @@ function approvalDenialDeviations(transaction, config) {
 function verifyDeniedCase(activity, expectedCase, config) {
   let transaction;
   try {
-    transaction = parseTransaction(activity?.intent?.signTransactionIntentV2?.unsignedTransaction);
+    const serialized = normalizedSerializedTransaction(
+      activity?.intent?.signTransactionIntentV2?.unsignedTransaction,
+    );
+    transaction = parseTransaction(serialized);
   } catch {
     return ["matrix-denied-transaction-invalid"];
   }
