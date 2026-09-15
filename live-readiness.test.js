@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { assessLiveReadiness } from "./live-readiness.js";
 
 const passing = {
-  paper: { closedTrades: 50, expectancyPerTrade: 0.01, maxRealizedDrawdownPct: 5 },
+  paper: { closedTrades: 50, uniquePools: 20, expectancyPerTrade: 0.01, maxRealizedDrawdownPct: 5 },
   shadow: { uniquePools: 46, eligible: true },
   sellProbeReady: true, walletConfigured: true, rpcEndpointCount: 2, operationalReady: true,
   turnkeyPolicyAttested: true, turnkeyPolicyVerified: true, evidenceJournalReady: true,
@@ -17,11 +17,13 @@ test("reports every unresolved live boundary", () => {
   const result = assessLiveReadiness({ paper: {}, shadow: {} });
   assert.equal(result.eligibleForMicroMainnet, false);
   assert.deepEqual(result.failures, [
-    "paper-sample-too-small", "paper-expectancy-not-positive",
+    "paper-sample-too-small", "paper-pool-diversity-insufficient",
+    "paper-expectancy-not-positive",
     "shadow-evidence-insufficient", "sell-probe-not-ready", "wallet-not-configured",
     "turnkey-policy-not-attested", "turnkey-policy-not-verified",
     "rpc-redundancy-required", "runtime-not-ready",
     "evidence-journal-not-ready",
   ]);
   assert.equal(result.progress.paperTradesRemaining, 50);
+  assert.equal(result.progress.paperUniquePoolsRemaining, 20);
 });

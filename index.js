@@ -78,7 +78,7 @@ const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
-const PAPER_STRATEGY_VERSION = "2026-09-14-paper-v5-integrity";
+const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6-risk-calibration";
 const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
 const EVIDENCE_FILE = EVIDENCE_DIR
@@ -982,7 +982,8 @@ async function runPaperCycle() {
             || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
         updateMarkedDrawdownHistory();
-        const reason = paperExitReason(marked, Date.now(), QUALIFYING_PAPER_STRATEGY);
+        const reason = paperExitReason({ ...marked,
+          exitPriceImpactPct: exit.priceImpactPct }, Date.now(), QUALIFYING_PAPER_STRATEGY);
         if (reason) {
           const feeRate = poolFeeRate(pool);
           const fee = exit.proceeds * feeRate;

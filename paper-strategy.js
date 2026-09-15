@@ -1,13 +1,17 @@
+export const MAX_PAPER_DRAWDOWN_PCT = 10;
+
 export const DEFAULT_PAPER_STRATEGY = Object.freeze({
-  entryCashPct: 10,
+  entryCashPct: 5,
   maxEntryNotional: 100,
-  stopLossPct: 12,
-  takeProfitPct: 50,
-  trailingActivationPct: 20,
-  trailingDrawdownPct: 10,
+  stopLossPct: 8,
+  takeProfitPct: 35,
+  trailingActivationPct: 10,
+  trailingDrawdownPct: 6,
   maxHoldMs: 6 * 60 * 60 * 1000,
-  maxRealizedDrawdownPct: 20,
-  reentryCooldownMs: 5 * 60 * 1000,
+  maxRealizedDrawdownPct: MAX_PAPER_DRAWDOWN_PCT,
+  reentryCooldownMs: 15 * 60 * 1000,
+  maxEntriesPerPool: 3,
+  liquidityCollapseImpactPct: 20,
 });
 
 const finite = (value) => Number.isFinite(Number(value));
@@ -45,6 +49,15 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
   if (!finite(portfolio?.cash) || portfolio.cash <= 0) failures.push("no-paper-cash");
   if (!finite(gasCost) || gasCost < 0) failures.push("invalid-gas-cost");
   if ((portfolio?.openPositions || []).some((p) => p.pool === candidate?.address)) failures.push("position-already-open");
+  const maxEntriesPerPool = Number(policy.maxEntriesPerPool);
+  if (!Number.isInteger(maxEntriesPerPool) || maxEntriesPerPool <= 0) {
+    failures.push("invalid-pool-entry-limit");
+  } else {
+    const priorEntries = (portfolio?.trades || []).filter((trade) => (
+      trade?.type === "open" && trade.pool === candidate?.address
+    )).length;
+    if (priorEntries >= maxEntriesPerPool) failures.push("pool-epoch-entry-limit");
+  }
   const cooldownMs = Number(policy.reentryCooldownMs);
   if (finite(cooldownMs) && cooldownMs > 0) {
     const lastClose = (portfolio?.trades || []).reduce((latest, trade) => (
@@ -98,8 +111,13 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
 export function paperExitReason(position, now = Date.now(), policy = DEFAULT_PAPER_STRATEGY) {
   const returnPct = Number(position?.returnPct);
   const peakReturnPct = Number(position?.peakReturnPct ?? returnPct);
+  const exitPriceImpactPct = Number(position?.exitPriceImpactPct);
   const heldMs = Number(now) - Number(position?.openedAt);
   if (![returnPct, peakReturnPct, heldMs].every(Number.isFinite)) return null;
+  if (Number.isFinite(exitPriceImpactPct)
+      && exitPriceImpactPct >= Number(policy.liquidityCollapseImpactPct)) {
+    return "liquidity-collapse";
+  }
   if (returnPct <= -Number(policy.stopLossPct)) return "stop-loss";
   if (returnPct >= Number(policy.takeProfitPct)) return "take-profit";
   if (peakReturnPct >= Number(policy.trailingActivationPct)

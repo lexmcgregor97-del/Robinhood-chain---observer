@@ -41,7 +41,7 @@ test("C-1: planned entry carries the exact fill units", () => {
     marketSafety: { tokenPriceQuote: 1e-6, baseTokenDecimals: 18,
       buyAmountOut: (10n ** 25n).toString(), plannedNotionalQuote: 0.01, baseToken: "0xtok" } };
   const plan = planPaperEntry(candidate, { cash: 0.1, openPositions: [], trades: [], maxPositions: 3 },
-    { ...DEFAULT_PAPER_STRATEGY, maxEntryNotional: 0.01 });
+    { ...DEFAULT_PAPER_STRATEGY, entryCashPct: 10, maxEntryNotional: 0.01 });
   assert.equal(plan.approved, true);
   assert.equal(plan.order.quantityUnits, (10n ** 25n).toString());
   assert.equal(plan.order.quantity, 1e7);
@@ -113,10 +113,10 @@ test("H-3: same-pool re-entry is blocked inside the cooldown window", () => {
       buyAmountOut: (10n ** 16n).toString(), plannedNotionalQuote: 0.01, baseToken: "0xtok" } };
   const portfolio = { cash: 0.1, openPositions: [], maxPositions: 3,
     trades: [{ type: "close", pool: "0xpool", timestamp: 1_000_000 }] };
-  const policy = { ...DEFAULT_PAPER_STRATEGY, maxEntryNotional: 0.01 };
+  const policy = { ...DEFAULT_PAPER_STRATEGY, entryCashPct: 10, maxEntryNotional: 0.01 };
   const blocked = planPaperEntry(candidate, portfolio, policy, 1_000_000 + 60_000);
   assert.ok(blocked.failures.includes("pool-reentry-cooldown"));
-  const allowed = planPaperEntry(candidate, portfolio, policy, 1_000_000 + 6 * 60_000);
+  const allowed = planPaperEntry(candidate, portfolio, policy, 1_000_000 + 16 * 60_000);
   assert.equal(allowed.approved, true);
 });
 

@@ -1,7 +1,10 @@
+import { MAX_PAPER_DRAWDOWN_PCT } from "./paper-strategy.js";
+
 export const DEFAULT_LIVE_PROMOTION_POLICY = Object.freeze({
   minPaperTrades: 50,
+  minPaperUniquePools: 20,
   minPaperExpectancy: 0,
-  maxPaperDrawdownPct: 10,
+  maxPaperDrawdownPct: MAX_PAPER_DRAWDOWN_PCT,
   minShadowUniquePools: 20,
 });
 
@@ -10,6 +13,7 @@ export function assessLiveReadiness(input, policy = DEFAULT_LIVE_PROMOTION_POLIC
   const shadow = input?.shadow || {};
   const failures = [];
   if (Number(paper.closedTrades || 0) < policy.minPaperTrades) failures.push("paper-sample-too-small");
+  if (Number(paper.uniquePools || 0) < policy.minPaperUniquePools) failures.push("paper-pool-diversity-insufficient");
   if (Number(paper.expectancyPerTrade || 0) <= policy.minPaperExpectancy) failures.push("paper-expectancy-not-positive");
   const paperDrawdownPct = Math.max(Number(paper.maxRealizedDrawdownPct || 0),
     Number(paper.maxMarkedDrawdownPct ?? paper.markToMarketDrawdownPct ?? 0));
@@ -31,6 +35,8 @@ export function assessLiveReadiness(input, policy = DEFAULT_LIVE_PROMOTION_POLIC
     progress: {
       paperTrades: Number(paper.closedTrades || 0),
       paperTradesRemaining: Math.max(0, policy.minPaperTrades - Number(paper.closedTrades || 0)),
+      paperUniquePoolsRemaining: Math.max(0,
+        policy.minPaperUniquePools - Number(paper.uniquePools || 0)),
       paperExpectancyPerTrade: Number(paper.expectancyPerTrade || 0),
       paperDrawdownPct,
       shadowUniquePools: Number(shadow.uniquePools || 0),

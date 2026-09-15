@@ -22,6 +22,15 @@ Swap activity is stored as timestamped per-block counts. Signals compare a 60-se
 
 Candidate safety is measured at the paper book's actual intended notional. V2 and bounded same-tick V3 quotes determine acquired quantity, execution price, sell proceeds, fees, and price impact. These fields are explicitly named `buyMathOk` and `sellMathOk`: they are AMM arithmetic, not a honeypot or transfer-tax simulation. Any future live-entry policy must set `requireSellProbe`; without independently supplied sell evidence, the risk gate fails closed.
 
+The V6 qualifying paper policy risks 5% of remaining cash per entry, stops at
+an 8% executable loss, begins trailing after a 10% gain, takes profit at 35%,
+and permits at most three entries per pool per epoch with a 15-minute cooldown.
+Exit impact of 20% or more is recorded as `liquidity-collapse`; the executable
+loss remains fully included in P&L. The entry circuit and live-readiness gate
+share one 10% maximum-drawdown constant. Qualification also requires 20 unique
+paper pools, preventing repeated episodes in a few pools from masquerading as
+an independent 50-trade cohort.
+
 Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Confirmed zero liquidity is recorded as a total loss; genuinely unavailable measurements are censored and reported. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
 
 ## Persistence

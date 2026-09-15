@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
+  DEFAULT_PAPER_STRATEGY, MAX_PAPER_DRAWDOWN_PCT,
+  planPaperEntry, paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
+import { DEFAULT_LIVE_PROMOTION_POLICY } from "./live-readiness.js";
 
 const candidate = {
   address: "0xpool",
@@ -17,7 +19,8 @@ const candidate = {
 };
 
 test("sizes paper entries from cash with a hard cap", () => {
-  const plan = planPaperEntry(candidate, { cash: 1000, openPositions: [] });
+  const plan = planPaperEntry(candidate, { cash: 1000, openPositions: [] },
+    { ...DEFAULT_PAPER_STRATEGY, entryCashPct: 10 });
   assert.equal(plan.approved, true);
   assert.equal(plan.order.notional, 100);
   assert.equal(plan.order.quantity, 40);
@@ -63,10 +66,44 @@ test("treats a full paper book as a normal rejected entry", () => {
 
 test("blocks new entries at the realized drawdown limit", () => {
   assert.deepEqual(
-    paperCircuitFailures({ maxRealizedDrawdownPct: 20 }),
+    paperCircuitFailures({ maxRealizedDrawdownPct: 10 }),
     ["paper-drawdown-circuit-breaker"],
   );
-  assert.deepEqual(paperCircuitFailures({ maxRealizedDrawdownPct: 19.99 }), []);
+  assert.deepEqual(paperCircuitFailures({ maxRealizedDrawdownPct: 9.99 }), []);
+});
+
+test("blocks new entries at the persisted marked drawdown limit", () => {
+  assert.deepEqual(
+    paperCircuitFailures({ maxRealizedDrawdownPct: 2, maxMarkedDrawdownPct: 10 }),
+    ["paper-drawdown-circuit-breaker"],
+  );
+});
+
+test("entry risk defaults match the live 10 percent drawdown gate", () => {
+  assert.equal(MAX_PAPER_DRAWDOWN_PCT, 10);
+  assert.equal(DEFAULT_PAPER_STRATEGY.maxRealizedDrawdownPct,
+    DEFAULT_LIVE_PROMOTION_POLICY.maxPaperDrawdownPct);
+  assert.equal(DEFAULT_PAPER_STRATEGY.entryCashPct, 5);
+});
+
+test("caps repeated entries into one pool within an epoch", () => {
+  const portfolio = {
+    cash: 1000,
+    maxPositions: 3,
+    openPositions: [],
+    trades: [
+      { type: "open", pool: "0xpool", timestamp: 1 },
+      { type: "close", pool: "0xpool", timestamp: 2 },
+      { type: "open", pool: "0xpool", timestamp: 3 },
+      { type: "close", pool: "0xpool", timestamp: 4 },
+      { type: "open", pool: "0xpool", timestamp: 5 },
+      { type: "close", pool: "0xpool", timestamp: 6 },
+    ],
+  };
+  const plan = planPaperEntry(candidate, portfolio, DEFAULT_PAPER_STRATEGY,
+    20 * 60_000);
+  assert.equal(plan.approved, false);
+  assert.ok(plan.failures.includes("pool-epoch-entry-limit"));
 });
 
 test("drawdown circuit fails closed for invalid policy", () => {
@@ -78,11 +115,17 @@ test("drawdown circuit fails closed for invalid policy", () => {
 
 test("applies stop, target, trail and time exits deterministically", () => {
   const now = 1_000_000;
-  assert.equal(paperExitReason({ returnPct: -12, openedAt: now }, now), "stop-loss");
-  assert.equal(paperExitReason({ returnPct: 50, openedAt: now }, now), "take-profit");
-  assert.equal(paperExitReason({ returnPct: 14, peakReturnPct: 25, openedAt: now }, now), "trailing-stop");
+  assert.equal(paperExitReason({ returnPct: -8, openedAt: now }, now), "stop-loss");
+  assert.equal(paperExitReason({ returnPct: 35, openedAt: now }, now), "take-profit");
+  assert.equal(paperExitReason({ returnPct: 4, peakReturnPct: 11, openedAt: now }, now), "trailing-stop");
   assert.equal(paperExitReason({ returnPct: 1, openedAt: now - 6 * 60 * 60 * 1000 }, now), "max-hold");
   assert.equal(paperExitReason({ returnPct: 5, openedAt: now }, now), null);
+});
+
+test("labels an executable-liquidity collapse without hiding the realized loss", () => {
+  const now = 1_000_000;
+  assert.equal(paperExitReason({ returnPct: -93, peakReturnPct: 0,
+    exitPriceImpactPct: 92.75, openedAt: now }, now), "liquidity-collapse");
 });
 
 test("paper entry fails closed without executable AMM output", () => {
