@@ -19,13 +19,14 @@ const normalizedReceipt = (receipt) => {
   };
 };
 
-export async function createTurnkeySigningAccount(config) {
+export async function createTurnkeySigningAccount(config, apiPrivateKey) {
   if (!config?.configured) throw new Error("micro-mainnet-config-incomplete");
+  if (!apiPrivateKey) throw new Error("turnkey-signing-private-key-required");
   const client = new Turnkey({
     apiBaseUrl: "https://api.turnkey.com",
     defaultOrganizationId: config.organizationId,
     apiPublicKey: config.apiPublicKey,
-    apiPrivateKey: config.apiPrivateKey,
+    apiPrivateKey,
   }).apiClient();
   const account = await createAccount({
     client,
@@ -42,12 +43,17 @@ export async function createTurnkeySigningAccount(config) {
 export function createEvmExecutionProvider({
   account,
   rpc,
+  maxGas,
+  maxFeePerGasWei,
   receiptPollMs = 2_000,
   receiptTimeoutMs = 120_000,
 } = {}) {
   if (!account || typeof account.signTransaction !== "function" || typeof rpc !== "function") {
     throw new Error("invalid-turnkey-execution-provider");
   }
+  const gasLimit = BigInt(String(maxGas || "0"));
+  const feeLimit = BigInt(String(maxFeePerGasWei || "0"));
+  if (gasLimit <= 0n || feeLimit <= 0n) throw new Error("execution-gas-limits-required");
   if (!Number.isFinite(receiptPollMs) || receiptPollMs < 100
       || !Number.isFinite(receiptTimeoutMs) || receiptTimeoutMs < receiptPollMs) {
     throw new Error("invalid-receipt-wait-policy");
@@ -68,28 +74,40 @@ export function createEvmExecutionProvider({
       const request = {
         account: account.address,
         chainId: intent.chainId,
-        type: "legacy",
+        type: "eip1559",
         to: getAddress(intent.to),
         data: intent.data,
         value: BigInt(intent.valueWei),
         nonce,
       };
-      const [gas, gasPrice] = await Promise.all([
+      const [gasValue, priorityValue, latestBlock] = await Promise.all([
         rpc("eth_estimateGas", [{
           from: intent.from, to: intent.to, data: intent.data,
           value: `0x${BigInt(intent.valueWei).toString(16)}`,
         }]),
-        rpc("eth_gasPrice", []),
+        rpc("eth_maxPriorityFeePerGas", []),
+        rpc("eth_getBlockByNumber", ["latest", false]),
       ]);
+      const gas = asQuantity(gasValue, "gas-estimate");
+      const maxPriorityFeePerGas = asQuantity(priorityValue, "priority-fee");
+      const baseFeePerGas = asQuantity(latestBlock?.baseFeePerGas, "base-fee");
+      const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas;
+      if (gas > gasLimit) throw new Error("gas-estimate-limit");
+      if (maxFeePerGas > feeLimit || maxPriorityFeePerGas > feeLimit) {
+        throw new Error("gas-fee-limit");
+      }
       const payload = await account.signTransaction({
         ...request,
-        gas: asQuantity(gas, "gas-estimate"),
-        gasPrice: asQuantity(gasPrice, "gas-price"),
+        gas,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       });
       if (typeof payload !== "string" || !/^0x[0-9a-fA-F]+$/.test(payload)) {
         throw new Error("invalid-signed-transaction");
       }
-      return Object.freeze({ payload, transactionHash: keccak256(payload) });
+      return Object.freeze({ payload, transactionHash: keccak256(payload),
+        gas: gas.toString(), maxFeePerGas: maxFeePerGas.toString(),
+        maxPriorityFeePerGas: maxPriorityFeePerGas.toString() });
     },
 
     async broadcast(payload) {
