@@ -21,14 +21,20 @@ allowlist, and integer WETH, gas, and fee caps. Atlas also requires that the
 signing organization and wallet match the independently verified observer
 wallet while the signing API public key differs.
 
-The signing private key must never be placed in the Railway web service. Policy
-metadata is verified only by the isolated `npm run verify:signing` command,
+The signing private key must never be placed in the Railway web service. The
+runtime refuses to start if a signing-verification key or attestation private
+key is present. Policy metadata is verified only by the isolated
+`npm run verify:signing` command,
 using `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY` for that process. The command can
 write a P-256-signed, expiring attestation bound to the entire public execution
-configuration. The web runtime holds only the attestation public key, reads the
-attestation file, and uses the observer credential to re-check the signing user
-and exact policy set hourly. Expiry, signature failure, configuration drift, or
-policy drift closes activation. The verifier requires different observer and
+configuration and a recent behavioral-matrix summary. Set
+`TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE` to a private JSON result containing
+`runAt`, three allowed activity IDs, and at least twelve denied activity IDs;
+the signed claims contain only their counts, timestamp, and SHA-256 digest. The
+web runtime holds only the attestation public key, reads the attestation file,
+and uses the observer credential to re-check the signing user and exact policy
+set hourly. Expiry, signature failure, missing behavioral evidence,
+configuration drift, or policy drift closes activation. The verifier requires different observer and
 signing users and exactly three applicable ALLOW policies: buy swap, sell swap,
 and approval. Buy and sell policies bind
 chain 4663, zero native value, bounded EIP-1559 gas fields, the allowlisted V2
@@ -39,6 +45,13 @@ spender. Application validation must bind the approval amount to the exact
 current intent and continues to reject unlimited approval. Router Smart
 Contract Interfaces are required for named swap arguments; the real Turnkey
 organization must still pass the documented allowed/denied behavioral matrix.
+
+Every future execution lifecycle must receive an explicit asynchronous
+preflight. It runs after static policy/calldata validation but before spend or
+nonce reservation, and rejection or error stops the intent without touching the
+provider. When the submission path is eventually connected, this preflight must
+re-read Turnkey policy state and wallet balances for every intent; hourly status
+revalidation alone is not sufficient.
 
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
