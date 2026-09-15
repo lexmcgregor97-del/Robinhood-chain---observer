@@ -6,9 +6,11 @@ import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 import {
   createSigningAttestation, summarizeBehavioralMatrix, writeSigningAttestation,
 } from "./signing-attestation.js";
+import { verifyTurnkeyActivityMatrix } from "./turnkey-activity-matrix.js";
 
 export async function verifySigningPolicyOneShot(env = process.env, {
   makeClient, writeAttestation = writeSigningAttestation, readMatrix = readFile,
+  verifyMatrix = verifyTurnkeyActivityMatrix,
 } = {}) {
   const config = microMainnetConfigFromEnv(env);
   const signingPrivateKey = String(env.TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY || "");
@@ -54,7 +56,15 @@ export async function verifySigningPolicyOneShot(env = process.env, {
           const issuedAt = Date.now();
           const ttlMs = Number(env.TURNKEY_SIGNING_ATTESTATION_TTL_MS || 6 * 60 * 60_000);
           const matrix = JSON.parse(await readMatrix(matrixPath, "utf8"));
-          const behavioralMatrix = summarizeBehavioralMatrix(matrix, { now: issuedAt });
+          const matrixVerification = await verifyMatrix({ matrix, config,
+            signingUserId: signingPolicy.userId,
+            getActivity: (request) => signing.getActivity(request) });
+          if (matrixVerification?.verified !== true || !matrixVerification.normalized) {
+            failures.push(...(matrixVerification?.failures || ["behavioral-matrix-verification-failed"]));
+            throw new Error("behavioral-matrix-verification-failed");
+          }
+          const behavioralMatrix = summarizeBehavioralMatrix(matrixVerification.normalized,
+            { now: issuedAt });
           const document = createSigningAttestation({ config,
             signingUserId: signingPolicy.userId,
             observerUserId: observerIdentity.userId,
@@ -64,7 +74,9 @@ export async function verifySigningPolicyOneShot(env = process.env, {
           await writeAttestation(attestationPath, document);
           attestationWritten = true;
         } catch {
-          failures.push("signing-attestation-write-failed");
+          if (!failures.some((failure) => failure.startsWith("behavioral-matrix-"))) {
+            failures.push("signing-attestation-write-failed");
+          }
         }
       }
     }
