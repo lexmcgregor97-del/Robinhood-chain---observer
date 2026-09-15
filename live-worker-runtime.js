@@ -109,7 +109,7 @@ export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = f
       allowedCalls: { [kind === "approval" ? position.baseToken : config.routerAddress]:
         [kind === "approval" ? APPROVE : SWAP_EXACT_TOKENS_FOR_TOKENS] },
       spendLimits: { [position.baseToken]: { maxPerTransaction: amount,
-        maxDaily: (BigInt(amount) * 4n).toString() } }, maxRouterDeadlineSeconds: 60 });
+        trackDaily: false } }, recordSpend: false, maxRouterDeadlineSeconds: 60 });
     const preflightAuxiliary = async (checkedIntent, { now: at }) => {
       const evidence = await inspectPosition(position, { phase: `${kind}-preflight`,
         intent: checkedIntent, now: at });
@@ -122,11 +122,12 @@ export async function createLiveWorkerRuntime({ env = process.env, fetchImpl = f
       ? (checkedIntent, checkedPolicy) => validateApprovalCalldata(checkedIntent,
         { ...checkedPolicy, allowedApprovalSpenders: [position.routerAddress],
           approvalLimits: { [position.baseToken]: { maxAmount: amount } } },
-        { spender: position.routerAddress, amount })
+        { spender: position.routerAddress,
+          amount: checkedIntent.purpose === "live-exit-approval-reset" ? "0" : amount,
+          allowZero: checkedIntent.purpose === "live-exit-approval-reset" })
       : (checkedIntent, checkedPolicy, context) => validateV2RouterCalldata(checkedIntent,
         { ...checkedPolicy, allowedPaths: [[position.baseToken, config.wethAddress]] }, context);
-    const exitLedger = Object.freeze({ snapshot: () => ({ spent: {} }), record: async () => {} });
-    return new ExecutionLifecycle({ policy: auxiliaryPolicy, ledger: exitLedger,
+    return new ExecutionLifecycle({ policy: auxiliaryPolicy, ledger: store.spendLedger,
       journal: store.journal, nonceLane: store.nonceLane, provider,
       preflight: preflightAuxiliary, validateCalldata: validate });
   };

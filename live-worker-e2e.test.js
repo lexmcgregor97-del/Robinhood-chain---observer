@@ -77,10 +77,12 @@ test("walks candidate through buy, exact approval, stopped exit, and receipt set
       ? (intent, policy) => validateApprovalCalldata(intent,
         { ...policy, allowedApprovalSpenders: [ROUTER],
           approvalLimits: { [TOKEN]: { maxAmount: "190" } } },
-        { spender: ROUTER, amount: "190" })
+        { spender: ROUTER,
+          amount: intent.purpose === "live-exit-approval-reset" ? "0" : "190",
+          allowZero: intent.purpose === "live-exit-approval-reset" })
       : (intent, policy, context) => validateV2RouterCalldata(intent,
         { ...policy, allowedPaths: [[TOKEN, WETH]] }, context) });
-  let allowance = "0";
+  let allowance = "7";
   const construction = { poolAddress: POOL, token0: WETH, token1: TOKEN,
     wethAddress: WETH, reserve0: "1000000", reserve1: "2000000", blockNumber: 42,
     strategyApproved: true, feeBps: 30 };
@@ -91,14 +93,19 @@ test("walks candidate through buy, exact approval, stopped exit, and receipt set
     baseAllowanceWei: allowance }), lifecycle,
   submitApproval: async (intent, position, context) => {
     const result = await auxiliary(position, "approval").submit(intent, context);
-    if (result.status === "confirmed") allowance = position.baseUnits;
+    if (result.status === "confirmed") allowance = decodeFunctionData({ abi: APPROVE_ABI,
+      data: intent.data }).args[1].toString();
     return result;
   }, submitExit: (intent, position, context) => auxiliary(position, "exit").submit(intent, context),
   probeExit: async () => ({ approved: true }), journal, positions, plans: new Map(), config });
 
   assert.equal((await worker.runOnce({ now: 1_000_000 })).result.status, "confirmed");
-  assert.equal((await worker.runOnce({ now: 1_001_000 })).status, "approval-submitted");
-  const exited = await worker.runOnce({ now: 1_002_000 });
+  const reset = await worker.runOnce({ now: 1_001_000 });
+  assert.equal(reset.status, "approval-submitted");
+  assert.equal(allowance, "0");
+  assert.equal((await worker.runOnce({ now: 1_002_000 })).status, "approval-submitted");
+  assert.equal(allowance, "190");
+  const exited = await worker.runOnce({ now: 1_003_000 });
   assert.equal(exited.status, "exit-submitted");
   assert.equal(exited.result.status, "confirmed");
   assert.equal(positions.openPositions().length, 0);

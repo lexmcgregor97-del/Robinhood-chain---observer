@@ -35,3 +35,15 @@ test("rolls memory back when position evidence persistence fails", async () => {
   assert.equal(ledger.openPositions().length, 0);
   assert.equal(ledger.snapshot().mutationCount, 0);
 });
+
+test("does not checkpoint immaterial non-peak marks", async () => {
+  const events = [];
+  const ledger = new LivePositionLedger({}, { persist: async (_state, event) => events.push(event) });
+  await ledger.open(entry, 1);
+  await ledger.mark(POOL, "9", 2);
+  const before = ledger.snapshot().mutationCount;
+  const view = await ledger.mark(POOL, "9", 3);
+  assert.equal(view.lastMarkedAt, 3);
+  assert.equal(ledger.snapshot().mutationCount, before);
+  assert.equal(events.filter((event) => event.type === "live-position-marked").length, 1);
+});

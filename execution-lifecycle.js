@@ -98,7 +98,7 @@ export class ExecutionLifecycle {
         failures: Object.freeze(["execution-reservation-persistence-failed"]) });
     }
     try {
-      await this.ledger.record({
+      if (this.policy.recordSpend !== false) await this.ledger.record({
         intentId: intent.id, asset: intent.spendAsset, amount: intent.spendAmount,
       }, now);
     } catch {

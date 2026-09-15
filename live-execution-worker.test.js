@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { decodeFunctionData } from "viem";
 import { LiveExecutionWorker, createObserverCandidateSource } from "./live-execution-worker.js";
 import { LivePositionLedger } from "./live-position-ledger.js";
+import { APPROVE_ABI } from "./approval-calldata.js";
 
 const WETH = "0x0000000000000000000000000000000000000001";
 const TOKEN = "0x0000000000000000000000000000000000000002";
@@ -112,4 +114,25 @@ test("submits an exact approval before an exit when allowance is absent", async 
   const result = await worker.runOnce({ now: 2 });
   assert.equal(result.status, "approval-submitted");
   assert.equal(approved.spendAmount, "100");
+});
+
+test("zeroes a residual allowance before attempting the exact exit approval", async () => {
+  const positions = new LivePositionLedger();
+  await positions.open({ poolAddress: POOL, baseToken: TOKEN, routerAddress: ROUTER,
+    baseUnits: "100", entryWethWei: "100", feeBps: 30, entryIntentId: "buy:1",
+    entryTransactionHash: `0x${"1".repeat(64)}`, openedAt: 1 }, 1);
+  let reset;
+  const worker = new LiveExecutionWorker({ source: { fetchCandidates: async () => [] },
+    inspectCandidate: async () => snapshot,
+    inspectPosition: async () => ({ ...snapshot, baseAllowanceWei: "7" }),
+    lifecycle: { recoverPending: async () => [] },
+    submitApproval: async (intent) => { reset = intent; return { status: "confirmed" }; },
+    submitExit: async () => { throw new Error("exit-unexpected"); },
+    probeExit: async () => ({ approved: true }),
+    journal: { pending: () => [], snapshot: () => ({ records: [] }), get: () => null },
+    positions, plans: new Map(), config: { ...config, exitPolicy: {} } });
+  assert.equal((await worker.runOnce({ now: 2 })).status, "approval-submitted");
+  const call = decodeFunctionData({ abi: APPROVE_ABI, data: reset.data });
+  assert.equal(reset.purpose, "live-exit-approval-reset");
+  assert.equal(call.args[1], 0n);
 });

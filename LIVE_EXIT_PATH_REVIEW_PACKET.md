@@ -1,4 +1,4 @@
-# Atlas — Live Exit Path Review Packet (revision 1)
+# Atlas — Live Exit Path Review Packet (revision 2)
 
 ## Status
 
@@ -19,9 +19,12 @@ fund, or activate the worker. Both activation flags still default false and prod
   final journal records on the next cycle. Processed intent IDs prevent reopening a
   position after it has been closed.
 - The router allowance for an exit is created automatically only when needed and equals
-  the exact receipt-derived position units. The real-wallet approval is simulated at a
-  pinned block before signing. A pre-buy approval simulation also proves the token accepts
-  the required approval call before Atlas enters.
+  the exact receipt-derived position units. If a different nonzero allowance exists,
+  Atlas first submits a separately journaled `approve(router, 0)` intent and waits until
+  the next cycle to submit the exact-unit approval. Zero remains forbidden for every
+  approval other than this exact-spender reset purpose. Each real-wallet approval is
+  simulated at a pinned block before signing. A pre-buy approval simulation also proves
+  the token accepts the required approval call before Atlas enters.
 - Every holding cycle re-reads pinned balances, allowance, reserves, block head/timestamp,
   and factory identity. With exact allowance present, it simulates the complete sell from
   the actual wallet before evaluating or submitting an exit.
@@ -39,6 +42,15 @@ fund, or activate the worker. Both activation flags still default false and prod
 - Entry readiness can block new buys, but observer availability cannot block management
   of an existing position. Exit and exact-approval preflights depend on worker-owned RPC
   evidence, real-wallet simulation, gas balance, and direct signing-policy verification.
+- Approval and sell intents declare the receipt-derived position units as their maximum
+  per-transaction base-token spend. They deliberately do not claim a daily risk budget:
+  `trackDaily: false` and `recordSpend: false` make the policy and lifecycle semantics
+  explicit, while the durable position ledger is the authority that prevents spending
+  more than the position. Entry WETH spend remains tracked by the daily spend ledger.
+- Position marks are checkpointed when the peak advances or the current quote changes by
+  at least 25 bps. Smaller non-peak changes are evaluated ephemerally, avoiding a full
+  evidence/checkpoint write every poll without weakening trigger evaluation or durable
+  trailing-peak state.
 
 ## Review surface
 
@@ -48,6 +60,24 @@ fund, or activate the worker. Both activation flags still default false and prod
   `live-execution-worker.js`, `live-execution-store.js`, `live-worker-runtime.js`,
   `live-worker-config.js`, `execution-lifecycle.js`, `execution-checkpoint.js`,
   `recover-executions.js`, tests, README, `.env.example`, and `package.json`.
+
+## Revision-1 finding resolution
+
+- **E-1:** resolved with the separately journaled, exact-spender zero-reset approval
+  described above. Tests cover default zero refusal, reset-purpose validation, residual
+  allowance orchestration, and the full residual → zero → exact → sell walk.
+- **E-2:** resolved by removing the misleading auxiliary daily-limit claim. Position-unit
+  exits use an explicit non-daily policy and do not write the entry risk-spend ledger;
+  exact durable position units remain the upper bound.
+- **E-3:** hardened by the 25-bps/non-peak mark checkpoint threshold.
+- **E-4:** remains a documented fail-closed operational risk. If a token begins charging
+  a sell-side transfer fee or blacklists the wallet after entry, the only permitted
+  `swapExactTokensForTokens` path may stop working. Atlas will retain the position and
+  block new entries. It does not widen the Turnkey selector policy or silently mark the
+  position closed. Any out-of-band disposition or abandonment requires a separately
+  audited operator procedure and durable evidence; no such command is implemented here.
+- **E-5:** durable position history remains append-only and unbounded at micro-mainnet
+  scale. Define archival/retention before increasing trade frequency.
 
 ## Adversarial review questions
 
@@ -71,7 +101,7 @@ fund, or activate the worker. Both activation flags still default false and prod
 ## Validation
 
 `npm run check`, `npm run check:live-worker`, `npm test`, and `git diff --check` pass on
-the dependency-complete runner: 333/333 tests.
+the dependency-complete runner: 339/339 tests.
 
 Merge, deployment, funding, and activation remain separate decisions. The requested
 review decision is whether this may merge as still-disabled exit-path scaffolding.

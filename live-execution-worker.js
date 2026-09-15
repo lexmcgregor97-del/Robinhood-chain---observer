@@ -96,9 +96,12 @@ export class LiveExecutionWorker {
           return Object.freeze({ status: "blocked", reason: "exit-settlement-required" });
         }
         const snapshot = await this.inspectPosition(position, { phase: "exit-construction", now });
+        const observedAllowance = BigInt(snapshot.baseAllowanceWei || "0");
+        const approvalAmount = observedAllowance > 0n && observedAllowance !== BigInt(position.baseUnits)
+          ? "0" : position.baseUnits;
         const approvalIntent = buildLiveExitApprovalIntent({ position, snapshot,
-          config: this.config, now });
-        if (BigInt(snapshot.baseAllowanceWei || "0") !== BigInt(position.baseUnits)) {
+          config: this.config, amountWei: approvalAmount, now });
+        if (observedAllowance !== BigInt(position.baseUnits)) {
           if (this.journal.get(approvalIntent.id)?.status === "confirmed") {
             return Object.freeze({ status: "blocked", reason: "exit-approval-state-divergence" });
           }

@@ -40,7 +40,8 @@ export function evaluateExecutionPolicy(rawIntent, policy, {
     if (amount > BigInt(String(spendLimit.maxPerTransaction ?? "0"))) {
       failures.push("transaction-spend-limit");
     }
-    if (BigInt(String(dailySpent)) + amount > BigInt(String(spendLimit.maxDaily ?? "0"))) {
+    if (spendLimit.trackDaily !== false
+        && BigInt(String(dailySpent)) + amount > BigInt(String(spendLimit.maxDaily ?? "0"))) {
       failures.push("daily-spend-limit");
     }
   }

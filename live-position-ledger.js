@@ -93,15 +93,26 @@ export class LivePositionLedger {
     });
   }
 
-  mark(poolAddress, wethOutWei, now = Date.now()) {
+  mark(poolAddress, wethOutWei, now = Date.now(), { minimumChangeBps = 25 } = {}) {
     return this.mutate(async () => {
       const key = address(poolAddress, "live-position-pool-invalid");
       const current = this.positions.get(key);
       if (!current || current.status !== "open") throw new Error("live-position-not-open");
       const output = positiveUint(wethOutWei, "live-position-mark-invalid");
+      if (!Number.isSafeInteger(minimumChangeBps) || minimumChangeBps < 0) {
+        throw new Error("live-position-mark-policy-invalid");
+      }
+      const outputValue = BigInt(output);
+      const lastValue = BigInt(current.lastWethOutWei || current.entryWethWei);
+      const peakAdvanced = outputValue > BigInt(current.peakWethOutWei);
+      const materiallyChanged = (outputValue > lastValue ? outputValue - lastValue
+        : lastValue - outputValue) * 10_000n >= lastValue * BigInt(minimumChangeBps);
       const next = { ...current, lastMarkedAt: Number(now), lastWethOutWei: output,
-        peakWethOutWei: (BigInt(output) > BigInt(current.peakWethOutWei)
+        peakWethOutWei: (outputValue > BigInt(current.peakWethOutWei)
           ? output : current.peakWethOutWei) };
+      if (!peakAdvanced && !materiallyChanged && current.lastWethOutWei) {
+        return Object.freeze(next);
+      }
       return this.apply(key, next, "live-position-marked", now);
     });
   }

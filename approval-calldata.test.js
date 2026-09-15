@@ -50,3 +50,10 @@ test("rejects arbitrary token calldata", () => {
   assert.deepEqual(validateApprovalCalldata({ ...intent(), data: "0x12345678" }, policy,
     { spender: router, amount: 100n }).failures, ["unsupported-approval-calldata"]);
 });
+
+test("permits zero only for the explicit exact-spender reset path", () => {
+  assert.ok(validateApprovalCalldata(intent(router, 0n), policy,
+    { spender: router, amount: 0n }).failures.includes("zero-approval"));
+  assert.equal(validateApprovalCalldata(intent(router, 0n), policy,
+    { spender: router, amount: 0n, allowZero: true }).approved, true);
+});
