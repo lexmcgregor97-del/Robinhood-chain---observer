@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, serializeTransaction } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { APPROVE_ABI } from "./approval-calldata.js";
 import { ROBINHOOD } from "./chain-config.js";
@@ -12,6 +12,7 @@ import {
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const router = "0x2222222222222222222222222222222222222222";
 const token = "0x3333333333333333333333333333333333333333";
+const foreign = "0x5555555555555555555555555555555555555555";
 const organizationId = "11111111-1111-7111-8111-111111111111";
 const signingUserId = "44444444-4444-7444-8444-444444444444";
 const config = { organizationId, walletAddress: account.address,
@@ -22,6 +23,42 @@ async function signed(data, to = router) {
   return account.signTransaction({ chainId: ROBINHOOD.chainId, type: "eip1559",
     to, data, value: 0n, nonce: 1, gas: 150000n,
     maxFeePerGas: 1000000000n, maxPriorityFeePerGas: 1000000n });
+}
+
+function unsigned({ data, to = router, chainId = ROBINHOOD.chainId, value = 0n,
+  gas = 150000n, maxFeePerGas = 1000000000n,
+  maxPriorityFeePerGas = 1000000n } = {}) {
+  return serializeTransaction({ chainId, type: "eip1559", to, data, value,
+    nonce: 1, gas, maxFeePerGas, maxPriorityFeePerGas });
+}
+
+const swapData = ({ amountIn = 100n, amountOutMin = 90n,
+  path = [ROBINHOOD.weth, token], recipient = account.address } = {}) =>
+  encodeFunctionData({ abi: V2_ROUTER_ABI,
+    functionName: "swapExactTokensForTokens",
+    args: [amountIn, amountOutMin, path, recipient, 2_000_000_000n] });
+
+function deniedTransactions() {
+  const allowedBuy = swapData();
+  return new Map([
+    ["wrong-chain", unsigned({ data: allowedBuy, chainId: 1 })],
+    ["non-zero-value", unsigned({ data: allowedBuy, value: 1n })],
+    ["foreign-router", unsigned({ data: allowedBuy, to: foreign })],
+    ["wrong-selector", unsigned({ data: `0xdeadbeef${allowedBuy.slice(10)}` })],
+    ["excessive-input", unsigned({ data: swapData({ amountIn: 1001n }) })],
+    ["zero-minimum-output", unsigned({ data: swapData({ amountOutMin: 0n }) })],
+    ["three-token-path", unsigned({ data: swapData({
+      path: [ROBINHOOD.weth, token, foreign] }) })],
+    ["wrong-weth-orientation", unsigned({ data: swapData({ path: [token, foreign] }) })],
+    ["foreign-recipient", unsigned({ data: swapData({ recipient: foreign }) })],
+    ["excessive-gas-or-fee", unsigned({ data: allowedBuy, gas: 400001n })],
+    ["foreign-approval-spender", unsigned({ to: token,
+      data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
+        args: [foreign, 100n] }) })],
+    ["approve-max-uint", unsigned({ to: token,
+      data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
+        args: [router, (1n << 256n) - 1n] }) })],
+  ]);
 }
 
 function activityBase(id) {
@@ -48,12 +85,15 @@ async function fixture() {
   ];
   const denials = REQUIRED_DENIAL_CASES.map((kind, index) =>
     ({ case: kind, activityId: `deny-${index + 1}` }));
+  const denied = deniedTransactions();
   const activities = new Map(allows.map((entry) => [entry.activityId, {
     ...activityBase(entry.activityId), status: "ACTIVITY_STATUS_COMPLETED",
     result: { signTransactionResult: { signedTransaction: entry.signedTransaction } },
   }]));
   for (const entry of denials) activities.set(entry.activityId, {
     ...activityBase(entry.activityId), status: "ACTIVITY_STATUS_REJECTED",
+    intent: { signTransactionIntentV2: { signWith: account.address,
+      unsignedTransaction: denied.get(entry.case) } },
     failure: { code: 7, message: "request rejected: policy denied" },
   });
   return { matrix: { runAt: Date.now(), allows: allows.map(({ signedTransaction, ...entry }) => entry),
@@ -95,4 +135,36 @@ test("rejects a completed activity from the wrong organization or signer", async
   assert.equal(result.verified, false);
   assert.ok(result.failures.includes("matrix-organization-mismatch"));
   assert.ok(result.failures.includes("matrix-signing-user-vote-missing"));
+});
+
+test("rejects relabelled denials unless the unsigned transaction has exactly the named defect", async () => {
+  const { matrix, activities } = await fixture();
+  activities.get("deny-2").intent.signTransactionIntentV2.unsignedTransaction =
+    activities.get("deny-1").intent.signTransactionIntentV2.unsignedTransaction;
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, false);
+  assert.ok(result.failures.includes("matrix-denial-case-mismatch"));
+});
+
+test("rejects a denial carrying the named defect plus a second defect", async () => {
+  const { matrix, activities } = await fixture();
+  activities.get("deny-1").intent.signTransactionIntentV2.unsignedTransaction = unsigned({
+    data: swapData({ amountOutMin: 0n }), chainId: 1,
+  });
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, false);
+  assert.ok(result.failures.includes("matrix-denial-case-mismatch"));
+});
+
+test("does not treat an otherwise allowed sell orientation as a denied buy orientation", async () => {
+  const { matrix, activities } = await fixture();
+  activities.get("deny-8").intent.signTransactionIntentV2.unsignedTransaction = unsigned({
+    data: swapData({ path: [token, ROBINHOOD.weth] }),
+  });
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, false);
+  assert.ok(result.failures.includes("matrix-denial-case-mismatch"));
 });
