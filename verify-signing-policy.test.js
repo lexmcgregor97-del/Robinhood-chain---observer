@@ -69,13 +69,32 @@ test("one-shot verification can emit a signed, expiring, config-bound attestatio
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" } });
   let written = null;
+  const matrix = { runAt: Date.now(),
+    allows: ["allow-buy", "allow-sell", "allow-approval"],
+    denials: Array.from({ length: 12 }, (_, index) => `deny-${index + 1}`) };
   const configured = { ...env, TURNKEY_SIGNING_ATTESTATION_FILE: "/tmp/not-written",
+    TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE: "/tmp/matrix.json",
     TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: Buffer.from(privateKey).toString("base64") };
   const result = await verifySigningPolicyOneShot(configured, { makeClient: clients(),
+    readMatrix: async () => JSON.stringify(matrix),
     writeAttestation: async (_path, document) => { written = document; } });
   assert.equal(result.verified, true);
   assert.equal(result.attestationWritten, true);
   const parsed = (await import("./micro-mainnet-config.js")).microMainnetConfigFromEnv(configured);
   assert.equal(verifySigningAttestation({ document: written, config: parsed,
     publicKeyPem: publicKey }).verified, true);
+  assert.equal(written.claims.behavioralMatrix.denials, 12);
+  assert.equal(written.claims.behavioralMatrix.allows, 3);
+});
+
+test("one-shot refuses to attest without a behavioral matrix", async () => {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256",
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" } });
+  const configured = { ...env, TURNKEY_SIGNING_ATTESTATION_FILE: "/tmp/not-written",
+    TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: Buffer.from(privateKey).toString("base64") };
+  const result = await verifySigningPolicyOneShot(configured, { makeClient: clients() });
+  assert.equal(result.verified, false);
+  assert.equal(result.attestationWritten, false);
+  assert.deepEqual(result.failures, ["signing-attestation-output-incomplete"]);
 });
