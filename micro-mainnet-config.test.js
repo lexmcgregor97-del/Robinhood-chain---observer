@@ -42,6 +42,7 @@ test("requires an exact two-part activation ceremony and bounded spend", () => {
     liveReadiness: { eligibleForMicroMainnet: true },
     signingCredentialVerified: true,
     signingPolicyVerified: true,
+    walletWethBalanceWei: "3000000000000000",
     pendingExecutions: 0,
     submissionPathConnected: true,
   });
@@ -63,9 +64,24 @@ test("never arms with pending execution state or incomplete independent checks",
   const config = microMainnetConfigFromEnv(configured);
   const result = assessMicroMainnetActivation({
     config, liveReadiness: { eligibleForMicroMainnet: true },
-    signingCredentialVerified: true, signingPolicyVerified: true, pendingExecutions: 1,
+    signingCredentialVerified: true, signingPolicyVerified: true,
+    walletWethBalanceWei: "3000000000000000", pendingExecutions: 1,
     submissionPathConnected: true,
   });
   assert.equal(result.armed, false);
   assert.ok(result.failures.includes("pending-execution-review-required"));
+});
+
+test("loss bound is the funded wallet balance, capped at the daily budget", () => {
+  const config = microMainnetConfigFromEnv(configured);
+  const common = { config, liveReadiness: { eligibleForMicroMainnet: true },
+    signingCredentialVerified: true, signingPolicyVerified: true,
+    pendingExecutions: 0, submissionPathConnected: true };
+  assert.ok(assessMicroMainnetActivation(common).failures
+    .includes("wallet-balance-not-verified"));
+  assert.ok(assessMicroMainnetActivation({ ...common,
+    walletWethBalanceWei: "3000000000000001" }).failures
+    .includes("wallet-balance-exceeds-daily-cap"));
+  assert.equal(assessMicroMainnetActivation({ ...common,
+    walletWethBalanceWei: "3000000000000000" }).armed, true);
 });
