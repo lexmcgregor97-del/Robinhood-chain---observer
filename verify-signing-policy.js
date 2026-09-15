@@ -1,11 +1,14 @@
 import { Turnkey } from "@turnkey/sdk-server";
 import { pathToFileURL } from "node:url";
+import { readFile } from "node:fs/promises";
 import { microMainnetConfigFromEnv } from "./micro-mainnet-config.js";
 import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
-import { createSigningAttestation, writeSigningAttestation } from "./signing-attestation.js";
+import {
+  createSigningAttestation, summarizeBehavioralMatrix, writeSigningAttestation,
+} from "./signing-attestation.js";
 
 export async function verifySigningPolicyOneShot(env = process.env, {
-  makeClient, writeAttestation = writeSigningAttestation,
+  makeClient, writeAttestation = writeSigningAttestation, readMatrix = readFile,
 } = {}) {
   const config = microMainnetConfigFromEnv(env);
   const signingPrivateKey = String(env.TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY || "");
@@ -42,16 +45,20 @@ export async function verifySigningPolicyOneShot(env = process.env, {
     let attestationWritten = false;
     const attestationPath = String(env.TURNKEY_SIGNING_ATTESTATION_FILE || "");
     const attestationPrivateKey = String(env.TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64 || "");
+    const matrixPath = String(env.TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE || "");
     if (attestationPath || attestationPrivateKey) {
-      if (!attestationPath || !attestationPrivateKey) {
+      if (!attestationPath || !attestationPrivateKey || !matrixPath) {
         failures.push("signing-attestation-output-incomplete");
       } else if (signingPolicy.verified && distinctUsers) {
         try {
           const issuedAt = Date.now();
           const ttlMs = Number(env.TURNKEY_SIGNING_ATTESTATION_TTL_MS || 6 * 60 * 60_000);
+          const matrix = JSON.parse(await readMatrix(matrixPath, "utf8"));
+          const behavioralMatrix = summarizeBehavioralMatrix(matrix, { now: issuedAt });
           const document = createSigningAttestation({ config,
             signingUserId: signingPolicy.userId,
             observerUserId: observerIdentity.userId,
+            behavioralMatrix,
             privateKeyPem: Buffer.from(attestationPrivateKey, "base64").toString("utf8"),
             issuedAt, expiresAt: issuedAt + ttlMs });
           await writeAttestation(attestationPath, document);
