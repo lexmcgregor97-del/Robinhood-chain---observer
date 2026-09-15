@@ -1,4 +1,6 @@
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const BLOCK_NUMBER = /^0x[0-9a-fA-F]+$/;
 const MINED_FINAL = new Set(["confirmed", "reverted"]);
 
 function minedStatus(receipt) {
@@ -17,13 +19,15 @@ const ageOf = (record, now) => Math.max(
 );
 
 export class ExecutionRecovery {
-  constructor({ journal, nonceLane, getReceipt }) {
-    if (!journal || !nonceLane || typeof getReceipt !== "function") {
+  constructor({ journal, nonceLane, getReceipt, expectedWalletAddress }) {
+    if (!journal || !nonceLane || typeof getReceipt !== "function"
+        || !ADDRESS.test(String(expectedWalletAddress || ""))) {
       throw new Error("invalid-execution-recovery-config");
     }
     this.journal = journal;
     this.nonceLane = nonceLane;
     this.getReceipt = getReceipt;
+    this.expectedWalletAddress = expectedWalletAddress.toLowerCase();
   }
 
   async finalizeMinedNonceResidue(outcomes) {
@@ -77,10 +81,22 @@ export class ExecutionRecovery {
         }
         continue;
       }
-      if (receipt.transactionHash
-          && String(receipt.transactionHash).toLowerCase() !== record.transactionHash.toLowerCase()) {
+      if (!TX_HASH.test(String(receipt.transactionHash || ""))
+          || String(receipt.transactionHash).toLowerCase() !== record.transactionHash.toLowerCase()) {
         outcomes.push(Object.freeze({ intentId, outcome: "rpc-error",
           failure: "execution-receipt-hash-mismatch" }));
+        continue;
+      }
+      if (!ADDRESS.test(String(receipt.from || ""))
+          || String(receipt.from).toLowerCase() !== this.expectedWalletAddress) {
+        outcomes.push(Object.freeze({ intentId, outcome: "rpc-error",
+          failure: "execution-receipt-sender-mismatch" }));
+        continue;
+      }
+      if (!(BLOCK_NUMBER.test(String(receipt.blockNumber || ""))
+          || (Number.isSafeInteger(receipt.blockNumber) && receipt.blockNumber >= 0))) {
+        outcomes.push(Object.freeze({ intentId, outcome: "rpc-error",
+          failure: "execution-receipt-block-invalid" }));
         continue;
       }
       const status = minedStatus(receipt);
@@ -89,7 +105,8 @@ export class ExecutionRecovery {
           failure: "execution-receipt-status-invalid" }));
         continue;
       }
-      await this.journal.transition(intentId, { status, receipt }, now);
+      await this.journal.transition(intentId, { status, receipt,
+        receiptBlock: receipt.blockNumber }, now);
       await this.nonceLane.finalize(intentId);
       outcomes.push(Object.freeze({ intentId, outcome: "reconciled", status }));
     }

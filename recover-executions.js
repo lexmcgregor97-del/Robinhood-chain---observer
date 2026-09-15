@@ -7,6 +7,9 @@ import { NonceLane } from "./nonce-lane.js";
 import { DailySpendLedger } from "./spend-ledger.js";
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
 import { ExecutionRecovery } from "./execution-recovery.js";
+import {
+  executionRecoveryLockPath,
+} from "./execution-recovery-lock.js";
 import { forbiddenRuntimeSecretFailures } from "./micro-mainnet-config.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
@@ -29,6 +32,12 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
   }
   const statePath = String(env.STATE_FILE || "");
   if (!statePath) throw new Error("execution-recovery-state-file-required");
+  const expectedWalletAddress = String(
+    env.TURNKEY_WALLET_ADDRESS || env.TURNKEY_SIGNING_WALLET_ADDRESS || "",
+  ).toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(expectedWalletAddress)) {
+    throw new Error("execution-recovery-wallet-address-required");
+  }
   const minimumStateAgeMs = integer(env.EXECUTION_RECOVERY_MIN_STATE_AGE_MS, 60_000);
   const manualReviewAfterMs = integer(env.EXECUTION_MANUAL_REVIEW_AFTER_MS, 10 * 60_000);
   const state = await loadJsonState(statePath);
@@ -41,7 +50,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
   await evidence.initialize();
   validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
 
-  const lockPath = `${statePath}.execution-recovery.lock`;
+  const lockPath = executionRecoveryLockPath(statePath);
   let lock;
   try {
     lock = await open(lockPath, "wx", 0o600);
@@ -72,9 +81,14 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
       if (writeBlocked) throw new Error("execution-recovery-write-blocked");
       try {
         const onDisk = await loadJsonState(statePath);
+        const observedEvidence = new EvidenceJournal(evidence.path);
+        await observedEvidence.initialize();
+        const observedEvidenceSnapshot = observedEvidence.snapshot();
         if (!onDisk || onDisk.savedAt !== state.savedAt
             || Number(onDisk.evidenceSequence || 0) !== evidence.snapshot().sequence
-            || String(onDisk.evidenceLastHash || "") !== String(evidence.snapshot().lastHash || "")) {
+            || String(onDisk.evidenceLastHash || "") !== String(evidence.snapshot().lastHash || "")
+            || observedEvidenceSnapshot.sequence !== evidence.snapshot().sequence
+            || observedEvidenceSnapshot.lastHash !== evidence.snapshot().lastHash) {
           throw new Error("execution-recovery-concurrent-runtime-detected");
         }
         await evidence.append({ epoch: state.paperStrategyVersion,
@@ -98,6 +112,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
       if (Number(record.chainId) !== chainId) throw new Error("execution-record-chain-mismatch");
     }
     const recovery = new ExecutionRecovery({ journal, nonceLane,
+      expectedWalletAddress,
       getReceipt: (transactionHash) => transport.request("eth_getTransactionReceipt", [transactionHash]) });
     const result = await recovery.reconcile({ now: Number(now), manualReviewAfterMs });
     validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });

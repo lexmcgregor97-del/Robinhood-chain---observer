@@ -150,6 +150,7 @@ export class ExecutionLifecycle {
   async recoverPending({ now = Date.now(), manualReviewAfterMs = 10 * 60_000 } = {}) {
     const recovery = new ExecutionRecovery({ journal: this.journal,
       nonceLane: this.nonceLane,
+      expectedWalletAddress: this.policy.walletAddress,
       getReceipt: (transactionHash) => this.provider.getReceipt(transactionHash) });
     const result = await recovery.reconcile({ now, manualReviewAfterMs });
     return result.outcomes.map((outcome) => Object.freeze({

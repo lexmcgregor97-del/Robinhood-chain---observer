@@ -53,6 +53,7 @@ import {
   executionPendingCount, validateExecutionCheckpoint,
 } from "./execution-checkpoint.js";
 import { createExecutionMutationSerializer } from "./execution-mutation-queue.js";
+import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -258,6 +259,9 @@ async function appendEvidence(payload) {
 
 async function appendEvidenceBatch(payloads) {
   try {
+    if (await blockIfExecutionRecoveryActive()) {
+      throw new Error("execution-recovery-in-progress");
+    }
     const recordedAt = Date.now();
     const records = await evidenceJournal.appendMany(payloads.map((payload) => ({
       epoch: PAPER_STRATEGY_VERSION,
@@ -268,11 +272,27 @@ async function appendEvidenceBatch(payloads) {
     if (!await persistState(true)) throw new Error("evidence-state-persist-failed");
     return records;
   } catch (error) {
-    persistence.automationBlockedReason = "evidence-journal-failed";
+    persistence.automationBlockedReason ||= "evidence-journal-failed";
     persistence.lastError = error instanceof Error ? error.message : String(error);
     persistence.writeBlocked = true;
     throw error;
   }
+}
+
+async function blockIfExecutionRecoveryActive() {
+  if (!STATE_FILE) return false;
+  try {
+    if (!await executionRecoveryLockPresent(STATE_FILE)) return false;
+  } catch {
+    persistence.writeBlocked = true;
+    persistence.automationBlockedReason = "execution-recovery-lock-check-failed";
+    persistence.lastError = "execution-recovery-lock-check-failed";
+    return true;
+  }
+  persistence.writeBlocked = true;
+  persistence.automationBlockedReason = "execution-recovery-in-progress";
+  persistence.lastError = "execution-recovery-in-progress";
+  return true;
 }
 
 async function verifyTurnkeyConfiguration() {
@@ -473,7 +493,7 @@ async function restoreState() {
     positionLiveness = new PositionLiveness({
       state: samePaperEpoch ? (state.positionLiveness || {}) : {},
     });
-    for (const lane of executionNonceLane.snapshot().lanes) {
+    for (const lane of persistence.writeBlocked ? [] : executionNonceLane.snapshot().lanes) {
       const intentId = lane.pending?.intentId;
       const record = intentId ? executionJournal.get(intentId) : null;
       if (record && new Set(["confirmed", "reverted"]).has(record.status)) {
@@ -1625,6 +1645,7 @@ function json(res, value) {
   res.end(JSON.stringify(value));
 }
 
+await blockIfExecutionRecoveryActive();
 await initializeEvidenceJournal();
 await restoreState();
 await verifyConfiguredGasMeasurement();

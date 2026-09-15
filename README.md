@@ -102,12 +102,16 @@ that confirmation on the long-running Railway service. The command refuses a
 recently changing state file, takes an exclusive recovery lock, validates the
 state/evidence checkpoint and chain ID, and uses only
 `eth_getTransactionReceipt`. Confirmed and reverted receipts are durably
-reconciled before their nonce lanes are released. Missing signed bytes, stale
-missing receipts, malformed receipts, and RPC errors remain non-final or
+reconciled only when the receipt hash and sender match the pending transaction;
+the actual receipt block is required and retained before the nonce lane is
+released. Missing signed bytes, stale missing receipts, malformed receipts, and RPC errors remain non-final or
 `manual-review`, so they continue to block activation. The command accepts no
 signing or attestation private material and never signs or broadcasts. Before
-each mutation it re-reads the on-disk checkpoint; any concurrent state writer
-blocks recovery before the evidence append.
+each mutation it re-reads both the on-disk state checkpoint and evidence chain;
+any concurrent writer blocks recovery before the evidence append. The web
+runtime checks for the same lock at startup and immediately before every
+evidence append; finding it permanently write-blocks that process until a clean
+restart after recovery.
 
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
@@ -125,7 +129,8 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Exact approval orchestration, native-gas funding checks,
+Journaled operator resolution for `manual-review`, exact approval
+orchestration, native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.

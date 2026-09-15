@@ -40,7 +40,7 @@ async function durableFixture() {
 const rpcFetch = async (_url, request) => {
   const { id, method, params } = JSON.parse(request.body);
   const result = method === "eth_chainId" ? "0x1237" : {
-    status: "0x1", transactionHash: params[0], blockNumber: "0x64",
+    status: "0x1", transactionHash: params[0], from: wallet, blockNumber: "0x64",
   };
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
     status: 200, headers: { "content-type": "application/json" },
@@ -52,6 +52,7 @@ test("isolated command reconciles receipt through evidence and atomic state", as
   try {
     const report = await runExecutionRecovery({
       env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet,
         RPC_URL: "https://rpc.invalid", EXECUTION_RECOVERY_CONFIRM:
           "RECONCILE_ATLAS_EXECUTIONS_OFFLINE", EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0" },
       fetchImpl: rpcFetch, now: Date.now() + 1_000,
@@ -85,6 +86,7 @@ test("isolated command rejects private material and a recently written state", a
   try {
     await assert.rejects(runExecutionRecovery({
       env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet,
         EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE" },
       now: Date.now(),
     }), /execution-runtime-may-still-be-running/);
@@ -104,6 +106,7 @@ test("chain mismatch fails before mutation and releases the exclusive lock", asy
   try {
     await assert.rejects(runExecutionRecovery({
       env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet,
         RPC_URL: "https://rpc.invalid", EXECUTION_RECOVERY_CONFIRM:
           "RECONCILE_ATLAS_EXECUTIONS_OFFLINE", EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0" },
       fetchImpl: wrongChainFetch, now: Date.now() + 1_000,
@@ -130,12 +133,13 @@ test("a checkpoint change during receipt reads blocks every recovery write", asy
     concurrentState.concurrentWriterMarker = true;
     await saveJsonState(fixture.statePath, concurrentState);
     return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: {
-      status: "0x1", transactionHash: params[0], blockNumber: "0x64",
+      status: "0x1", transactionHash: params[0], from: wallet, blockNumber: "0x64",
     } }), { status: 200, headers: { "content-type": "application/json" } });
   };
   try {
     await assert.rejects(runExecutionRecovery({
       env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet,
         RPC_URL: "https://rpc.invalid", EXECUTION_RECOVERY_CONFIRM:
           "RECONCILE_ATLAS_EXECUTIONS_OFFLINE", EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0" },
       fetchImpl: concurrentFetch, now: Date.now() + 1_000,
@@ -143,6 +147,42 @@ test("a checkpoint change during receipt reads blocks every recovery write", asy
     const state = await loadJsonState(fixture.statePath);
     assert.equal(state.concurrentWriterMarker, true);
     assert.equal(state.execution.journal.records[0].status, "broadcast");
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("an evidence append during receipt reads blocks recovery before its append", async () => {
+  const fixture = await durableFixture();
+  const concurrentFetch = async (_url, request) => {
+    const { id, method, params } = JSON.parse(request.body);
+    if (method === "eth_chainId") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: "0x1237" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    const concurrentEvidence = new EvidenceJournal(
+      join(fixture.evidenceDir, "test-epoch.jsonl"),
+    );
+    await concurrentEvidence.initialize();
+    await concurrentEvidence.append({ type: "concurrent-writer-test" });
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: {
+      status: "0x1", transactionHash: params[0], from: wallet, blockNumber: "0x64",
+    } }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await assert.rejects(runExecutionRecovery({
+      env: { STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+        TURNKEY_WALLET_ADDRESS: wallet,
+        RPC_URL: "https://rpc.invalid", EXECUTION_RECOVERY_CONFIRM:
+          "RECONCILE_ATLAS_EXECUTIONS_OFFLINE", EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0" },
+      fetchImpl: concurrentFetch, now: Date.now() + 1_000,
+    }), /execution-recovery-concurrent-runtime-detected/);
+    const state = await loadJsonState(fixture.statePath);
+    assert.equal(state.execution.journal.records[0].status, "broadcast");
+    const lines = (await readFile(
+      join(fixture.evidenceDir, "test-epoch.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 4);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
   }

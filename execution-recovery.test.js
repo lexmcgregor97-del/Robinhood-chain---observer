@@ -18,25 +18,26 @@ function fixture({ status = "broadcast", transactionHash = hash,
     key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
     pending: { intentId: "entry:1", nonce: 7 },
   }] });
-  const recovery = new ExecutionRecovery({ journal, nonceLane,
+  const recovery = new ExecutionRecovery({ journal, nonceLane, expectedWalletAddress: wallet,
     getReceipt: getReceipt || (async () => receipt) });
   return { journal, nonceLane, recovery };
 }
 
 test("reconciles a confirmed receipt and durably releases its nonce", async () => {
   const { journal, nonceLane, recovery } = fixture({ receipt: {
-    status: "0x1", transactionHash: hash, blockNumber: "0x10",
+    status: "0x1", transactionHash: hash, from: wallet, blockNumber: "0x10",
   } });
   const result = await recovery.reconcile({ now });
   assert.equal(result.counts.reconciled, 1);
   assert.equal(result.pendingExecutions, 0);
   assert.equal(journal.get("entry:1").status, "confirmed");
+  assert.equal(journal.get("entry:1").receiptBlock, "0x10");
   assert.equal(nonceLane.snapshot().lanes[0].pending, null);
 });
 
 test("retains a mined revert as a full-loss final outcome", async () => {
   const { journal, recovery } = fixture({ receipt: {
-    status: "0x0", transactionHash: hash,
+    status: "0x0", transactionHash: hash, from: wallet, blockNumber: "0x10",
   } });
   const result = await recovery.reconcile({ now });
   assert.equal(result.outcomes[0].status, "reverted");
@@ -70,8 +71,12 @@ test("an unsigned reservation is immediately marked for manual review", async ()
 test("RPC errors and malformed receipts cannot change durable state", async () => {
   for (const getReceipt of [
     async () => { throw new Error("provider-secret-text"); },
-    async () => ({ status: "unknown", transactionHash: hash }),
-    async () => ({ status: "0x1", transactionHash: `0x${"34".repeat(32)}` }),
+    async () => ({ status: "unknown", transactionHash: hash, from: wallet }),
+    async () => ({ status: "0x1", transactionHash: `0x${"34".repeat(32)}`, from: wallet }),
+    async () => ({ status: "0x1", transactionHash: hash }),
+    async () => ({ status: "0x1", transactionHash: hash,
+      from: "0x2222222222222222222222222222222222222222" }),
+    async () => ({ status: "0x1", transactionHash: hash, from: wallet }),
   ]) {
     const { journal, nonceLane, recovery } = fixture({ getReceipt });
     const result = await recovery.reconcile({ now });

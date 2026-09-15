@@ -167,7 +167,9 @@ test("reconciles a pending transaction after restart without signing or broadcas
   const journal = new ExecutionJournal({ records: [{
     intentId: rawIntent.id, status: "broadcast", transactionHash: hash, createdAt: now, updatedAt: now,
   }] });
-  const walletProvider = provider({ async getReceipt() { return { status: "success", blockNumber: 12 }; } });
+  const walletProvider = provider({ async getReceipt() { return {
+    status: "success", transactionHash: hash, from: wallet, blockNumber: 12,
+  }; } });
   const lifecycle = new ExecutionLifecycle({
     policy, preflight, ledger: new DailySpendLedger(), journal, nonceLane: new NonceLane({ lanes: [{
       key: `4663:${wallet}`, chainId: 4663, walletAddress: wallet, nextNonce: 8,
