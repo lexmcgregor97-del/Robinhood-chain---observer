@@ -36,6 +36,7 @@ import { Turnkey } from "@turnkey/sdk-server";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
 import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.js";
+import { probeV2Sell, sellProbeConfigFromEnv } from "./v2-sell-probe.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -88,6 +89,18 @@ let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, lastVerifiedAt: 
   observedCostWei: null, observedCostWeth: null,
   configuredWethPerSide: GAS_MEASUREMENT_CONFIG.configuredWethPerSide,
   failures: [...GAS_MEASUREMENT_CONFIG.failures] };
+const SELL_PROBE_CONFIG = sellProbeConfigFromEnv(process.env);
+let sellProbeLastAttemptAt = 0;
+let SELL_PROBE_STATUS = {
+  configured: SELL_PROBE_CONFIG.configured,
+  passed: false,
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  checkedPool: null,
+  method: null,
+  failures: [...SELL_PROBE_CONFIG.failures],
+};
+const sellProbeByPool = new Map();
 const QUALIFYING_PAPER_STRATEGY = Object.freeze({
   ...DEFAULT_PAPER_STRATEGY,
   maxHoldMs: 30 * 60_000,
@@ -576,6 +589,7 @@ function snapshot() {
     persistence,
     evidence: evidenceJournal.snapshot(),
     gasMeasurement: GAS_MEASUREMENT,
+    sellProbe: publicSellProbeStatus(),
     turnkey: turnkeyStatus,
   };
 }
@@ -748,6 +762,83 @@ async function marketSafety(pool) {
   }
 }
 
+function freshSellProbe(poolAddress, now = Date.now()) {
+  const result = sellProbeByPool.get(String(poolAddress || "").toLowerCase());
+  const checkedAt = Date.parse(result?.checkedAt || "");
+  if (!result?.passed || !Number.isFinite(checkedAt)
+      || now - checkedAt > SELL_PROBE_CONFIG.maxAgeMs) return null;
+  return result;
+}
+
+function sellProbeReady(now = Date.now()) {
+  const checkedAt = Date.parse(SELL_PROBE_STATUS.lastSuccessAt || "");
+  return SELL_PROBE_CONFIG.configured && SELL_PROBE_STATUS.passed === true
+    && Number.isFinite(checkedAt) && now - checkedAt <= SELL_PROBE_CONFIG.maxAgeMs;
+}
+
+function publicSellProbeStatus(now = Date.now()) {
+  return {
+    configured: SELL_PROBE_CONFIG.configured,
+    ready: sellProbeReady(now),
+    passed: SELL_PROBE_STATUS.passed,
+    lastAttemptAt: SELL_PROBE_STATUS.lastAttemptAt,
+    lastSuccessAt: SELL_PROBE_STATUS.lastSuccessAt,
+    checkedPool: SELL_PROBE_STATUS.checkedPool,
+    method: SELL_PROBE_STATUS.method,
+    maxAgeMs: SELL_PROBE_CONFIG.maxAgeMs,
+    failures: [...SELL_PROBE_STATUS.failures],
+  };
+}
+
+async function maybeRunSellProbe(measured, now = Date.now()) {
+  if (!SELL_PROBE_CONFIG.configured) return;
+  if (now - sellProbeLastAttemptAt < SELL_PROBE_CONFIG.intervalMs) return;
+  sellProbeLastAttemptAt = now;
+  const eligible = measured.filter((candidate) => (
+    candidate.version === "v2"
+    && candidate.marketSafety?.buyMathOk === true
+    && candidate.marketSafety?.sellMathOk === true
+    && candidate.lastSwap?.transactionHash
+    && candidate.lastSwap?.direction === (
+      candidate.token0 === candidate.marketSafety?.quoteToken
+        ? "token1-to-token0" : "token0-to-token1"
+    )
+  )).slice(0, 3);
+  if (!eligible.length) {
+    SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
+      lastAttemptAt: new Date(now).toISOString(), checkedPool: null,
+      failures: ["sell-probe-candidate-unavailable"] };
+    return;
+  }
+  let lastResult = null;
+  for (const candidate of eligible) {
+    const result = await probeV2Sell({
+      pool: candidate,
+      safety: candidate.marketSafety,
+      lastSwap: candidate.lastSwap,
+      latestBlock: metrics.latestBlock,
+      allowedRouters: SELL_PROBE_CONFIG.allowedRouters,
+      maxSwapAgeBlocks: SELL_PROBE_CONFIG.maxSwapAgeBlocks,
+      maxSlippageBps: SELL_PROBE_CONFIG.maxSlippageBps,
+      rpc,
+    });
+    sellProbeByPool.set(candidate.address, result);
+    lastResult = { candidate, result };
+    if (result.passed) break;
+  }
+  const checkedAt = new Date(now).toISOString();
+  SELL_PROBE_STATUS = {
+    configured: true,
+    passed: lastResult?.result?.passed === true,
+    lastAttemptAt: checkedAt,
+    lastSuccessAt: lastResult?.result?.passed
+      ? lastResult.result.checkedAt : SELL_PROBE_STATUS.lastSuccessAt,
+    checkedPool: lastResult?.candidate?.address || null,
+    method: lastResult?.result?.method || null,
+    failures: lastResult?.result?.failures || ["sell-probe-candidate-unavailable"],
+  };
+}
+
 async function paperExitQuote(pool, position) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg].map((address) => address.toLowerCase());
   const quoteIsToken0 = quoteTokens.includes(pool.token0);
@@ -840,11 +931,18 @@ async function measureCandidates(limit) {
     pool.version === "v2"
       && quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
   )).slice(0, limit);
-  return Promise.all(ranked.map(async (pool) => {
-    const measured = { ...pool, marketSafety: await marketSafety(pool) };
-    return { ...measured,
-      riskGate: evaluateRiskGate(measured, QUALIFYING_PAPER_RISK_POLICY) };
-  }));
+  const measured = await Promise.all(ranked.map(async (pool) => ({
+    ...pool, marketSafety: await marketSafety(pool),
+  })));
+  await maybeRunSellProbe(measured);
+  return measured.map((candidate) => {
+    const sellProbe = freshSellProbe(candidate.address);
+    const withProbe = sellProbe
+      ? { ...candidate, marketSafety: { ...candidate.marketSafety, sellProbe } }
+      : candidate;
+    return { ...withProbe,
+      riskGate: evaluateRiskGate(withProbe, QUALIFYING_PAPER_RISK_POLICY) };
+  });
 }
 
 async function candidates(limit = 10) {
@@ -899,6 +997,9 @@ function paperEntryAudit(candidate, feeRate) {
     buyAmountOut: candidate.marketSafety?.buyAmountOut ?? null,
     baseTokenDecimals: candidate.marketSafety?.baseTokenDecimals ?? null,
     lastSwapTransactionHash: candidate.lastSwap?.transactionHash ?? null,
+    sellProbePassed: candidate.marketSafety?.sellProbe?.passed === true,
+    sellProbeCheckedAt: candidate.marketSafety?.sellProbe?.checkedAt ?? null,
+    sellProbeMethod: candidate.marketSafety?.sellProbe?.method ?? null,
     feeRate,
   };
 }
@@ -1163,11 +1264,12 @@ function paperStatus() {
       lastCycleAt: lastPaperCycleAt || null },
     evidence: evidenceJournal.snapshot(),
     gasMeasurement: GAS_MEASUREMENT,
+    sellProbe: publicSellProbeStatus(),
     shadow,
     liveReadiness: assessLiveReadiness({
       paper: books.WETH.analytics,
       shadow: { uniquePools: escape.uniquePools, eligible: escape.promotion?.eligible },
-      sellProbeReady: false,
+      sellProbeReady: sellProbeReady(),
       walletConfigured: turnkeyStatus.authenticated && turnkeyStatus.addressMatch,
       turnkeyPolicyAttested: turnkeyStatus.readOnlyAttested === true,
       turnkeyPolicyVerified: turnkeyStatus.readOnlyVerified === true,
