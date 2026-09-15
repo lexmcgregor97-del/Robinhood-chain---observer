@@ -202,7 +202,8 @@ test("a dropped broadcast can rebroadcast only the identical persisted bytes", a
 test("per-intent preflight can fail closed before spend or provider access", async () => {
   const walletProvider = provider();
   const ledger = new DailySpendLedger();
-  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal: new ExecutionJournal(),
+  const journal = new ExecutionJournal();
+  const lifecycle = new ExecutionLifecycle({ policy, ledger, journal,
     nonceLane: new NonceLane(), provider: walletProvider,
     preflight: async () => ({ approved: false, failures: ["policy-revalidation-failed"] }) });
   const result = await lifecycle.submit(rawIntent, { now });
@@ -210,4 +211,6 @@ test("per-intent preflight can fail closed before spend or provider access", asy
     failures: ["policy-revalidation-failed"] });
   assert.deepEqual(ledger.snapshot(now).spent, {});
   assert.deepEqual(walletProvider.calls, []);
+  assert.deepEqual(journal.get(rawIntent.id).failures, ["policy-revalidation-failed"]);
+  assert.deepEqual(journal.pending(), []);
 });
