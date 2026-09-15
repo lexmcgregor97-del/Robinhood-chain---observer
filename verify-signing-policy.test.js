@@ -71,8 +71,8 @@ test("one-shot verification can emit a signed, expiring, config-bound attestatio
   let written = null;
   const matrix = { runAt: Date.now(), allows: [], denials: [] };
   const normalized = { runAt: matrix.runAt,
-    allows: ["allow-buy", "allow-sell", "allow-approval"],
-    denials: Array.from({ length: 12 }, (_, index) => `deny-${index + 1}`) };
+    allows: ["allow-buy", "allow-sell", "allow-approval", "allow-reset"],
+    denials: Array.from({ length: 13 }, (_, index) => `deny-${index + 1}`) };
   const configured = { ...env, TURNKEY_SIGNING_ATTESTATION_FILE: "/tmp/not-written",
     TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE: "/tmp/matrix.json",
     TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: Buffer.from(privateKey).toString("base64") };
@@ -85,8 +85,8 @@ test("one-shot verification can emit a signed, expiring, config-bound attestatio
   const parsed = (await import("./micro-mainnet-config.js")).microMainnetConfigFromEnv(configured);
   assert.equal(verifySigningAttestation({ document: written, config: parsed,
     publicKeyPem: publicKey }).verified, true);
-  assert.equal(written.claims.behavioralMatrix.denials, 12);
-  assert.equal(written.claims.behavioralMatrix.allows, 3);
+  assert.equal(written.claims.behavioralMatrix.denials, 13);
+  assert.equal(written.claims.behavioralMatrix.allows, 4);
 });
 
 test("one-shot refuses to attest without a behavioral matrix", async () => {

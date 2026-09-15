@@ -10,9 +10,10 @@ export const REQUIRED_DENIAL_CASES = Object.freeze([
   "wrong-chain", "non-zero-value", "foreign-router", "wrong-selector",
   "excessive-input", "zero-minimum-output", "three-token-path",
   "wrong-weth-orientation", "foreign-recipient", "excessive-gas-or-fee",
+  "excessive-fee",
   "foreign-approval-spender", "approve-max-uint",
 ]);
-const ALLOW_CASES = Object.freeze(["buy", "sell", "approval"]);
+const ALLOW_CASES = Object.freeze(["buy", "sell", "approval", "approval-reset"]);
 const DENIED = new Set(["ACTIVITY_STATUS_FAILED", "ACTIVITY_STATUS_REJECTED"]);
 const SWAP_SELECTOR = toFunctionSelector(
   "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)",
@@ -60,20 +61,23 @@ function commonTransactionFailures(transaction, config) {
 
 function validateAllowedCall(kind, transaction, entry, config) {
   const failures = commonTransactionFailures(transaction, config);
-  if (kind === "approval") {
+  if (kind === "approval" || kind === "approval-reset") {
     let call;
     try { call = decodeFunctionData({ abi: APPROVE_ABI, data: transaction.data }); } catch {
       return [...failures, "matrix-approval-calldata-invalid"];
     }
     const [spender, amount] = call.args;
     if (!allowedRouter(spender, config)) failures.push("matrix-approval-spender-invalid");
-    if (BigInt(amount) <= 0n || BigInt(amount) === MAX_UINT256) {
+    if ((kind === "approval" && BigInt(amount) <= 0n)
+        || (kind === "approval-reset" && BigInt(amount) !== 0n)
+        || BigInt(amount) === MAX_UINT256) {
       failures.push("matrix-approval-amount-invalid");
     }
     if (!entry.token || !sameAddress(transaction.to, entry.token)) {
       failures.push("matrix-approval-token-mismatch");
     }
-    if (!/^[1-9][0-9]*$/.test(String(entry.amount || ""))
+    const amountPattern = kind === "approval-reset" ? /^0$/ : /^[1-9][0-9]*$/;
+    if (!amountPattern.test(String(entry.amount ?? ""))
         || BigInt(entry.amount) !== BigInt(amount)) failures.push("matrix-approval-amount-mismatch");
     return failures;
   }
@@ -141,12 +145,14 @@ function commonDenialDeviations(transaction, config, { routerTarget = true } = {
   if (transaction.chainId !== ROBINHOOD.chainId) deviations.push("wrong-chain");
   if (BigInt(transaction.value || 0n) > 0n) deviations.push("non-zero-value");
   if (routerTarget && !allowedRouter(transaction.to, config)) deviations.push("foreign-router");
-  if (transaction.gas == null || BigInt(transaction.gas) > BigInt(config.maxGas)
-      || transaction.maxFeePerGas == null
+  if (transaction.gas == null || BigInt(transaction.gas) > BigInt(config.maxGas)) {
+    deviations.push("excessive-gas-or-fee");
+  }
+  if (transaction.maxFeePerGas == null
       || BigInt(transaction.maxFeePerGas) > BigInt(config.maxFeePerGasWei)
       || transaction.maxPriorityFeePerGas == null
       || BigInt(transaction.maxPriorityFeePerGas) > BigInt(config.maxFeePerGasWei)) {
-    deviations.push("excessive-gas-or-fee");
+    deviations.push("excessive-fee");
   }
   return deviations;
 }

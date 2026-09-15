@@ -36,7 +36,7 @@ export function summarizeBehavioralMatrix(matrix, { now = Date.now() } = {}) {
   const activityIds = [...allows, ...denials];
   if (!Number.isSafeInteger(runAt) || runAt > now + 5 * 60_000
       || now - runAt > MATRIX_MAX_AGE_MS) throw new Error("behavioral-matrix-run-invalid");
-  if (allows.length !== 3 || denials.length < 12 || activityIds.some((id) => !id.trim())
+  if (allows.length !== 4 || denials.length < 13 || activityIds.some((id) => !id.trim())
       || new Set(activityIds).size !== activityIds.length) {
     throw new Error("behavioral-matrix-results-incomplete");
   }
@@ -56,7 +56,7 @@ export function createSigningAttestation({
       || expiresAt <= issuedAt || expiresAt - issuedAt > DEFAULT_MAX_LIFETIME_MS) {
     throw new Error("invalid-signing-attestation-window");
   }
-  if (!behavioralMatrix || behavioralMatrix.denials < 12 || behavioralMatrix.allows !== 3
+  if (!behavioralMatrix || behavioralMatrix.denials < 13 || behavioralMatrix.allows !== 4
       || !Number.isSafeInteger(behavioralMatrix.runAt)
       || behavioralMatrix.runAt > issuedAt + 5 * 60_000
       || issuedAt - behavioralMatrix.runAt > MATRIX_MAX_AGE_MS
@@ -88,8 +88,8 @@ export function verifySigningAttestation({ document, config, publicKeyPem, now =
       if (claims.expiresAt <= now) failures.push("signing-attestation-expired");
     }
     if (claims.signingUserId === claims.observerUserId) failures.push("signing-users-not-distinct");
-    if (!claims.behavioralMatrix || claims.behavioralMatrix.denials < 12
-        || claims.behavioralMatrix.allows !== 3
+    if (!claims.behavioralMatrix || claims.behavioralMatrix.denials < 13
+        || claims.behavioralMatrix.allows !== 4
         || !Number.isSafeInteger(claims.behavioralMatrix.runAt)
         || claims.behavioralMatrix.runAt > now + 5 * 60_000
         || now - claims.behavioralMatrix.runAt > MATRIX_MAX_AGE_MS

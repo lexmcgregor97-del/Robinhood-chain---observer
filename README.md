@@ -75,7 +75,7 @@ using `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY` for that process. The command can
 write a P-256-signed, expiring attestation bound to the entire public execution
 configuration and a recent behavioral-matrix summary. Set
 `TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE` to a private JSON result containing
-`runAt`, structured buy/sell/approval successes, and the twelve named denial
+`runAt`, structured buy/sell/approval successes, and the thirteen named denial
 cases. The verifier fetches every activity from Turnkey and checks organization,
 signing-user vote, wallet, status, type, policy-denial failure, and the decoded
 transaction before issuing anything. Successful activities are checked from
@@ -88,8 +88,28 @@ Policy-denial recognition is
 temporarily conservative text matching over Turnkey's failure object; the
 first real-organization ceremony must capture and pin the exact structured
 failure field before execution is connected. The signed claims contain only
-their counts, timestamp, and SHA-256 digest. The
-web runtime holds only the attestation public key, reads the attestation file,
+their counts, timestamp, and SHA-256 digest.
+
+Generate that private matrix with `npm run matrix:turnkey` only inside a
+temporary service with no public domain, no persistent volume, and both live
+worker flags false. It additionally requires the exact
+`TURNKEY_MATRIX_CONFIRMATION=RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST`, a non-WETH
+`TURNKEY_MATRIX_TOKEN_ADDRESS`, the signing verification key, and a private
+`TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE` output path. The command creates four
+allowed signing activities (buy, sell, exact approval, and zero-reset approval)
+plus thirteen named policy denials (independent gas and fee cap cases),
+re-fetches and verifies every activity, writes the matrix mode `0600`, and has
+no RPC or broadcast dependency. Every generated transaction uses nonce
+`Number.MAX_SAFE_INTEGER`, and swap calls also use an already-expired deadline,
+so the genuine allowed-case signatures cannot become latent executable
+transactions after the wallet is funded. Swaps therefore have two independent
+guards: unreachable nonce and expired deadline. Approvals have no deadline and
+rely on the unreachable nonce; their payloads are additionally limited to zero
+or one token unit for an allowlisted router. Re-running creates a new Turnkey
+activity set and overwrites the local matrix output, so preserve an earlier
+result separately if history is required.
+
+The web runtime holds only the attestation public key, reads the attestation file,
 and uses the observer credential to re-check the signing user and exact policy
 set hourly. Expiry, signature failure, missing behavioral evidence,
 configuration drift, or policy drift closes activation. The verifier requires different observer and
