@@ -174,6 +174,19 @@ exact window bounds are returned in the report and stored in the durable
 operator resolution. The command never releases the nonce or broadcasts the
 transaction.
 
+The same isolated command can rebroadcast a recovered or already durable signed
+transaction only with the exact
+`REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD` assertion. Before any network send,
+it re-derives the stored payload hash, parses the transaction, recovers the
+configured wallet signer, binds chain and nonce to the journal, and requires
+exact ownership of the pending nonce lane. It reads both confirmed and pending
+account nonces; any advancement past the journaled nonce is durably returned to
+manual review without broadcasting. Otherwise it durably checkpoints
+`rebroadcast-requested` before sending the exact stored bytes with
+`eth_sendRawTransaction`, requires the RPC's returned hash to match, checkpoints
+`broadcast`, and immediately runs receipt reconciliation. The nonce is released
+only by the existing evidence-first mined-receipt path.
+
 MoonPay CLI supports Robinhood Chain swaps, but its current high-level swap command builds routes and approvals through swaps.xyz before signing locally. Atlas does not use that command for execution because it cannot yet independently validate the final unsigned transaction against this policy. MoonPay remains a candidate quote/execution adapter only after that boundary is separable.
 
 ## Measurement model

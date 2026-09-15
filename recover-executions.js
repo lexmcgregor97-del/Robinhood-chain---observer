@@ -18,6 +18,7 @@ import { ROBINHOOD } from "./chain-config.js";
 import { Turnkey } from "@turnkey/sdk-server";
 import { turnkeyConfigFromEnv, probeTurnkeyPolicy } from "./turnkey-probe.js";
 import { restoreUniqueAmbiguousSigningActivity } from "./turnkey-ambiguous-signing-recovery.js";
+import { ExecutionRebroadcastResolver } from "./execution-rebroadcast.js";
 
 const CONFIRMATION = "RECONCILE_ATLAS_EXECUTIONS_OFFLINE";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -116,6 +117,8 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     const preExistingManualReviewIds = new Set(journal.pending()
       .filter((record) => record.status === "manual-review")
       .map((record) => record.intentId));
+    const preExistingRecords = new Map(journal.pending()
+      .map((record) => [record.intentId, record]));
     for (const record of journal.pending()) {
       if (Number(record.chainId) !== chainId) throw new Error("execution-record-chain-mismatch");
     }
@@ -124,13 +127,35 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
       getReceipt: (transactionHash) => transport.request("eth_getTransactionReceipt", [transactionHash]) });
     const result = await recovery.reconcile({ now: Number(now), manualReviewAfterMs });
     let operatorResolution = null;
+    let postBroadcastRecovery = null;
     const resolutionIntentId = String(env.EXECUTION_MANUAL_REVIEW_INTENT_ID || "");
     if (resolutionIntentId) {
-      if (!preExistingManualReviewIds.has(resolutionIntentId)) {
+      const rebroadcastRequested = env.EXECUTION_MANUAL_REVIEW_CONFIRM
+        === "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD";
+      if ((!rebroadcastRequested && !preExistingManualReviewIds.has(resolutionIntentId))
+          || (rebroadcastRequested && !preExistingRecords.has(resolutionIntentId))) {
         throw new Error("manual-review-label-not-yet-durable");
       }
       const resolver = new ExecutionManualReviewResolver({ journal, nonceLane });
-      if (env.EXECUTION_MANUAL_REVIEW_CONFIRM
+      if (rebroadcastRequested) {
+        const reconciledRecord = journal.get(resolutionIntentId);
+        if (new Set(["confirmed", "reverted"]).has(reconciledRecord?.status)) {
+          operatorResolution = Object.freeze({ intentId: resolutionIntentId,
+            status: reconciledRecord.status, resolution: "receipt-reconciled-before-rebroadcast" });
+        } else {
+          const rebroadcast = new ExecutionRebroadcastResolver({ journal, nonceLane,
+            expectedWalletAddress,
+            getTransactionCount: (address, tag) =>
+              transport.request("eth_getTransactionCount", [address, tag]),
+            broadcastRaw: (payload) => transport.request("eth_sendRawTransaction", [payload]) });
+          operatorResolution = await rebroadcast.rebroadcastIdentical(resolutionIntentId, {
+            now: Number(now), operatorAssertion: env.EXECUTION_MANUAL_REVIEW_CONFIRM });
+          if (operatorResolution.status === "broadcast") {
+            postBroadcastRecovery = await recovery.reconcile({ now: Number(now),
+              manualReviewAfterMs });
+          }
+        }
+      } else if (env.EXECUTION_MANUAL_REVIEW_CONFIRM
           === "RESTORE_ATLAS_SIGNED_TRANSACTION_FROM_TURNKEY") {
         const observer = turnkeyConfigFromEnv(env);
         const signingUserId = String(env.TURNKEY_SIGNING_USER_ID || "");
@@ -182,7 +207,7 @@ export async function runExecutionRecovery({ env = process.env, fetchImpl = fetc
     validateEvidenceCheckpoint({ state, journal: evidence.snapshot() });
     const report = Object.freeze({ ...result,
       pendingExecutions: journal.pending().length,
-      operatorResolution,
+      operatorResolution, postBroadcastRecovery,
       rpc: transport.snapshot(), writeBlocked });
     output(JSON.stringify(report));
     return report;

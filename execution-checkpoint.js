@@ -62,7 +62,8 @@ export function validateExecutionCheckpoint({ execution = {}, typeCounts = {} } 
     pendingIntentIds.add(intentId);
   }
   for (const record of records.values()) {
-    if (new Set(["nonce-reserved", "signing-requested", "signed", "broadcast"]).has(record.status)
+    if (new Set(["nonce-reserved", "signing-requested", "signed", "rebroadcast-requested",
+      "broadcast"]).has(record.status)
         && !pendingIntentIds.has(record.intentId)) {
       throw new Error("execution-journal-nonce-divergence");
     }

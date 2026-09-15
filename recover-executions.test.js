@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { loadJsonState, saveJsonState } from "./state-store.js";
 import { runExecutionRecovery } from "./recover-executions.js";
-import { serializeTransaction } from "viem";
+import { keccak256, serializeTransaction } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { executionIntentTransactionDigest } from "./execution-transaction-digest.js";
 
@@ -227,6 +227,57 @@ test("isolated command lists, re-fetches, and restores one exact Turnkey activit
     assert.equal(state.execution.journal.records[0].operatorResolution.activityId,
       "activity-exact");
     assert.notEqual(state.execution.nonceLane.lanes[0].pending, null);
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("isolated command checkpoints and rebroadcasts only the journaled payload", async () => {
+  const fixture = await durableFixture();
+  const transaction = { chainId: 4663, type: "eip1559", nonce: 7,
+    to: "0x2222222222222222222222222222222222222222", data: "0x12345678",
+    value: 0n, gas: 150000n, maxFeePerGas: 1000000000n,
+    maxPriorityFeePerGas: 1000000n };
+  const signedPayload = await signingAccount.signTransaction(transaction);
+  const transactionHash = keccak256(signedPayload);
+  const state = await loadJsonState(fixture.statePath);
+  Object.assign(state.execution.journal.records[0], { status: "signed", nonce: 7,
+    signedPayload, transactionHash, updatedAt: Date.now() });
+  state.execution.nonceLane.lanes[0].walletAddress = signingAccount.address.toLowerCase();
+  state.execution.nonceLane.lanes[0].key = `4663:${signingAccount.address.toLowerCase()}`;
+  await saveJsonState(fixture.statePath, state);
+  const methods = [];
+  const rebroadcastFetch = async (_url, request) => {
+    const { id, method, params } = JSON.parse(request.body);
+    methods.push(method);
+    let result;
+    if (method === "eth_chainId") result = "0x1237";
+    else if (method === "eth_getTransactionReceipt") result = null;
+    else if (method === "eth_getTransactionCount") result = "0x7";
+    else if (method === "eth_sendRawTransaction") {
+      assert.equal(params[0], signedPayload);
+      result = transactionHash;
+    } else throw new Error(`unexpected-method:${method}`);
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const report = await runExecutionRecovery({ env: {
+      STATE_FILE: fixture.statePath, EVIDENCE_DIR: fixture.evidenceDir,
+      TURNKEY_WALLET_ADDRESS: signingAccount.address, RPC_URL: "https://rpc.invalid",
+      EXECUTION_RECOVERY_CONFIRM: "RECONCILE_ATLAS_EXECUTIONS_OFFLINE",
+      EXECUTION_RECOVERY_MIN_STATE_AGE_MS: "0", EXECUTION_MANUAL_REVIEW_INTENT_ID: "entry:1",
+      EXECUTION_MANUAL_REVIEW_CONFIRM: "REBROADCAST_ATLAS_IDENTICAL_SIGNED_PAYLOAD",
+    }, fetchImpl: rebroadcastFetch, now: Date.now() + 1 });
+    assert.equal(report.operatorResolution.status, "broadcast");
+    assert.equal(methods.filter((method) => method === "eth_sendRawTransaction").length, 1);
+    assert.ok(report.postBroadcastRecovery);
+    const restored = await loadJsonState(fixture.statePath);
+    assert.equal(restored.execution.journal.records[0].status, "broadcast");
+    assert.equal(restored.execution.journal.records[0].operatorResolution.transactionHash,
+      transactionHash);
+    assert.notEqual(restored.execution.nonceLane.lanes[0].pending, null);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
   }
