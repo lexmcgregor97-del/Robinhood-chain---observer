@@ -77,11 +77,15 @@ async function fixture() {
     args: [100n, 1n, [token, ROBINHOOD.weth], account.address, deadline] }));
   const approval = await signed(encodeFunctionData({ abi: APPROVE_ABI,
     functionName: "approve", args: [router, 100n] }), token);
+  const approvalReset = await signed(encodeFunctionData({ abi: APPROVE_ABI,
+    functionName: "approve", args: [router, 0n] }), token);
   const allows = [
     { case: "buy", activityId: "allow-buy", signedTransaction: buy },
     { case: "sell", activityId: "allow-sell", signedTransaction: sell },
     { case: "approval", activityId: "allow-approval", signedTransaction: approval,
       token, amount: "100" },
+    { case: "approval-reset", activityId: "allow-approval-reset",
+      signedTransaction: approvalReset, token, amount: "0" },
   ];
   const denials = REQUIRED_DENIAL_CASES.map((kind, index) =>
     ({ case: kind, activityId: `deny-${index + 1}` }));
@@ -106,7 +110,7 @@ test("verifies real completed signing outcomes and policy-denied activities", as
     getActivity: async ({ activityId }) => ({ activity: activities.get(activityId) }) });
   assert.equal(result.verified, true);
   assert.deepEqual(result.normalized.allows,
-    ["allow-buy", "allow-sell", "allow-approval"]);
+    ["allow-buy", "allow-sell", "allow-approval", "allow-approval-reset"]);
   assert.equal(result.normalized.denials.length, 12);
 });
 
@@ -140,7 +144,7 @@ test("rejects malformed serialized hex before parsing", async () => {
 
 test("rejects fabricated IDs, missing cases, and non-policy failures", async () => {
   const malformed = await verifyTurnkeyActivityMatrix({ matrix: {
-    runAt: Date.now(), allows: ["a", "b", "c"], denials: Array(12).fill("d") },
+    runAt: Date.now(), allows: ["a", "b", "c", "d"], denials: Array(12).fill("e") },
   config, signingUserId, getActivity: async () => ({}) });
   assert.equal(malformed.verified, false);
   assert.ok(malformed.failures.includes("behavioral-matrix-allow-cases-incomplete"));

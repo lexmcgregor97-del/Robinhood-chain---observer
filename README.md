@@ -89,7 +89,21 @@ temporarily conservative text matching over Turnkey's failure object; the
 first real-organization ceremony must capture and pin the exact structured
 failure field before execution is connected. The signed claims contain only
 their counts, timestamp, and SHA-256 digest. The
-web runtime holds only the attestation public key, reads the attestation file,
+
+Generate that private matrix with `npm run matrix:turnkey` only inside a
+temporary service with no public domain, no persistent volume, and both live
+worker flags false. It additionally requires the exact
+`TURNKEY_MATRIX_CONFIRMATION=RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST`, a non-WETH
+`TURNKEY_MATRIX_TOKEN_ADDRESS`, the signing verification key, and a private
+`TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE` output path. The command creates four
+allowed signing activities (buy, sell, exact approval, and zero-reset approval)
+plus the twelve named policy denials, re-fetches and verifies every activity,
+writes the matrix mode `0600`, and has no RPC or broadcast dependency.
+Every generated transaction uses nonce `Number.MAX_SAFE_INTEGER`, and swap calls also use
+an already-expired deadline, so the genuine allowed-case signatures cannot
+become latent executable transactions after the wallet is funded.
+
+The web runtime holds only the attestation public key, reads the attestation file,
 and uses the observer credential to re-check the signing user and exact policy
 set hourly. Expiry, signature failure, missing behavioral evidence,
 configuration drift, or policy drift closes activation. The verifier requires different observer and

@@ -15,7 +15,7 @@ const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
   publicKeyEncoding: { type: "spki", format: "pem" } });
 const matrix = summarizeBehavioralMatrix({ runAt: 1_000,
-  allows: ["allow-buy", "allow-sell", "allow-approve"],
+  allows: ["allow-buy", "allow-sell", "allow-approve", "allow-reset"],
   denials: Array.from({ length: 12 }, (_, index) => `deny-${index}`) }, { now: 1_500 });
 
 test("signs an expiring attestation bound to the complete public execution config", () => {
@@ -42,7 +42,7 @@ test("rejects expiry, config drift, signature changes, and one user holding both
     privateKeyPem: privateKey }), /invalid-signing-attestation-input/);
 });
 
-test("behavioral matrix summary requires three allows and twelve unique denials", () => {
+test("behavioral matrix summary requires four allows and twelve unique denials", () => {
   assert.throws(() => summarizeBehavioralMatrix({ runAt: 1_000,
     allows: ["a"], denials: ["d"] }, { now: 1_500 }), /results-incomplete/);
   assert.throws(() => createSigningAttestation({ config, signingUserId: "signer",
