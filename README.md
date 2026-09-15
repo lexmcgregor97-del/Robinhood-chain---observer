@@ -93,6 +93,22 @@ Never hand-edit either checkpoint, never reuse the old evidence file, and abort
 the epoch bump on any pending intent or reconciliation mismatch. Until that
 tool exists, any non-empty execution history prohibits a paper epoch bump.
 
+Receipt recovery is an offline, read-only-chain ceremony. Scale the Atlas web
+runtime to zero, wait at least 60 seconds so the state checkpoint is quiescent,
+and run `npm run recover:executions` from a one-shot process attached to the same
+persistent volume with `STATE_FILE`, `RPC_URL`/`RPC_FALLBACK_URLS`, and
+`EXECUTION_RECOVERY_CONFIRM=RECONCILE_ATLAS_EXECUTIONS_OFFLINE`. Never configure
+that confirmation on the long-running Railway service. The command refuses a
+recently changing state file, takes an exclusive recovery lock, validates the
+state/evidence checkpoint and chain ID, and uses only
+`eth_getTransactionReceipt`. Confirmed and reverted receipts are durably
+reconciled before their nonce lanes are released. Missing signed bytes, stale
+missing receipts, malformed receipts, and RPC errors remain non-final or
+`manual-review`, so they continue to block activation. The command accepts no
+signing or attestation private material and never signs or broadcasts. Before
+each mutation it re-reads the on-disk checkpoint; any concurrent state writer
+blocks recovery before the evidence append.
+
 The branch includes a dormant Turnkey-backed viem provider that obtains the
 pending nonce, estimates gas, rejects gas or EIP-1559 fees above configured
 caps, signs, checks the signed hash, and broadcasts once. The lifecycle records
@@ -109,7 +125,7 @@ wallet, not the per-transaction limit. Activation requires a freshly measured
 wallet balance no greater than the daily cap; live execution must re-check that
 balance immediately before each intent and funding must remain just-in-time.
 
-Exact approval orchestration, receipt-aware execution recovery, native-gas funding checks,
+Exact approval orchestration, native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
 reviewed.

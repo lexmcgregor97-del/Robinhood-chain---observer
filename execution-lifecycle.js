@@ -1,5 +1,6 @@
 import { evaluateExecutionPolicy } from "./execution-policy.js";
 import { validateV2RouterCalldata } from "./router-calldata.js";
+import { ExecutionRecovery } from "./execution-recovery.js";
 import { keccak256 } from "viem";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -147,30 +148,13 @@ export class ExecutionLifecycle {
   }
 
   async recoverPending({ now = Date.now(), manualReviewAfterMs = 10 * 60_000 } = {}) {
-    const outcomes = [];
-    for (const record of this.journal.pending()) {
-      if (!record.transactionHash) {
-        outcomes.push(Object.freeze({ ...record, recovery: "manual-review" }));
-        continue;
-      }
-      try {
-        const receipt = await this.provider.getReceipt(record.transactionHash);
-        if (!receipt) {
-          const ageMs = Math.max(0, now - Number(record.updatedAt || record.createdAt || now));
-          outcomes.push(Object.freeze({ ...record,
-            recovery: ageMs >= manualReviewAfterMs ? "manual-review" : "still-pending" }));
-          continue;
-        }
-        const succeeded = receipt.status === "success" || receipt.status === 1 || receipt.status === "0x1";
-        const status = succeeded ? "confirmed" : "reverted";
-        await this.journal.transition(record.intentId, { status, receipt }, now);
-        await this.nonceLane.finalize(record.intentId);
-        outcomes.push(Object.freeze({ ...record, status, receipt, recovery: "reconciled" }));
-      } catch (error) {
-        outcomes.push(Object.freeze({ ...record, recovery: "rpc-error", error: error.message }));
-      }
-    }
-    return outcomes;
+    const recovery = new ExecutionRecovery({ journal: this.journal,
+      nonceLane: this.nonceLane,
+      getReceipt: (transactionHash) => this.provider.getReceipt(transactionHash) });
+    const result = await recovery.reconcile({ now, manualReviewAfterMs });
+    return result.outcomes.map((outcome) => Object.freeze({
+      ...outcome, recovery: outcome.outcome,
+    }));
   }
 
   async rebroadcastIdentical(intentId, { now = Date.now() } = {}) {
