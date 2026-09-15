@@ -96,6 +96,20 @@ test("requires an explicit read-only policy attestation", () => {
   assert.equal(result.readOnlyAttested, true);
 });
 
+test("accepts Turnkey UUIDv7 identifiers", () => {
+  const result = turnkeyConfigFromEnv({
+    TURNKEY_ORGANIZATION_ID: "01999999-1111-7111-8111-111111111111",
+    TURNKEY_WALLET_ID: "01999999-2222-7222-8222-222222222222",
+    TURNKEY_WALLET_ADDRESS: config.walletAddress,
+    TURNKEY_API_PUBLIC_KEY: "public",
+    TURNKEY_API_PRIVATE_KEY: "private",
+    TURNKEY_POLICY_ID: "01a0a399-5887-7e0d-8892-11b0679add72",
+    TURNKEY_READ_ONLY_ATTESTED: "true",
+  });
+  assert.equal(result.configured, true);
+  assert.equal(result.identifiersValid, true);
+});
+
 test("verifies the configured wallet and address through a read-only query", async () => {
   const result = await probeTurnkeyWallet({ config, getWalletAccounts: async () => ({
     accounts: [{ walletId: config.walletId, walletAccountId: "account-id",
