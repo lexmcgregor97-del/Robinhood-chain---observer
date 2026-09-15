@@ -69,7 +69,8 @@ test("one-shot verification can emit a signed, expiring, config-bound attestatio
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" } });
   let written = null;
-  const matrix = { runAt: Date.now(),
+  const matrix = { runAt: Date.now(), allows: [], denials: [] };
+  const normalized = { runAt: matrix.runAt,
     allows: ["allow-buy", "allow-sell", "allow-approval"],
     denials: Array.from({ length: 12 }, (_, index) => `deny-${index + 1}`) };
   const configured = { ...env, TURNKEY_SIGNING_ATTESTATION_FILE: "/tmp/not-written",
@@ -77,6 +78,7 @@ test("one-shot verification can emit a signed, expiring, config-bound attestatio
     TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64: Buffer.from(privateKey).toString("base64") };
   const result = await verifySigningPolicyOneShot(configured, { makeClient: clients(),
     readMatrix: async () => JSON.stringify(matrix),
+    verifyMatrix: async () => ({ verified: true, normalized, failures: [] }),
     writeAttestation: async (_path, document) => { written = document; } });
   assert.equal(result.verified, true);
   assert.equal(result.attestationWritten, true);
