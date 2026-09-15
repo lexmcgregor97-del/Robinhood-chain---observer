@@ -23,9 +23,14 @@ wallet while the signing API public key differs.
 
 The signing private key must never be placed in the Railway web service. Policy
 metadata is verified only by the isolated `npm run verify:signing` command,
-using `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY` for that process. The verifier
-requires different observer and signing users and exactly three applicable
-ALLOW policies: buy swap, sell swap, and approval. Buy and sell policies bind
+using `TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY` for that process. The command can
+write a P-256-signed, expiring attestation bound to the entire public execution
+configuration. The web runtime holds only the attestation public key, reads the
+attestation file, and uses the observer credential to re-check the signing user
+and exact policy set hourly. Expiry, signature failure, configuration drift, or
+policy drift closes activation. The verifier requires different observer and
+signing users and exactly three applicable ALLOW policies: buy swap, sell swap,
+and approval. Buy and sell policies bind
 chain 4663, zero native value, bounded EIP-1559 gas fields, the allowlisted V2
 routers, `swapExactTokensForTokens`, a two-address path, and Atlas as recipient;
 the buy additionally caps WETH input and begins with WETH, while the sell ends
@@ -44,7 +49,14 @@ rebroadcast only the identical stored bytes. It is deliberately not connected
 to candidate selection or any HTTP endpoint. Public status reports
 `boundary: review-only-disconnected` and activation fails with
 `execution-submission-path-not-connected`; adding credentials cannot cause a
-transaction. Exact approval orchestration, crash-persistent execution/nonce/
+transaction. The policy prevents direct asset transfer out, but it cannot stop a
+compromised signer from trading into a hostile pool at a negligible minimum
+output. The compromise loss bound is therefore the WETH funded in the signing
+wallet, not the per-transaction limit. Activation requires a freshly measured
+wallet balance no greater than the daily cap; live execution must re-check that
+balance immediately before each intent and funding must remain just-in-time.
+
+Exact approval orchestration, crash-persistent execution/nonce/
 spend state, evidence checkpoint reconciliation, native-gas funding checks,
 post-buy sell re-probing, the behavioral policy matrix, and the final
 strategy-to-intent binding remain required before that connection can be
@@ -135,6 +147,15 @@ Turnkey read-only verification requires that the API user is outside the root
 quorum, owns the configured API key, has zero applicable `EFFECT_ALLOW`
 policies, and is covered by the configured `EFFECT_DENY` policy. Conditions are
 not interpreted as a safety allowlist: any applicable ALLOW fails closed.
+
+For the future signing attestation, generate a separate P-256 operator keypair.
+Provide its base64-encoded private PEM only to the isolated
+`npm run verify:signing` process through
+`TURNKEY_SIGNING_ATTESTATION_PRIVATE_KEY_PEM_B64`. Give the web runtime only the
+base64-encoded public PEM and the generated attestation file. The default
+attestation lifetime is six hours and the hard maximum is 24 hours. The
+one-shot Turnkey signing API private key and the attestation private key must
+never be added to Railway service variables.
 
 ## Run
 
