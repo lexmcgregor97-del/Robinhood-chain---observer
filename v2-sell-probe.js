@@ -29,6 +29,10 @@ const positiveInteger = (value, fallback) => {
   const parsed = Number(value ?? fallback);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
+const nonNegativeInteger = (value, fallback) => {
+  const parsed = Number(value ?? fallback);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+};
 
 const uintWord = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
 
@@ -64,17 +68,60 @@ export function sellProbeConfigFromEnv(env = process.env) {
   const maxSwapAgeBlocks = positiveInteger(env.SELL_PROBE_MAX_SWAP_AGE_BLOCKS, 1_200);
   const maxSlippageBps = positiveInteger(env.SELL_PROBE_MAX_SLIPPAGE_BPS, 500);
   const maxStorageSlot = positiveInteger(env.SELL_PROBE_MAX_STORAGE_SLOT, 24);
+  const negativeCacheMs = positiveInteger(env.SELL_PROBE_NEGATIVE_CACHE_MS, 60 * 60_000);
+  const canaryBalanceSlot = nonNegativeInteger(env.SELL_PROBE_CANARY_BALANCE_SLOT, 51);
   if (!intervalMs || intervalMs < 60_000) failures.push("sell-probe-interval-invalid");
   if (!maxAgeMs || maxAgeMs < intervalMs) failures.push("sell-probe-max-age-invalid");
   if (!maxSwapAgeBlocks) failures.push("sell-probe-swap-age-invalid");
   if (!maxSlippageBps || maxSlippageBps > 2_000) failures.push("sell-probe-slippage-invalid");
   if (!maxStorageSlot || maxStorageSlot > 256) failures.push("sell-probe-storage-range-invalid");
+  if (!negativeCacheMs || negativeCacheMs < intervalMs) {
+    failures.push("sell-probe-negative-cache-invalid");
+  }
+  if (canaryBalanceSlot === null || canaryBalanceSlot > 256) {
+    failures.push("sell-probe-canary-slot-invalid");
+  }
   return Object.freeze({
     configured: failures.length === 0,
     allowedRouters: Object.freeze(allowedRouters),
     intervalMs, maxAgeMs, maxSwapAgeBlocks, maxSlippageBps, maxStorageSlot,
+    negativeCacheMs, canaryBalanceSlot,
     failures: Object.freeze(failures),
   });
+}
+
+export async function probeStateOverrideSupport({
+  token, walletAddress, balanceSlot = 51, rpc,
+  now = Date.now(),
+}) {
+  const checkedAt = new Date(now).toISOString();
+  const fail = (failure) => Object.freeze({
+    checked: true, supported: false, checkedAt, failures: [failure],
+  });
+  const normalizedToken = lower(token);
+  const wallet = lower(walletAddress);
+  if (!isAddress(normalizedToken) || !isAddress(wallet)) {
+    return fail("sell-probe-canary-address-invalid");
+  }
+  if (!Number.isInteger(Number(balanceSlot)) || Number(balanceSlot) < 0
+      || Number(balanceSlot) > 256) return fail("sell-probe-canary-slot-invalid");
+  if (typeof rpc !== "function") return fail("sell-probe-rpc-required");
+  const callData = encodeFunctionData({
+    abi: ERC20_SELL_PROBE_ABI, functionName: "balanceOf", args: [getAddress(wallet)],
+  });
+  const key = mappingSlot(wallet, Number(balanceSlot));
+  try {
+    const result = await rpc("eth_call", [
+      { to: normalizedToken, data: callData }, "latest",
+      { [normalizedToken]: { stateDiff: { [key]: uintWord(BALANCE_SENTINEL) } } },
+    ]);
+    if (uintResult(result, "sell-probe-canary-result-invalid") !== BALANCE_SENTINEL) {
+      return fail("sell-probe-state-override-unsupported");
+    }
+    return Object.freeze({ checked: true, supported: true, checkedAt, failures: [] });
+  } catch {
+    return fail("sell-probe-state-override-unsupported");
+  }
 }
 
 async function discoverStorageSlot({
@@ -129,7 +176,7 @@ function validRouterResult(result, amountIn, amountOutMin) {
 export async function probeV2Sell({
   pool, safety, lastSwap, latestBlock, allowedRouters, rpc,
   maxSwapAgeBlocks = 1_200, maxSlippageBps = 500,
-  atlasWalletAddress, maxStorageSlot = 24,
+  atlasWalletAddress, maxStorageSlot = 24, negativeCacheMs = 60 * 60_000,
   nowSeconds = Math.floor(Date.now() / 1_000),
 }) {
   const checkedAt = new Date(nowSeconds * 1_000).toISOString();
@@ -224,17 +271,32 @@ export async function probeV2Sell({
       args: [getAddress(atlasWallet), getAddress(router)],
     });
     let slots = storageSlotCache.get(baseToken);
+    if (slots?.failure && slots.expiresAt > Date.now()) {
+      return Object.freeze({ ...fail(slots.failure), observedHolderPassed: true });
+    }
+    if (slots?.failure) {
+      storageSlotCache.delete(baseToken);
+      slots = null;
+    }
     if (!slots) {
       const balance = await discoverStorageSlot({ token: baseToken, callData: atlasBalanceData,
         addressForSlot: atlasWallet, sentinel: BALANCE_SENTINEL,
         maxStorageSlot: Number(maxStorageSlot), rpc });
-      if (!balance) return Object.freeze({ ...fail("sell-probe-balance-slot-unresolved"),
-        observedHolderPassed: true });
+      if (!balance) {
+        storageSlotCache.set(baseToken, { failure: "sell-probe-balance-slot-unresolved",
+          expiresAt: Date.now() + Number(negativeCacheMs) });
+        return Object.freeze({ ...fail("sell-probe-balance-slot-unresolved"),
+          observedHolderPassed: true });
+      }
       const allowance = await discoverStorageSlot({ token: baseToken, callData: atlasAllowanceData,
         addressForSlot: atlasWallet, spender: router, sentinel: ALLOWANCE_SENTINEL,
         maxStorageSlot: Number(maxStorageSlot), rpc });
-      if (!allowance) return Object.freeze({ ...fail("sell-probe-allowance-slot-unresolved"),
-        observedHolderPassed: true });
+      if (!allowance) {
+        storageSlotCache.set(baseToken, { failure: "sell-probe-allowance-slot-unresolved",
+          expiresAt: Date.now() + Number(negativeCacheMs) });
+        return Object.freeze({ ...fail("sell-probe-allowance-slot-unresolved"),
+          observedHolderPassed: true });
+      }
       slots = { balanceSlot: balance.slot, allowanceSlot: allowance.slot };
       storageSlotCache.set(baseToken, slots);
     }

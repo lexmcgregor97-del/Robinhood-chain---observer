@@ -36,6 +36,16 @@ malformed router output fails closed. Readiness clears only while both proofs
 remain fresh for one candidate; it does not claim that a future transaction is
 guaranteed to execute.
 
+At startup Atlas performs one state-override canary against the canonical L2
+WETH balance mapping (slot 51 in the Arbitrum `aeWETH` / OpenZeppelin 4.8.3
+layout used by the chain). If the provider cannot echo the override, self-simulation is
+disabled for that process and readiness reports
+`sell-probe-state-override-unsupported`. Non-standard token layouts are cached
+as negative discoveries for one hour by default. Probe calls use a dedicated
+scheduler and transport, run asynchronously only after a paper cycle finishes,
+and publish their failure counters separately; probe discovery therefore cannot
+delay position marks or contaminate the scanner's RPC-failure metric.
+
 The V6 qualifying paper policy risks 5% of remaining cash per entry, stops at
 an 8% executable loss, begins trailing after a 10% gain, takes profit at 35%,
 and permits at most three entries per pool per epoch with a 15-minute cooldown.

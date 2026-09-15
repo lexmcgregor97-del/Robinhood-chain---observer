@@ -10,7 +10,8 @@
 
 This patch does not connect the dormant execution lifecycle to a signer and does
 not alter paper entry sizing, signals, exits, P&L, journaling, or epoch identity.
-Revision 2 responds to the first review's methodological finding: an observed
+Revision 3 retains revision 2's methodological fix and addresses the deployment
+blocker found in the second review. An observed
 seller may be privileged and cannot be the sole evidence. Readiness now requires
 both the observed-holder simulation and an independent Atlas-address simulation
 to pass for the same pool while fresh.
@@ -81,7 +82,16 @@ and transaction hash are not returned in public probe status.
 - It considers at most three recent sell-side candidates per attempt.
 - Storage slots are cached in memory per token after bounded discovery; stale
   per-pool probe records are evicted on each scheduled attempt.
-- All RPC calls go through Atlas's existing serialized scheduler and transport.
+- A one-call startup canary overrides slot 51, derived from the canonical
+  Arbitrum `aeWETH` inheritance tree and its OpenZeppelin 4.8.3
+  `ERC20Upgradeable` layout used by Robinhood L2 WETH. A
+  provider that rejects or ignores it disables self-simulation for the process
+  with `sell-probe-state-override-unsupported`; no token-slot search is attempted.
+- Failed token-layout discovery is cached for one hour by default.
+- Probe calls use a dedicated scheduler and transport with separately published
+  counters. They run asynchronously only after the paper cycle completes, so
+  position marks and the scanner's RPC-failure metric cannot be delayed or
+  contaminated by state-override discovery errors.
 - `/health` and `/api/paper` expose only readiness, timestamps, checked pool,
   method, maximum evidence age, and normalized failure categories.
 - The endpoint handlers do not trigger a probe, preventing public request-driven
@@ -90,29 +100,32 @@ and transaction hash are not returned in public probe status.
 ## Validation
 
 - `npm run check`: passes
-- `npm test`: 183/183 passes with dependencies installed
+- `npm test`: 185/185 passes with dependencies installed
 - New tests cover configuration, exact bounded success, sell direction and age,
   allowlisted router, balance, allowance, router revert, Atlas state overrides,
   the privileged-seller gap, bounded slot failure, and public data hygiene.
 
 ## Requested review
 
-1. Does requiring both methods close the prior survivorship/privileged-seller gap?
-2. Are the standard Solidity balance and nested allowance storage keys derived
+1. Confirm P-1/P-2 are closed: unsupported overrides cost one startup call,
+   negative discovery is cached, probe failures are reported separately, and no
+   probe work can block a paper mark.
+2. Does requiring both methods close the prior survivorship/privileged-seller gap?
+3. Are the standard Solidity balance and nested allowance storage keys derived
    correctly, and can a false slot match or stale cache produce a false pass?
-3. Can the Atlas-address simulation pass without the RPC actually applying both
+4. Can the Atlas-address simulation pass without the RPC actually applying both
    state overrides to the router call?
-4. Are address-scoped restrictions, fee-on-transfer behavior, max-transaction
+5. Are address-scoped restrictions, fee-on-transfer behavior, max-transaction
    limits, and holder blacklists conservatively exercised against Atlas?
-5. Are amount orientation, reserves, path, fee, slippage, deadline, and router
+6. Are amount orientation, reserves, path, fee, slippage, deadline, and router
    return decoding correct for both quote-token orientations?
-6. Can stale per-pool evidence or an old global success incorrectly clear
+7. Can stale per-pool evidence or an old global success incorrectly clear
    `sell-probe-not-ready`?
-7. Is the five-minute, three-candidate budget still safe with bounded first-use
+8. Is the five-minute, three-candidate budget still safe with bounded first-use
    slot discovery and per-token caching?
-8. Does the patch expose holder identity, router identity, transaction hashes,
+9. Does the patch expose holder identity, router identity, transaction hashes,
    provider errors, credentials, or other unnecessary operational data?
-9. Confirm that no signer, approval, broadcast, real-money path, or relaxed gate
+10. Confirm that no signer, approval, broadcast, real-money path, or relaxed gate
    was introduced.
 
 Please provide separate Go/No-go verdicts for merge, `PAPER_ONLY` deployment,

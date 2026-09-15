@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeFunctionResult } from "viem";
 import {
-  ERC20_SELL_PROBE_ABI, probeV2Sell, sellProbeConfigFromEnv,
+  ERC20_SELL_PROBE_ABI, probeStateOverrideSupport, probeV2Sell,
+  sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 
@@ -48,7 +49,29 @@ test("configuration reuses the verified V2 router allowlist", () => {
   const config = sellProbeConfigFromEnv({ PAPER_V2_ROUTER_ADDRESSES: router });
   assert.equal(config.configured, true);
   assert.deepEqual(config.allowedRouters, [router]);
+  assert.equal(config.canaryBalanceSlot, 51);
+  assert.equal(config.negativeCacheMs, 60 * 60_000);
   assert.equal(sellProbeConfigFromEnv({}).configured, false);
+});
+
+test("one-call WETH canary proves provider state-override support", async () => {
+  let calls = 0;
+  const supported = await probeStateOverrideSupport({
+    token: quote, walletAddress: atlas, balanceSlot: 3, now: 1_000,
+    rpc: async (method, params) => {
+      calls += 1;
+      assert.equal(method, "eth_call");
+      return Object.values(params[2][quote].stateDiff)[0];
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(supported.supported, true);
+  const unsupported = await probeStateOverrideSupport({
+    token: quote, walletAddress: atlas, balanceSlot: 3,
+    rpc: async () => { throw new Error("state override unsupported"); },
+  });
+  assert.equal(unsupported.supported, false);
+  assert.deepEqual(unsupported.failures, ["sell-probe-state-override-unsupported"]);
 });
 
 test("simulates an exact bounded sell from a recent observed seller", async () => {
@@ -157,6 +180,35 @@ test("Atlas wallet and bounded storage discovery are mandatory", async () => {
   });
   assert.equal(noSlots.observedHolderPassed, true);
   assert.deepEqual(noSlots.failures, ["sell-probe-balance-slot-unresolved"]);
+});
+
+test("negative token-layout discovery is cached", async () => {
+  const unusualBase = "0x9999999999999999999999999999999999999999";
+  let discoveryCalls = 0;
+  const rpc = async (method, params) => {
+    if (method === "eth_getTransactionByHash") return { from: holder, to: router };
+    if (method === "eth_call" && params[0].to === unusualBase) {
+      if (params[2]) discoveryCalls += 1;
+      return uint(10_000n);
+    }
+    if (method === "eth_call" && params[0].to === router) {
+      return encodeFunctionResult({ abi: V2_ROUTER_ABI,
+        functionName: "swapExactTokensForTokens", result: [1_000n, 950n] });
+    }
+    throw new Error("unexpected-rpc");
+  };
+  const input = {
+    pool: { ...pool, token1: unusualBase },
+    safety: { ...safety, baseToken: unusualBase },
+    lastSwap, latestBlock: 1_000, allowedRouters: [router], atlasWalletAddress: atlas,
+    maxStorageSlot: 2, negativeCacheMs: 60_000, rpc,
+  };
+  const first = await probeV2Sell(input);
+  assert.deepEqual(first.failures, ["sell-probe-balance-slot-unresolved"]);
+  assert.equal(discoveryCalls, 3);
+  const second = await probeV2Sell(input);
+  assert.deepEqual(second.failures, ["sell-probe-balance-slot-unresolved"]);
+  assert.equal(discoveryCalls, 3);
 });
 
 test("ERC20 probe ABI remains limited to read-only balance and allowance", () => {

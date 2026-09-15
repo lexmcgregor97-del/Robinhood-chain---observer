@@ -36,7 +36,9 @@ import { Turnkey } from "@turnkey/sdk-server";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
 import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.js";
-import { probeV2Sell, sellProbeConfigFromEnv } from "./v2-sell-probe.js";
+import {
+  probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
+} from "./v2-sell-probe.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -91,6 +93,11 @@ let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, lastVerifiedAt: 
   failures: [...GAS_MEASUREMENT_CONFIG.failures] };
 const SELL_PROBE_CONFIG = sellProbeConfigFromEnv(process.env);
 let sellProbeLastAttemptAt = 0;
+let sellProbePromise = null;
+let latestSellProbeCandidates = [];
+let SELL_PROBE_OVERRIDE_STATUS = {
+  checked: false, supported: false, checkedAt: null, failures: [],
+};
 let SELL_PROBE_STATUS = {
   configured: SELL_PROBE_CONFIG.configured,
   passed: false,
@@ -138,6 +145,10 @@ const paperBooks = new Map([
 ]);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 const rpcTransport = new RpcTransport({ urls: RPC_URLS });
+const sellProbeRpcScheduler = new RpcScheduler({
+  minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS,
+});
+const sellProbeRpcTransport = new RpcTransport({ urls: RPC_URLS });
 let logDeduplicator = new LogDeduplicator();
 let positionLiveness = new PositionLiveness();
 let nextPollDelayMs = POLL_MS;
@@ -371,6 +382,25 @@ async function rpc(method, params) {
   });
 }
 
+async function sellProbeRpc(method, params) {
+  return sellProbeRpcScheduler.schedule(() => sellProbeRpcTransport.request(method, params));
+}
+
+async function verifySellProbeOverrideSupport() {
+  if (!SELL_PROBE_CONFIG.configured) return;
+  SELL_PROBE_OVERRIDE_STATUS = await probeStateOverrideSupport({
+    token: ROBINHOOD.weth,
+    walletAddress: turnkeyEnvironment.config.walletAddress,
+    balanceSlot: SELL_PROBE_CONFIG.canaryBalanceSlot,
+    rpc: sellProbeRpc,
+  });
+  if (!SELL_PROBE_OVERRIDE_STATUS.supported) {
+    SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
+      observedHolderPassed: false, selfSimulationPassed: false,
+      failures: [...SELL_PROBE_OVERRIDE_STATUS.failures] };
+  }
+}
+
 const tokenMeta = createTokenMetadataLoader({
   call: (address, data) => rpc("eth_call", [{ to: address, data }, "latest"]),
   pinned: ROBINHOOD.quoteTokens,
@@ -534,6 +564,7 @@ async function poll() {
     if (ready.readyForPaper && !persistence.automationBlockedReason
         && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
       await runPaperCycle();
+      scheduleSellProbe(latestSellProbeCandidates);
     }
     await persistState();
   } catch (error) {
@@ -791,11 +822,16 @@ function publicSellProbeStatus(now = Date.now()) {
     selfSimulationPassed: SELL_PROBE_STATUS.selfSimulationPassed === true,
     maxAgeMs: SELL_PROBE_CONFIG.maxAgeMs,
     failures: [...SELL_PROBE_STATUS.failures],
+    overridesSupported: SELL_PROBE_OVERRIDE_STATUS.supported === true,
+    overrideCanaryCheckedAt: SELL_PROBE_OVERRIDE_STATUS.checkedAt,
+    probeRpcScheduler: sellProbeRpcScheduler.snapshot(),
+    probeRpcTransport: sellProbeRpcTransport.snapshot(),
   };
 }
 
 async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!SELL_PROBE_CONFIG.configured) return;
+  if (SELL_PROBE_OVERRIDE_STATUS.supported !== true) return;
   if (now - sellProbeLastAttemptAt < SELL_PROBE_CONFIG.intervalMs) return;
   sellProbeLastAttemptAt = now;
   for (const [poolAddress, result] of sellProbeByPool) {
@@ -832,8 +868,9 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       maxSwapAgeBlocks: SELL_PROBE_CONFIG.maxSwapAgeBlocks,
       maxSlippageBps: SELL_PROBE_CONFIG.maxSlippageBps,
       maxStorageSlot: SELL_PROBE_CONFIG.maxStorageSlot,
+      negativeCacheMs: SELL_PROBE_CONFIG.negativeCacheMs,
       atlasWalletAddress: turnkeyEnvironment.config.walletAddress,
-      rpc,
+      rpc: sellProbeRpc,
     });
     sellProbeByPool.set(candidate.address, result);
     lastResult = { candidate, result };
@@ -852,6 +889,17 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
     selfSimulationPassed: lastResult?.result?.selfSimulationPassed === true,
     failures: lastResult?.result?.failures || ["sell-probe-candidate-unavailable"],
   };
+}
+
+function scheduleSellProbe(measured) {
+  if (sellProbePromise || !Array.isArray(measured) || !measured.length) return;
+  sellProbePromise = maybeRunSellProbe(measured)
+    .catch(() => {
+      SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
+        observedHolderPassed: false, selfSimulationPassed: false,
+        lastAttemptAt: new Date().toISOString(), failures: ["sell-probe-background-failed"] };
+    })
+    .finally(() => { sellProbePromise = null; });
 }
 
 async function paperExitQuote(pool, position) {
@@ -949,7 +997,7 @@ async function measureCandidates(limit) {
   const measured = await Promise.all(ranked.map(async (pool) => ({
     ...pool, marketSafety: await marketSafety(pool),
   })));
-  await maybeRunSellProbe(measured);
+  latestSellProbeCandidates = measured;
   return measured.map((candidate) => {
     const sellProbe = freshSellProbe(candidate.address);
     const withProbe = sellProbe
@@ -1340,6 +1388,7 @@ await initializeEvidenceJournal();
 await restoreState();
 await verifyConfiguredGasMeasurement();
 await verifyTurnkeyConfiguration();
+await verifySellProbeOverrideSupport();
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
 const gasVerificationTimer = setInterval(() => {
