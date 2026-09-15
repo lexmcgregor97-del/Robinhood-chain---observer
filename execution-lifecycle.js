@@ -1,5 +1,6 @@
 import { evaluateExecutionPolicy } from "./execution-policy.js";
 import { validateV2RouterCalldata } from "./router-calldata.js";
+import { keccak256 } from "viem";
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 
@@ -69,9 +70,16 @@ export class ExecutionLifecycle {
       if (!signed || !TX_HASH.test(String(signed.transactionHash))) {
         throw new Error("signed-transaction-hash-required");
       }
+      if (typeof signed.payload !== "string" || keccak256(signed.payload) !== signed.transactionHash) {
+        throw new Error("signed-transaction-hash-mismatch");
+      }
       state.transactionHash = signed.transactionHash.toLowerCase();
       await this.journal.transition(intent.id, {
         status: "signed", transactionHash: state.transactionHash,
+        signedPayload: signed.payload,
+        gas: signed.gas || null,
+        maxFeePerGas: signed.maxFeePerGas || null,
+        maxPriorityFeePerGas: signed.maxPriorityFeePerGas || null,
       }, now);
       state.stage = "broadcasting";
       const transactionHash = String(await this.provider.broadcast(signed.payload, intent)).toLowerCase();
@@ -91,7 +99,7 @@ export class ExecutionLifecycle {
     }
   }
 
-  async recoverPending({ now = Date.now() } = {}) {
+  async recoverPending({ now = Date.now(), manualReviewAfterMs = 10 * 60_000 } = {}) {
     const outcomes = [];
     for (const record of this.journal.pending()) {
       if (!record.transactionHash) {
@@ -101,7 +109,9 @@ export class ExecutionLifecycle {
       try {
         const receipt = await this.provider.getReceipt(record.transactionHash);
         if (!receipt) {
-          outcomes.push(Object.freeze({ ...record, recovery: "still-pending" }));
+          const ageMs = Math.max(0, now - Number(record.updatedAt || record.createdAt || now));
+          outcomes.push(Object.freeze({ ...record,
+            recovery: ageMs >= manualReviewAfterMs ? "manual-review" : "still-pending" }));
           continue;
         }
         const succeeded = receipt.status === "success" || receipt.status === 1 || receipt.status === "0x1";
@@ -114,5 +124,21 @@ export class ExecutionLifecycle {
       }
     }
     return outcomes;
+  }
+
+  async rebroadcastIdentical(intentId, { now = Date.now() } = {}) {
+    const record = this.journal.get(intentId);
+    if (!record || record.status !== "signed" || !record.signedPayload
+        || !TX_HASH.test(String(record.transactionHash))) {
+      throw new Error("signed-payload-not-rebroadcastable");
+    }
+    if (keccak256(record.signedPayload) !== record.transactionHash) {
+      throw new Error("signed-payload-hash-mismatch");
+    }
+    const transactionHash = String(await this.provider.broadcast(record.signedPayload)).toLowerCase();
+    if (transactionHash !== record.transactionHash) throw new Error("broadcast-hash-mismatch");
+    await this.journal.transition(intentId, { status: "broadcast",
+      manuallyRebroadcastAt: now }, now);
+    return Object.freeze({ intentId, status: "broadcast", transactionHash });
   }
 }
