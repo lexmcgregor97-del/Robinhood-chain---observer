@@ -43,6 +43,8 @@ import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.
 import {
   assessMicroMainnetActivation, microMainnetConfigFromEnv, publicMicroMainnetConfig,
 } from "./micro-mainnet-config.js";
+import { assessTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
+import { readSigningAttestation, verifySigningAttestation } from "./signing-attestation.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const RPC_URLS = rpcUrlsFromEnv({
@@ -86,6 +88,9 @@ const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
 const SHADOW_RECORDING_PAUSED = envFlag(process.env.SHADOW_RECORDING_PAUSED, false);
 const PAPER_ENTRIES_PAUSED = envFlag(process.env.PAPER_ENTRIES_PAUSED, false);
 const MICRO_MAINNET_CONFIG = microMainnetConfigFromEnv(process.env);
+const SIGNING_ATTESTATION_FILE = String(process.env.TURNKEY_SIGNING_ATTESTATION_FILE || "");
+const SIGNING_ATTESTATION_PUBLIC_KEY = process.env.TURNKEY_SIGNING_ATTESTATION_PUBLIC_KEY_PEM_B64
+  ? Buffer.from(process.env.TURNKEY_SIGNING_ATTESTATION_PUBLIC_KEY_PEM_B64, "base64").toString("utf8") : "";
 const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6b-lossless-recovery";
 const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
@@ -202,6 +207,8 @@ const turnkeySigningStatus = {
   apiKeyOwned: false, rootQuorumMember: null,
   expectedPolicySetExact: false,
   applicableAllowPolicyCount: null,
+  attestationVerified: false, attestationExpiresAt: null,
+  walletBalanceVerified: false, walletWethBalanceWei: null,
   failures: MICRO_MAINNET_CONFIG.requested ? ["external-signing-verification-required"] : [],
   lastError: null,
 };
@@ -240,7 +247,7 @@ async function verifyTurnkeyConfiguration() {
       apiPublicKey: config.apiPublicKey,
       apiPrivateKey: config.apiPrivateKey,
     }).apiClient();
-    const [wallet, policy] = await Promise.all([
+    const [wallet, policy, observerIdentity] = await Promise.all([
       probeTurnkeyWallet({ config,
         getWalletAccounts: (request) => client.getWalletAccounts(request) }),
       probeTurnkeyPolicy({ config,
@@ -249,13 +256,75 @@ async function verifyTurnkeyConfiguration() {
         getPolicies: (request) => client.getPolicies(request),
         getUser: (request) => client.getUser(request),
       }),
+      client.getWhoami({ organizationId: config.organizationId }),
     ]);
     Object.assign(turnkeyStatus, wallet, policy,
     { checked: true, lastError: null });
+    if (MICRO_MAINNET_CONFIG.requested && MICRO_MAINNET_CONFIG.configured) {
+      await verifyAttestedSigningConfiguration(client, observerIdentity?.userId);
+    }
   } catch {
     turnkeyStatus.checked = true;
     turnkeyStatus.lastError = "turnkey-verification-failed";
+    if (MICRO_MAINNET_CONFIG.requested) Object.assign(turnkeySigningStatus, {
+      checked: true, verified: false, credentialVerified: false,
+      attestationVerified: false, walletBalanceVerified: false,
+      walletWethBalanceWei: null,
+      failures: ["observer-policy-revalidation-failed"],
+      lastError: "external-signing-verification-failed",
+    });
     console.error("Turnkey read-only verification failed");
+  }
+}
+
+async function verifyAttestedSigningConfiguration(client, observerUserId) {
+  const failures = [];
+  try {
+    if (!SIGNING_ATTESTATION_FILE || !SIGNING_ATTESTATION_PUBLIC_KEY) {
+      throw new Error("signing-attestation-config-required");
+    }
+    const document = await readSigningAttestation(SIGNING_ATTESTATION_FILE);
+    const attestation = verifySigningAttestation({ document,
+      config: MICRO_MAINNET_CONFIG, publicKeyPem: SIGNING_ATTESTATION_PUBLIC_KEY });
+    failures.push(...attestation.failures);
+    if (!attestation.verified) throw new Error("signing-attestation-invalid");
+    if (attestation.claims.observerUserId !== observerUserId) {
+      failures.push("signing-attestation-observer-user-mismatch");
+      throw new Error("signing-attestation-observer-user-mismatch");
+    }
+    const signingUserId = attestation.claims.signingUserId;
+    const [organizationConfigs, policies, user] = await Promise.all([
+      client.getOrganizationConfigs({ organizationId: MICRO_MAINNET_CONFIG.organizationId }),
+      client.getPolicies({ organizationId: MICRO_MAINNET_CONFIG.organizationId }),
+      client.getUser({ organizationId: MICRO_MAINNET_CONFIG.organizationId, userId: signingUserId }),
+    ]);
+    const policy = assessTurnkeySigningPolicy({ config: MICRO_MAINNET_CONFIG,
+      whoami: { userId: signingUserId }, organizationConfigs, policies,
+      user: user?.user || user });
+    failures.push(...policy.failures);
+    const balanceCall = `0x70a08231000000000000000000000000${MICRO_MAINNET_CONFIG.walletAddress.slice(2)}`;
+    const walletWethBalanceWei = BigInt(await rpc("eth_call", [{
+      to: ROBINHOOD.weth, data: balanceCall,
+    }, "latest"])).toString();
+    Object.assign(turnkeySigningStatus, policy, {
+      checked: true,
+      verified: attestation.verified && policy.verified && failures.length === 0,
+      credentialVerified: attestation.verified && policy.apiKeyOwned === true
+        && policy.rootQuorumMember === false,
+      attestationVerified: attestation.verified,
+      attestationExpiresAt: attestation.claims.expiresAt,
+      walletBalanceVerified: true,
+      walletWethBalanceWei,
+      failures: [...new Set(failures)], lastError: null,
+    });
+  } catch (error) {
+    Object.assign(turnkeySigningStatus, {
+      checked: true, verified: false, credentialVerified: false,
+      attestationVerified: false, walletBalanceVerified: false,
+      walletWethBalanceWei: null,
+      failures: [...new Set(failures.length ? failures : [error.message])],
+      lastError: "external-signing-verification-failed",
+    });
   }
 }
 
@@ -1381,6 +1450,12 @@ function executionStatus(operationalReady, liveReadiness = null) {
       rootQuorumMember: turnkeySigningStatus.rootQuorumMember,
       expectedPolicySetExact: turnkeySigningStatus.expectedPolicySetExact,
       applicableAllowPolicyCount: turnkeySigningStatus.applicableAllowPolicyCount,
+      attestationVerified: turnkeySigningStatus.attestationVerified,
+      attestationExpiresAt: turnkeySigningStatus.attestationExpiresAt,
+      walletBalanceVerified: turnkeySigningStatus.walletBalanceVerified,
+      walletBalanceWithinDailyCap: turnkeySigningStatus.walletBalanceVerified
+        && /^\d+$/.test(String(MICRO_MAINNET_CONFIG.maxDailyWei))
+        && BigInt(turnkeySigningStatus.walletWethBalanceWei) <= BigInt(MICRO_MAINNET_CONFIG.maxDailyWei),
       failures: turnkeySigningStatus.failures,
       lastError: turnkeySigningStatus.lastError,
     },
@@ -1389,6 +1464,7 @@ function executionStatus(operationalReady, liveReadiness = null) {
       liveReadiness: readiness,
       signingCredentialVerified: turnkeySigningStatus.credentialVerified,
       signingPolicyVerified: turnkeySigningStatus.verified,
+      walletWethBalanceWei: turnkeySigningStatus.walletWethBalanceWei,
       pendingExecutions: 0,
       submissionPathConnected: false,
     }),
@@ -1483,6 +1559,12 @@ const gasVerificationTimer = setInterval(() => {
   void verifyConfiguredGasMeasurement();
 }, GAS_VERIFICATION_INTERVAL_MS);
 gasVerificationTimer.unref();
+if (MICRO_MAINNET_CONFIG.requested) {
+  const turnkeyVerificationTimer = setInterval(() => {
+    void verifyTurnkeyConfiguration();
+  }, GAS_VERIFICATION_INTERVAL_MS);
+  turnkeyVerificationTimer.unref();
+}
 
 let shuttingDown = false;
 async function shutdown() {
