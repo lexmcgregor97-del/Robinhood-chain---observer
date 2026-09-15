@@ -1,4 +1,7 @@
-// RFC 9562 defines UUID versions through v8. Turnkey currently issues UUIDv7\n// identifiers, so rejecting versions newer than v5 blocks otherwise valid\n// organization, wallet, user, and policy IDs before the read-only probe runs.\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// RFC 9562 defines UUID versions through v8. Turnkey currently issues UUIDv7
+// identifiers, so rejecting versions newer than v5 blocks otherwise valid
+// organization, wallet, user, and policy IDs before the read-only probe runs.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 
 export function turnkeyConfigFromEnv(env = process.env) {
