@@ -11,7 +11,8 @@ const router = "0x2222222222222222222222222222222222222222";
 const wallet = "0x1111111111111111111111111111111111111111";
 const token = "0x3333333333333333333333333333333333333333";
 const config = { organizationId: "11111111-1111-7111-8111-111111111111",
-  walletAddress: wallet, allowedRouters: [router], maxPerTransactionWei: "1000",
+  walletAddress: wallet, walletSignWith: "0x11111111111111111111111111111111111111AA",
+  allowedRouters: [router], maxPerTransactionWei: "1000",
   maxDailyWei: "4000", maxGas: "400000", maxFeePerGasWei: "2000000000" };
 
 test("builds four allowed activities and every exact named denial without RPC", () => {
@@ -62,7 +63,7 @@ test("submits the sdk-server transaction shape without the HTTP activity envelop
     { unsignedTransaction: "0x1234" }, true), "activity-allow");
   assert.deepEqual(requests, [{
     organizationId: config.organizationId,
-    signWith: config.walletAddress,
+    signWith: config.walletSignWith,
     type: "TRANSACTION_TYPE_ETHEREUM",
     unsignedTransaction: "1234",
   }]);
