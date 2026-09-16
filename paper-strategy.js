@@ -108,6 +108,18 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
   };
 }
 
+export function paperEntryFailureDetails(candidate, failures = []) {
+  const details = failures.flatMap((failure) => {
+    if (failure !== "risk-gate-rejected") return [failure];
+    const riskFailures = candidate?.riskGate?.failures;
+    return Array.isArray(riskFailures) && riskFailures.length
+      ? riskFailures : [failure];
+  });
+  return [...new Set(details.filter((failure) => (
+    typeof failure === "string" && failure.length > 0
+  )))];
+}
+
 export function paperExitReason(position, now = Date.now(), policy = DEFAULT_PAPER_STRATEGY) {
   const returnPct = Number(position?.returnPct);
   const peakReturnPct = Number(position?.peakReturnPct ?? returnPct);
