@@ -15,7 +15,7 @@ test("accepts only a fresh healthy observer cohort with no pending execution", a
       automation: { lastCycleAt: now - 1 }, evidence: { healthy: true },
       execution: { durability: { pendingExecutions: 0 },
         signingVerification: { attestationVerified: true } },
-      liveReadiness: { eligibleForMicroMainnet: true } }) }; } });
+      liveReadiness: { eligibleForMicroMainnet: true, failures: [] } }) }; } });
   const result = await adapter({ now });
   assert.equal(result.eligibleForMicroMainnet, true);
   assert.deepEqual(result.checks, {
@@ -23,6 +23,7 @@ test("accepts only a fresh healthy observer cohort with no pending execution", a
     evidenceHealthy: true, noPendingExecutions: true,
     signingAttestationVerified: true, liveReadinessEligible: true, cycleFresh: true,
   });
+  assert.equal(Object.values(result.liveReadinessBlockers).some(Boolean), false);
 });
 
 test("fails closed on stale or unreachable observer readiness", async () => {
@@ -32,7 +33,7 @@ test("fails closed on stale or unreachable observer readiness", async () => {
     maxAgeMs: 10, fetchImpl: async () => ({ ok: true, json: async () => ({
       mode: "PAPER_ONLY", automation: { lastCycleAt: 1 }, evidence: { healthy: true },
       execution: { durability: { pendingExecutions: 0 } },
-      liveReadiness: { eligibleForMicroMainnet: true } }) }) });
+      liveReadiness: { eligibleForMicroMainnet: true, failures: [] } }) }) });
   assert.equal((await stale({ now: 100 })).eligibleForMicroMainnet, false);
   const down = createObserverReadinessAdapter({ url: "https://observer.example",
     expectedHostname: "observer.example",
@@ -46,7 +47,7 @@ test("refuses redirected or final-origin-mismatched observer responses", async (
     automationBlockedReason: null, automation: { lastCycleAt: 99 },
     evidence: { healthy: true }, execution: { durability: { pendingExecutions: 0 },
       signingVerification: { attestationVerified: true } },
-    liveReadiness: { eligibleForMicroMainnet: true } };
+    liveReadiness: { eligibleForMicroMainnet: true, failures: [] } };
   for (const response of [
     { ok: true, redirected: true, url: "https://elsewhere.example/readiness", body },
     { ok: true, redirected: false, url: "https://elsewhere.example/readiness", body },
@@ -81,7 +82,9 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
       automation: { lastCycleAt: 1 }, evidence: { healthy: false },
       execution: { durability: { pendingExecutions: 1 },
         signingVerification: { attestationVerified: false } },
-      liveReadiness: { eligibleForMicroMainnet: false } }) }) });
+      liveReadiness: { eligibleForMicroMainnet: false, failures: [
+        "paper-sample-too-small", "private-unknown-reason",
+      ] } }) }) });
   const result = await adapter({ now: 100 });
   assert.equal(result.eligibleForMicroMainnet, false);
   assert.deepEqual(result.checks, {
@@ -89,7 +92,11 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
     evidenceHealthy: false, noPendingExecutions: false,
     signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
   });
+  assert.equal(result.liveReadinessBlockers.paperSampleTooSmall, true);
+  assert.equal(result.liveReadinessBlockers.paperExpectancyNotPositive, false);
+  assert.equal(result.liveReadinessBlockers.unknownReasonPresent, true);
   assert.equal(JSON.stringify(result).includes("private-reason-text"), false);
+  assert.equal(JSON.stringify(result).includes("private-unknown-reason"), false);
 });
 
 test("refuses readiness requests to a host other than the pinned observer", () => {

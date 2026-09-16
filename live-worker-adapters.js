@@ -1,6 +1,32 @@
 import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 import { probeV2Sell } from "./v2-sell-probe.js";
 
+const LIVE_READINESS_FAILURE_KEYS = Object.freeze({
+  "paper-sample-too-small": "paperSampleTooSmall",
+  "paper-pool-diversity-insufficient": "paperPoolDiversityInsufficient",
+  "paper-expectancy-not-positive": "paperExpectancyNotPositive",
+  "paper-drawdown-too-high": "paperDrawdownTooHigh",
+  "paper-measurement-failures-present": "paperMeasurementFailuresPresent",
+  "shadow-evidence-insufficient": "shadowEvidenceInsufficient",
+  "sell-probe-not-ready": "sellProbeNotReady",
+  "wallet-not-configured": "walletNotConfigured",
+  "turnkey-policy-not-attested": "turnkeyPolicyNotAttested",
+  "turnkey-policy-not-verified": "turnkeyPolicyNotVerified",
+  "rpc-redundancy-required": "rpcRedundancyRequired",
+  "runtime-not-ready": "runtimeNotReady",
+  "evidence-journal-not-ready": "evidenceJournalNotReady",
+  "paper-recovery-gaps-present": "paperRecoveryGapsPresent",
+});
+
+function sanitizedLiveReadinessBlockers(failures) {
+  const failureSet = new Set(failures);
+  const blockers = Object.fromEntries(Object.entries(LIVE_READINESS_FAILURE_KEYS)
+    .map(([failure, key]) => [key, failureSet.has(failure)]));
+  blockers.unknownReasonPresent = failures.some(
+    (failure) => !Object.hasOwn(LIVE_READINESS_FAILURE_KEYS, failure));
+  return Object.freeze(blockers);
+}
+
 export function createObserverReadinessAdapter({ url, expectedHostname, bearerToken, fetchImpl = fetch,
   maxAgeMs = 30_000, timeoutMs = 5_000 } = {}) {
   const endpoint = new URL("/api/live-worker/readiness", url);
@@ -19,7 +45,7 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) return Object.freeze({
         endpointAuthenticated: false, responseValid: false,
-        eligibleForMicroMainnet: false, checks: null,
+        eligibleForMicroMainnet: false, checks: null, liveReadinessBlockers: null,
         failures: Object.freeze([response.status === 401 || response.status === 403
           ? "observer-live-readiness-unauthorized"
           : "observer-live-readiness-http-error"]),
@@ -38,10 +64,12 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         && typeof body?.evidence?.healthy === "boolean"
         && Number.isSafeInteger(body?.execution?.durability?.pendingExecutions)
         && typeof body?.execution?.signingVerification?.attestationVerified === "boolean"
-        && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean";
+        && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean"
+        && Array.isArray(body?.liveReadiness?.failures)
+        && body.liveReadiness.failures.every((failure) => typeof failure === "string");
       if (!responseValid) return Object.freeze({
         endpointAuthenticated: true, responseValid: false,
-        eligibleForMicroMainnet: false, checks: null,
+        eligibleForMicroMainnet: false, checks: null, liveReadinessBlockers: null,
         failures: Object.freeze(["observer-live-readiness-invalid"]),
       });
       const lastCycleAt = Number(body?.automation?.lastCycleAt);
@@ -58,14 +86,16 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         liveReadinessEligible: body.liveReadiness.eligibleForMicroMainnet === true,
         cycleFresh: fresh,
       });
+      const liveReadinessBlockers = sanitizedLiveReadinessBlockers(
+        body.liveReadiness.failures);
       const eligible = Object.values(checks).every((passed) => passed === true);
       return Object.freeze({ endpointAuthenticated: true, responseValid: true,
-        eligibleForMicroMainnet: eligible, checks,
+        eligibleForMicroMainnet: eligible, checks, liveReadinessBlockers,
         failures: eligible ? Object.freeze([])
           : Object.freeze(["observer-live-readiness-not-current"]) });
     } catch {
       return Object.freeze({ endpointAuthenticated: false, responseValid: false,
-        eligibleForMicroMainnet: false, checks: null,
+        eligibleForMicroMainnet: false, checks: null, liveReadinessBlockers: null,
         failures: Object.freeze(["observer-live-readiness-unavailable"]) });
     }
   };
