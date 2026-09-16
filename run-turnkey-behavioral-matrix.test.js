@@ -15,6 +15,32 @@ const config = { organizationId: "11111111-1111-7111-8111-111111111111",
   walletAddress: wallet, walletSignWith: "0x11111111111111111111111111111111111111AA",
   allowedRouters: [router], maxPerTransactionWei: "1000",
   maxDailyWei: "4000", maxGas: "400000", maxFeePerGasWei: "2000000000" };
+const matrixEnv = {
+  TURNKEY_MATRIX_CONFIRMATION: "RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST",
+  ATLAS_EXECUTION_MODE: "MICRO_MAINNET",
+  MICRO_MAINNET_ENABLED: "true",
+  TURNKEY_SIGNING_ORGANIZATION_ID: config.organizationId,
+  TURNKEY_ORGANIZATION_ID: config.organizationId,
+  TURNKEY_SIGNING_WALLET_ADDRESS: config.walletSignWith,
+  TURNKEY_WALLET_ADDRESS: config.walletSignWith,
+  TURNKEY_SIGNING_BUY_POLICY_ID: "22222222-2222-7222-8222-222222222222",
+  TURNKEY_SIGNING_SELL_POLICY_ID: "33333333-3333-7333-8333-333333333333",
+  TURNKEY_SIGNING_APPROVAL_POLICY_ID: "44444444-4444-7444-8444-444444444444",
+  TURNKEY_SIGNING_API_PUBLIC_KEY: `02${"ab".repeat(32)}`,
+  TURNKEY_API_PUBLIC_KEY: `03${"cd".repeat(32)}`,
+  TURNKEY_SIGNING_VERIFY_API_PRIVATE_KEY: "private",
+  TURNKEY_SIGNING_BEHAVIORAL_MATRIX_FILE: "/tmp/matrix.json",
+  TURNKEY_MATRIX_TOKEN_ADDRESS: token,
+  MICRO_MAINNET_V2_ROUTERS: router,
+  MICRO_MAINNET_MAX_WETH_PER_TX_WEI: config.maxPerTransactionWei,
+  MICRO_MAINNET_MAX_WETH_DAILY_WEI: config.maxDailyWei,
+  MICRO_MAINNET_MAX_GAS: config.maxGas,
+  MICRO_MAINNET_MAX_FEE_PER_GAS_WEI: config.maxFeePerGasWei,
+  MICRO_MAINNET_CONFIRMATION:
+    `ENABLE_ATLAS_MICRO_MAINNET:4663:${config.walletSignWith.toLowerCase()}`,
+  LIVE_WORKER_SUBMISSION_CONNECTED: "false",
+  LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED: "false",
+};
 
 test("builds four allowed activities and every exact named denial without RPC", () => {
   const cases = buildTurnkeyBehavioralCases(config, token);
@@ -52,6 +78,16 @@ test("refuses live-worker activation flags before reading private configuration"
       [flag]: "true",
     }), /turnkey-matrix-live-flags-forbidden/);
   }
+});
+
+test("verifies the exact policy set before requesting any matrix signature", async () => {
+  let signed = false;
+  await assert.rejects(runTurnkeyBehavioralMatrix(matrixEnv, {
+    makeClient: () => ({ signTransaction: async () => { signed = true; } }),
+    verifyPolicy: async () => ({ verified: false, userId: "signing-user",
+      failures: ["turnkey-signing-policy-set-not-exact"] }),
+  }), /turnkey-matrix-policy-verification-failed:turnkey-signing-policy-set-not-exact/);
+  assert.equal(signed, false);
 });
 
 test("submits the sdk-server transaction shape without the HTTP activity envelope", async () => {

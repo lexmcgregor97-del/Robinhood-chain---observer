@@ -7,6 +7,7 @@ import { ROBINHOOD } from "./chain-config.js";
 import { microMainnetConfigFromEnv } from "./micro-mainnet-config.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 import { verifyTurnkeyActivityMatrix } from "./turnkey-activity-matrix.js";
+import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CONFIRMATION = "RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST";
@@ -150,7 +151,7 @@ export async function submitActivity(client, config, entry, expectCompleted) {
 }
 
 export async function runTurnkeyBehavioralMatrix(env = process.env, {
-  makeClient, writeMatrix = writeFile,
+  makeClient, writeMatrix = writeFile, verifyPolicy = probeTurnkeySigningPolicy,
 } = {}) {
   if (env.TURNKEY_MATRIX_CONFIRMATION !== CONFIRMATION) {
     throw new Error("turnkey-matrix-confirmation-required");
@@ -169,6 +170,16 @@ export async function runTurnkeyBehavioralMatrix(env = process.env, {
     apiBaseUrl: "https://api.turnkey.com", defaultOrganizationId: config.organizationId,
     apiPublicKey: config.apiPublicKey, apiPrivateKey: privateKey,
   }).apiClient();
+  const policy = await verifyPolicy({ config,
+    getWhoami: (request) => client.getWhoami(request),
+    getOrganizationConfigs: (request) => client.getOrganizationConfigs(request),
+    getPolicies: (request) => client.getPolicies(request),
+    getUser: (request) => client.getUser(request),
+  });
+  if (!policy?.verified || !policy.userId) {
+    throw new Error(`turnkey-matrix-policy-verification-failed:${
+      (policy?.failures || ["unknown"]).join(",")}`);
+  }
   const cases = buildTurnkeyBehavioralCases(config, token);
   const matrix = { runAt: Date.now(), allows: [], denials: [] };
   for (const entry of cases.allows) {
@@ -181,7 +192,7 @@ export async function runTurnkeyBehavioralMatrix(env = process.env, {
       activityId: await submitActivity(client, config, entry, false) });
   }
   const verified = await verifyTurnkeyActivityMatrix({ matrix, config,
-    signingUserId: String((await client.getWhoami({ organizationId: config.organizationId })).userId),
+    signingUserId: policy.userId,
     getActivity: (request) => client.getActivity(request) });
   if (!verified.verified) throw new Error(`turnkey-matrix-verification-failed:${verified.failures.join(",")}`);
   await writeMatrix(output, `${JSON.stringify(matrix, null, 2)}\n`, { mode: 0o600 });
