@@ -17,14 +17,18 @@ function consensusMayIncludeUser(consensus, userId, userTags = []) {
 export function expectedTurnkeySigningPolicies(config, userId) {
   // Turnkey exposes decoded EVM address fields as checksummed strings. Policy
   // string equality is exact, so render address operands in the same form.
-  const routers = [...config.allowedRouters]
-    .map((router) => `'${getAddress(router)}'`).join(", ");
-  const routerWords = [...config.allowedRouters]
-    .map((router) => `'${router.slice(2).toLowerCase().padStart(64, "0")}'`).join(", ");
+  // Turnkey's `in` operator is for integer fields. Address and calldata
+  // operands are strings, so an allowlist must be expressed as exact equality
+  // clauses joined with `||`.
+  const routerCondition = [...config.allowedRouters]
+    .map((router) => `eth.tx.to == '${getAddress(router)}'`).join(" || ");
+  const routerWordCondition = [...config.allowedRouters]
+    .map((router) => `eth.tx.data[10..74] == '${router.slice(2).toLowerCase().padStart(64, "0")}'`)
+    .join(" || ");
   const wallet = getAddress(config.walletAddress);
   const weth = getAddress(ROBINHOOD.weth);
   const common = `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.gas <= ${config.maxGas} && eth.tx.max_fee_per_gas <= ${config.maxFeePerGasWei} && eth.tx.max_priority_fee_per_gas <= ${config.maxFeePerGasWei}`;
-  const swap = `${common} && eth.tx.to in [${routers}] && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
+  const swap = `${common} && (${routerCondition}) && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
   const consensus = `approvers.any(user, user.id == '${userId}')`;
   return Object.freeze({
     buy: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
@@ -32,7 +36,7 @@ export function expectedTurnkeySigningPolicies(config, userId) {
     sell: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
       condition: `${swap} && eth.tx.contract_call_args['path'][1] == '${weth}'` }),
     approval: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
-      condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && eth.tx.data[10..74] in [${routerWords}]` }),
+      condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && (${routerWordCondition})` }),
   });
 }
 
