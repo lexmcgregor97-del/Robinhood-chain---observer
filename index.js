@@ -2,7 +2,7 @@ import http from "node:http";
 import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { rankPools } from "./signals.js";
-import { decodeSwapEvent } from "./market-data.js";
+import { decodeSwapEvent, isV2SellToQuote } from "./market-data.js";
 import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
@@ -639,11 +639,16 @@ function recordSwap(log, timestampMs) {
   const historyFloor = timestampMs - SIGNAL_HISTORY_MS;
   while (blocks.length && blocks[0].timestampMs < historyFloor) blocks.shift();
   try {
-    pool.lastSwap = {
+    const decodedSwap = {
       blockNumber: log.blockNumber,
       transactionHash: log.transactionHash,
       ...decodeSwapEvent(log, pool.version),
     };
+    pool.lastSwap = decodedSwap;
+    if (isV2SellToQuote(pool, decodedSwap,
+      ROBINHOOD.quoteTokens.map((token) => token.address))) {
+      pool.lastSellSwap = decodedSwap;
+    }
     pool.decodeError = null;
   } catch (error) {
     pool.decodeError = error instanceof Error ? error.message : String(error);
@@ -1035,15 +1040,16 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       sellProbeByPool.delete(poolAddress);
     }
   }
-  const eligible = measured.filter((candidate) => (
+  const eligible = measured.map((candidate) => ({
+    candidate,
+    observedSell: candidate.lastSellSwap
+      || (isV2SellToQuote(candidate, candidate.lastSwap,
+        ROBINHOOD.quoteTokens.map((token) => token.address)) ? candidate.lastSwap : null),
+  })).filter(({ candidate, observedSell }) => (
     candidate.version === "v2"
     && candidate.marketSafety?.buyMathOk === true
     && candidate.marketSafety?.sellMathOk === true
-    && candidate.lastSwap?.transactionHash
-    && candidate.lastSwap?.direction === (
-      candidate.token0 === candidate.marketSafety?.quoteToken
-        ? "token1-to-token0" : "token0-to-token1"
-    )
+    && observedSell?.transactionHash
   )).slice(0, 3);
   if (!eligible.length) {
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
@@ -1053,11 +1059,11 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
     return;
   }
   let lastResult = null;
-  for (const candidate of eligible) {
+  for (const { candidate, observedSell } of eligible) {
     const result = await probeV2Sell({
       pool: candidate,
       safety: candidate.marketSafety,
-      lastSwap: candidate.lastSwap,
+      lastSwap: observedSell,
       latestBlock: metrics.latestBlock,
       allowedRouters: SELL_PROBE_CONFIG.allowedRouters,
       maxSwapAgeBlocks: SELL_PROBE_CONFIG.maxSwapAgeBlocks,
