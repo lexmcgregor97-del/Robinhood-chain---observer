@@ -1,4 +1,5 @@
 import { ROBINHOOD } from "./chain-config.js";
+import { getAddress } from "viem";
 
 const UUID_IN_EXPRESSION = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 
@@ -14,11 +15,14 @@ function consensusMayIncludeUser(consensus, userId, userTags = []) {
 }
 
 export function expectedTurnkeySigningPolicies(config, userId) {
-  const routers = [...config.allowedRouters].map((router) => `'${router}'`).join(", ");
+  // Turnkey exposes decoded EVM address fields as checksummed strings. Policy
+  // string equality is exact, so render address operands in the same form.
+  const routers = [...config.allowedRouters]
+    .map((router) => `'${getAddress(router)}'`).join(", ");
   const routerWords = [...config.allowedRouters]
     .map((router) => `'${router.slice(2).toLowerCase().padStart(64, "0")}'`).join(", ");
-  const wallet = config.walletAddress.toLowerCase();
-  const weth = ROBINHOOD.weth.toLowerCase();
+  const wallet = getAddress(config.walletAddress);
+  const weth = getAddress(ROBINHOOD.weth);
   const common = `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.gas <= ${config.maxGas} && eth.tx.max_fee_per_gas <= ${config.maxFeePerGasWei} && eth.tx.max_priority_fee_per_gas <= ${config.maxFeePerGasWei}`;
   const swap = `${common} && eth.tx.to in [${routers}] && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
   const consensus = `approvers.any(user, user.id == '${userId}')`;
