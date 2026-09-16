@@ -69,7 +69,8 @@ test("approval policy pins selector and padded allowlisted spender word", () => 
   const approval = expectedTurnkeySigningPolicies(config, userId).approval.condition;
   const paddedRouter = config.allowedRouters[0].slice(2).padStart(64, "0");
   assert.match(approval, /eth\.tx\.data\[0\.\.10\] == '0x095ea7b3'/);
-  assert.ok(approval.includes(`eth.tx.data[10..74] in ['${paddedRouter}']`));
+  assert.ok(approval.includes(`eth.tx.data[10..74] == '${paddedRouter}'`));
+  assert.equal(approval.includes(" in ["), false);
   assert.equal(approval.includes("0x5555555555555555555555555555555555555555"), false);
 });
 
@@ -78,9 +79,10 @@ test("renders decoded EVM address predicates with canonical checksum casing", ()
   assert.match(policies.buy.condition,
     /wallet_account\.address == '0x910136966075758A269D670B426459fCE098c177'/);
   assert.match(policies.buy.condition,
-    /eth\.tx\.to in \['0x89e5DB8B5aA49aA85AC63f691524311AEB649eba'\]/);
+    /eth\.tx\.to == '0x89e5DB8B5aA49aA85AC63f691524311AEB649eba'/);
   assert.match(policies.buy.condition,
     /contract_call_args\['to'\] == '0x910136966075758A269D670B426459fCE098c177'/);
   assert.match(policies.buy.condition,
     /contract_call_args\['path'\]\[0\] == '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73'/);
+  assert.equal(policies.buy.condition.includes(" in ["), false);
 });
