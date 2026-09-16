@@ -82,8 +82,11 @@ test("renders decoded EVM addresses as checksums and raw calldata as lowercase",
     /eth\.tx\.to == '0x89e5DB8B5aA49aA85AC63f691524311AEB649eba'/);
   assert.match(policies.buy.condition,
     /contract_call_args\['to'\] == '0x910136966075758A269D670B426459fCE098c177'/);
-  assert.match(policies.buy.condition,
-    /contract_call_args\['path'\]\[0\] == '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73'/);
+  const paddedWeth = "0bd7d308f8e1639fab988df18a8011f41eacad73".padStart(64, "0");
+  assert.ok(policies.buy.condition.includes(`eth.tx.data[394..458] == '${paddedWeth}'`));
+  assert.ok(policies.sell.condition.includes(`eth.tx.data[458..522] == '${paddedWeth}'`));
+  assert.equal(policies.buy.condition.includes("contract_call_args['path'][0]"), false);
+  assert.equal(policies.sell.condition.includes("contract_call_args['path'][1]"), false);
   const paddedRouter = config.allowedRouters[0].slice(2).toLowerCase().padStart(64, "0");
   assert.ok(policies.approval.condition
     .includes(`eth.tx.data[10..74] == '${paddedRouter}'`));
