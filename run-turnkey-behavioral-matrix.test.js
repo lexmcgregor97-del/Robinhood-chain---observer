@@ -70,6 +70,14 @@ test("submits the sdk-server transaction shape without the HTTP activity envelop
   assert.equal("parameters" in requests[0], false);
 });
 
+test("accepts the flattened sdk-server activity-id response shape", async () => {
+  const client = { signTransaction: async () => ({
+    activityId: "activity-flattened", signedTransaction: "0x1234",
+  }) };
+  assert.equal(await submitActivity(client, config,
+    { unsignedTransaction: "0x1234" }, true), "activity-flattened");
+});
+
 test("retains the activity id surfaced by an sdk-server policy denial", async () => {
   const denial = Object.assign(new Error("policy denied"),
     { activityId: "activity-denial" });

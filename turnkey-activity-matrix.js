@@ -59,6 +59,24 @@ function commonTransactionFailures(transaction, config) {
   return failures;
 }
 
+function signedTransactionMatchesIntent(transaction, unsignedTransaction) {
+  let intent;
+  try { intent = parseTransaction(normalizedSerializedTransaction(unsignedTransaction)); } catch {
+    return false;
+  }
+  const bigintEqual = (left, right) => left != null && right != null
+    && BigInt(left) === BigInt(right);
+  return transaction.chainId === intent.chainId
+    && transaction.nonce === intent.nonce
+    && sameAddress(transaction.to, intent.to)
+    && String(transaction.data || "0x").toLowerCase()
+      === String(intent.data || "0x").toLowerCase()
+    && bigintEqual(transaction.value ?? 0n, intent.value ?? 0n)
+    && bigintEqual(transaction.gas, intent.gas)
+    && bigintEqual(transaction.maxFeePerGas, intent.maxFeePerGas)
+    && bigintEqual(transaction.maxPriorityFeePerGas, intent.maxPriorityFeePerGas);
+}
+
 function validateAllowedCall(kind, transaction, entry, config) {
   const failures = commonTransactionFailures(transaction, config);
   if (kind === "approval" || kind === "approval-reset") {
@@ -123,8 +141,26 @@ async function verifyAllowedActivity(activity, entry, config, signingUserId) {
   } catch {
     failures.push("matrix-signed-transaction-invalid");
   }
-  if (transaction) failures.push(...validateAllowedCall(entry.case, transaction, entry, config));
+  if (transaction) {
+    if (!signedTransactionMatchesIntent(transaction, entry.unsignedTransaction)) {
+      failures.push("matrix-signed-transaction-mismatch");
+    }
+    failures.push(...validateAllowedCall(entry.case, transaction, entry, config));
+  }
   return failures;
+}
+
+export async function verifyTurnkeyAllowedActivity({
+  activity, entry, config, signingUserId,
+} = {}) {
+  if (!entry || !ALLOW_CASES.includes(entry.case)) {
+    return Object.freeze({ verified: false,
+      failures: Object.freeze(["matrix-allow-case-invalid"]) });
+  }
+  const failures = await verifyAllowedActivity(activity?.activity || activity,
+    entry, config, signingUserId);
+  return Object.freeze({ verified: failures.length === 0,
+    failures: Object.freeze([...new Set(failures)]) });
 }
 
 function verifyDeniedActivity(activity, config, signingUserId) {

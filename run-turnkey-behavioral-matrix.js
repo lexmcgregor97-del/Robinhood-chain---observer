@@ -95,10 +95,10 @@ export async function submitActivity(client, config, entry, expectCompleted) {
       type: "TRANSACTION_TYPE_ETHEREUM",
       unsignedTransaction: entry.unsignedTransaction.replace(/^0x/, ""),
     });
-    const activity = response?.activity || response;
-    if (!activity?.id) throw new Error("turnkey-matrix-activity-id-missing");
+    const activityId = response?.activity?.id ?? response?.activityId ?? response?.id;
+    if (!activityId) throw new Error("turnkey-matrix-activity-id-missing");
     if (!expectCompleted) throw new Error("turnkey-matrix-denial-unexpectedly-completed");
-    return activity.id;
+    return activityId;
   } catch (error) {
     if (expectCompleted || !error?.activityId) throw error;
     return error.activityId;
