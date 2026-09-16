@@ -16,17 +16,18 @@ function consensusMayIncludeUser(consensus, userId, userTags = []) {
 
 export function expectedTurnkeySigningPolicies(config, userId) {
   // Turnkey policy string equality is exact. Render decoded EVM address
-  // operands in lowercase, matching the parser's normalized hex convention.
+  // operands in canonical checksum form, matching the values exposed by the
+  // EVM parser. Raw calldata slices remain lowercase hexadecimal.
   // Turnkey's `in` operator is for integer fields. Address and calldata
   // operands are strings, so an allowlist must be expressed as exact equality
   // clauses joined with `||`.
   const routerCondition = [...config.allowedRouters]
-    .map((router) => `eth.tx.to == '${getAddress(router).toLowerCase()}'`).join(" || ");
+    .map((router) => `eth.tx.to == '${getAddress(router)}'`).join(" || ");
   const routerWordCondition = [...config.allowedRouters]
     .map((router) => `eth.tx.data[10..74] == '${router.slice(2).toLowerCase().padStart(64, "0")}'`)
     .join(" || ");
-  const wallet = getAddress(config.walletAddress).toLowerCase();
-  const weth = getAddress(ROBINHOOD.weth).toLowerCase();
+  const wallet = getAddress(config.walletAddress);
+  const weth = getAddress(ROBINHOOD.weth);
   const common = `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.gas <= ${config.maxGas} && eth.tx.max_fee_per_gas <= ${config.maxFeePerGasWei} && eth.tx.max_priority_fee_per_gas <= ${config.maxFeePerGasWei}`;
   const swap = `${common} && (${routerCondition}) && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
   const consensus = `approvers.any(user, user.id == '${userId}')`;
