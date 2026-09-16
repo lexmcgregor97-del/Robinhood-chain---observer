@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeFunctionResult } from "viem";
 import {
-  ERC20_SELL_PROBE_ABI, probeStateOverrideSupport, probeV2Sell,
+  ERC20_SELL_PROBE_ABI, isSellProbeReady, probeStateOverrideSupport, probeV2Sell,
   sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
@@ -52,6 +52,19 @@ test("configuration reuses the verified V2 router allowlist", () => {
   assert.equal(config.canaryBalanceSlot, 51);
   assert.equal(config.negativeCacheMs, 60 * 60_000);
   assert.equal(sellProbeConfigFromEnv({}).configured, false);
+});
+
+test("readiness survives candidate absence but not failure or expiry", () => {
+  const now = 1_000_000;
+  const config = { configured: true, maxAgeMs: 15 * 60_000 };
+  const lastSuccessAt = new Date(now - 60_000).toISOString();
+  assert.equal(isSellProbeReady({ passed: false, lastSuccessAt,
+    failures: ["sell-probe-candidate-unavailable"] }, config, now), true);
+  assert.equal(isSellProbeReady({ passed: false, lastSuccessAt,
+    failures: ["sell-probe-self-simulation-failed"] }, config, now), false);
+  assert.equal(isSellProbeReady({ passed: true,
+    lastSuccessAt: new Date(now - config.maxAgeMs - 1).toISOString(), failures: [] },
+  config, now), false);
 });
 
 test("one-call WETH canary proves provider state-override support", async () => {

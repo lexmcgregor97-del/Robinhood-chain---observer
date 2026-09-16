@@ -38,7 +38,7 @@ import { EvidenceJournal } from "./evidence-journal.js";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
 import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.js";
 import {
-  probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
+  isSellProbeReady, probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
 import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
 import {
@@ -1001,9 +1001,7 @@ function freshSellProbe(poolAddress, now = Date.now()) {
 }
 
 function sellProbeReady(now = Date.now()) {
-  const checkedAt = Date.parse(SELL_PROBE_STATUS.lastSuccessAt || "");
-  return SELL_PROBE_CONFIG.configured && SELL_PROBE_STATUS.passed === true
-    && Number.isFinite(checkedAt) && now - checkedAt <= SELL_PROBE_CONFIG.maxAgeMs;
+  return isSellProbeReady(SELL_PROBE_STATUS, SELL_PROBE_CONFIG, now);
 }
 
 function publicSellProbeStatus(now = Date.now()) {
