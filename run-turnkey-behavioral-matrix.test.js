@@ -4,7 +4,7 @@ import { decodeFunctionData, parseTransaction } from "viem";
 import { ROBINHOOD } from "./chain-config.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 import {
-  buildTurnkeyBehavioralCases, runTurnkeyBehavioralMatrix,
+  buildTurnkeyBehavioralCases, runTurnkeyBehavioralMatrix, submitActivity,
 } from "./run-turnkey-behavioral-matrix.js";
 
 const router = "0x2222222222222222222222222222222222222222";
@@ -50,4 +50,29 @@ test("refuses live-worker activation flags before reading private configuration"
       [flag]: "true",
     }), /turnkey-matrix-live-flags-forbidden/);
   }
+});
+
+test("submits the sdk-server transaction shape without the HTTP activity envelope", async () => {
+  const requests = [];
+  const client = { signTransaction: async (request) => {
+    requests.push(request);
+    return { activity: { id: "activity-allow" } };
+  } };
+  assert.equal(await submitActivity(client, config,
+    { unsignedTransaction: "0x1234" }, true), "activity-allow");
+  assert.deepEqual(requests, [{
+    organizationId: config.organizationId,
+    signWith: config.walletAddress,
+    type: "TRANSACTION_TYPE_ETHEREUM",
+    unsignedTransaction: "1234",
+  }]);
+  assert.equal("parameters" in requests[0], false);
+});
+
+test("retains the activity id surfaced by an sdk-server policy denial", async () => {
+  const denial = Object.assign(new Error("policy denied"),
+    { activityId: "activity-denial" });
+  const client = { signTransaction: async () => { throw denial; } };
+  assert.equal(await submitActivity(client, config,
+    { unsignedTransaction: "0x1234" }, false), "activity-denial");
 });
