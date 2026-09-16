@@ -65,11 +65,12 @@ test("probe binds the authenticated signing user to policy and key ownership", a
   assert.equal(result.verified, true);
 });
 
-test("approval policy pins selector and padded allowlisted spender word", () => {
+test("approval policy pins selector and spender while excluding unlimited approval", () => {
   const approval = expectedTurnkeySigningPolicies(config, userId).approval.condition;
   const paddedRouter = config.allowedRouters[0].slice(2).padStart(64, "0");
   assert.match(approval, /eth\.tx\.data\[0\.\.10\] == '0x095ea7b3'/);
   assert.ok(approval.includes(`eth.tx.data[10..74] == '${paddedRouter}'`));
+  assert.ok(approval.includes(`eth.tx.data[74..138] != '${"f".repeat(64)}'`));
   assert.equal(approval.includes(" in ["), false);
   assert.equal(approval.includes("0x5555555555555555555555555555555555555555"), false);
 });
@@ -105,5 +106,5 @@ test("parenthesizes multi-router string equality clauses", () => {
   assert.match(policies.buy.condition,
     /&& \(eth\.tx\.to == '[^']+' \|\| eth\.tx\.to == '[^']+'\) &&/);
   assert.match(policies.approval.condition,
-    /&& \(eth\.tx\.data\[10\.\.74\] == '[^']+' \|\| eth\.tx\.data\[10\.\.74\] == '[^']+'\)$/);
+    /&& \(eth\.tx\.data\[10\.\.74\] == '[^']+' \|\| eth\.tx\.data\[10\.\.74\] == '[^']+'\) && eth\.tx\.data\[74\.\.138\] != '[f]+'$/);
 });
