@@ -18,6 +18,20 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) throw new Error();
       const body = await response.json();
+      const responseValid = body?.mode === "PAPER_ONLY"
+        && typeof body?.newEntriesPaused === "boolean"
+        && (body?.automationBlockedReason == null
+          || typeof body.automationBlockedReason === "string")
+        && typeof body?.automation === "object"
+        && typeof body?.evidence?.healthy === "boolean"
+        && Number.isSafeInteger(body?.execution?.durability?.pendingExecutions)
+        && typeof body?.execution?.signingVerification?.attestationVerified === "boolean"
+        && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean";
+      if (!responseValid) return Object.freeze({
+        endpointAuthenticated: true, responseValid: false,
+        eligibleForMicroMainnet: false,
+        failures: Object.freeze(["observer-live-readiness-invalid"]),
+      });
       const lastCycleAt = Number(body?.automation?.lastCycleAt);
       const fresh = Number.isSafeInteger(lastCycleAt) && lastCycleAt <= now
         && now - lastCycleAt <= maxAgeMs;
@@ -26,11 +40,13 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         && body?.execution?.durability?.pendingExecutions === 0
         && body?.execution?.signingVerification?.attestationVerified === true
         && body?.liveReadiness?.eligibleForMicroMainnet === true && fresh;
-      return Object.freeze({ eligibleForMicroMainnet: eligible,
+      return Object.freeze({ endpointAuthenticated: true, responseValid: true,
+        eligibleForMicroMainnet: eligible,
         failures: eligible ? Object.freeze([])
           : Object.freeze(["observer-live-readiness-not-current"]) });
     } catch {
-      return Object.freeze({ eligibleForMicroMainnet: false,
+      return Object.freeze({ endpointAuthenticated: false, responseValid: false,
+        eligibleForMicroMainnet: false,
         failures: Object.freeze(["observer-live-readiness-unavailable"]) });
     }
   };

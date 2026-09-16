@@ -41,6 +41,16 @@ test("refuses readiness requests to a host other than the pinned observer", () =
   /hostname-mismatch/);
 });
 
+test("distinguishes malformed authenticated output from an unavailable observer", async () => {
+  const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
+    expectedHostname: "observer.example", bearerToken: "a".repeat(32),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ mode: "PAPER_ONLY" }) }) });
+  const result = await adapter();
+  assert.equal(result.endpointAuthenticated, true);
+  assert.equal(result.responseValid, false);
+  assert.deepEqual(result.failures, ["observer-live-readiness-invalid"]);
+});
+
 test("signing adapter converts probe failures to a closed credential boundary", async () => {
   const client = { getWhoami: async () => { throw new Error("private"); },
     getOrganizationConfigs: async () => ({}), getPolicies: async () => ({}),
