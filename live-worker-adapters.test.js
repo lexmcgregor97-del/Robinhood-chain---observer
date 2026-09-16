@@ -82,7 +82,19 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
       execution: { durability: { pendingExecutions: 1 } },
       liveReadiness: { eligibleForMicroMainnet: false, failures: [
         "paper-sample-too-small", "private-unknown-reason",
-      ] } }) }) });
+      ] }, books: { WETH: { analytics: {
+        closedTrades: 3, wins: 1, losses: 2, winRatePct: 33.333,
+        realizedPnl: -4, expectancyPerTrade: -1.333, averageWin: 2,
+        averageLoss: -3, averageHoldMs: 60_000, maxRealizedDrawdownPct: 12,
+        maxMarkedDrawdownPct: 13, measurementFailures: 0, uniquePools: 3,
+        feesPaid: 0.2, gasPaid: 0.1,
+        byExitReason: {
+          "stop-loss": { trades: 2, wins: 0, losses: 2, pnl: -6,
+            averageReturnPct: -8 },
+          "private-exit-label": { trades: 1, wins: 1, losses: 0, pnl: 2,
+            averageReturnPct: 4 },
+        },
+      } } } }) }) });
   const result = await adapter({ now: 100 });
   assert.equal(result.eligibleForMicroMainnet, false);
   assert.deepEqual(result.checks, {
@@ -93,8 +105,12 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
   assert.equal(result.liveReadinessBlockers.paperSampleTooSmall, true);
   assert.equal(result.liveReadinessBlockers.paperExpectancyNotPositive, false);
   assert.equal(result.liveReadinessBlockers.unknownReasonPresent, true);
+  assert.equal(result.paperCohort.closedTrades, 3);
+  assert.equal(result.paperCohort.byExitReason["stop-loss"].trades, 2);
+  assert.equal(result.paperCohort.unknownExitReasonTrades, 1);
   assert.equal(JSON.stringify(result).includes("private-reason-text"), false);
   assert.equal(JSON.stringify(result).includes("private-unknown-reason"), false);
+  assert.equal(JSON.stringify(result).includes("private-exit-label"), false);
 });
 
 test("refuses readiness requests to a host other than the pinned observer", () => {
