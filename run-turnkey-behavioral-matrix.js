@@ -87,15 +87,13 @@ export function buildTurnkeyBehavioralCases(config, tokenAddress) {
   };
 }
 
-async function submitActivity(client, config, entry, expectCompleted) {
+export async function submitActivity(client, config, entry, expectCompleted) {
   try {
     const response = await client.signTransaction({
-      type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
       organizationId: config.organizationId,
-      parameters: { signWith: config.walletAddress,
-        type: "TRANSACTION_TYPE_ETHEREUM",
-        unsignedTransaction: entry.unsignedTransaction.replace(/^0x/, "") },
-      timestampMs: String(Date.now()),
+      signWith: config.walletAddress,
+      type: "TRANSACTION_TYPE_ETHEREUM",
+      unsignedTransaction: entry.unsignedTransaction.replace(/^0x/, ""),
     });
     const activity = response?.activity || response;
     if (!activity?.id) throw new Error("turnkey-matrix-activity-id-missing");
