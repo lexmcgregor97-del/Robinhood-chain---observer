@@ -22,6 +22,7 @@ export async function verifyDormantObserverReadiness(env = process.env,
     eligibleForMicroMainnet: false,
     checks: null,
     liveReadinessBlockers: null,
+    paperCohort: null,
     mode: config.mode,
     connected: config.connected,
     automatic: config.automatic,
@@ -40,6 +41,7 @@ export async function verifyDormantObserverReadiness(env = process.env,
   } catch {
     readiness = Object.freeze({ endpointAuthenticated: false, responseValid: false,
       eligibleForMicroMainnet: false, checks: null, liveReadinessBlockers: null,
+      paperCohort: null,
       failures: Object.freeze(["observer-live-readiness-adapter-invalid"]) });
   }
   const endpointAuthenticated = readiness.endpointAuthenticated === true;
@@ -51,6 +53,7 @@ export async function verifyDormantObserverReadiness(env = process.env,
     eligibleForMicroMainnet: readiness.eligibleForMicroMainnet,
     checks: readiness.checks || null,
     liveReadinessBlockers: readiness.liveReadinessBlockers || null,
+    paperCohort: readiness.paperCohort || null,
     mode: config.mode,
     connected: config.connected,
     automatic: config.automatic,
