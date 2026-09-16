@@ -27,15 +27,21 @@ export function expectedTurnkeySigningPolicies(config, userId) {
     .map((router) => `eth.tx.data[10..74] == '${router.slice(2).toLowerCase().padStart(64, "0")}'`)
     .join(" || ");
   const wallet = getAddress(config.walletAddress);
-  const weth = getAddress(ROBINHOOD.weth);
+  // Turnkey documents count/all/any for flat ABI arrays, but not direct
+  // indexing. Bind the two-token path orientation to the canonical ABI
+  // calldata words instead. For swapExactTokensForTokens the dynamic path
+  // begins after five head words: length at data[330..394], token 0 at
+  // data[394..458], and token 1 at data[458..522]. The decoded count check
+  // below independently requires exactly two path elements.
+  const wethWord = ROBINHOOD.weth.slice(2).toLowerCase().padStart(64, "0");
   const common = `activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && wallet_account.address == '${wallet}' && eth.tx.chain_id == 4663 && eth.tx.value == 0 && eth.tx.gas <= ${config.maxGas} && eth.tx.max_fee_per_gas <= ${config.maxFeePerGasWei} && eth.tx.max_priority_fee_per_gas <= ${config.maxFeePerGasWei}`;
   const swap = `${common} && (${routerCondition}) && eth.tx.function_name == 'swapExactTokensForTokens' && eth.tx.contract_call_args['amountIn'] > 0 && eth.tx.contract_call_args['amountOutMin'] > 0 && eth.tx.contract_call_args['path'].count() == 2 && eth.tx.contract_call_args['to'] == '${wallet}'`;
   const consensus = `approvers.any(user, user.id == '${userId}')`;
   return Object.freeze({
     buy: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
-      condition: `${swap} && eth.tx.contract_call_args['amountIn'] <= ${config.maxPerTransactionWei} && eth.tx.contract_call_args['path'][0] == '${weth}'` }),
+      condition: `${swap} && eth.tx.contract_call_args['amountIn'] <= ${config.maxPerTransactionWei} && eth.tx.data[394..458] == '${wethWord}'` }),
     sell: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
-      condition: `${swap} && eth.tx.contract_call_args['path'][1] == '${weth}'` }),
+      condition: `${swap} && eth.tx.data[458..522] == '${wethWord}'` }),
     approval: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
       condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && (${routerWordCondition})` }),
   });
