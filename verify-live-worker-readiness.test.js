@@ -45,7 +45,8 @@ test("proves authenticated observer reachability while reporting readiness block
         automation: { lastCycleAt: now - 1 }, evidence: { healthy: true },
         execution: { durability: { pendingExecutions: 0 },
           signingVerification: { attestationVerified: false } },
-        liveReadiness: { eligibleForMicroMainnet: false } }) };
+        liveReadiness: { eligibleForMicroMainnet: false,
+          failures: ["paper-sample-too-small", "sell-probe-not-ready"] } }) };
     } });
   assert.equal(result.verified, true);
   assert.equal(result.probe, "observer-endpoint-verification-only");
@@ -57,6 +58,9 @@ test("proves authenticated observer reachability while reporting readiness block
     evidenceHealthy: true, noPendingExecutions: true,
     signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
   });
+  assert.equal(result.liveReadinessBlockers.paperSampleTooSmall, true);
+  assert.equal(result.liveReadinessBlockers.sellProbeNotReady, true);
+  assert.equal(result.liveReadinessBlockers.unknownReasonPresent, false);
   assert.deepEqual(result.failures, ["observer-live-readiness-not-current"]);
   assert.equal(JSON.stringify(result).includes(base.LIVE_WORKER_OBSERVER_BEARER_TOKEN), false);
 });
