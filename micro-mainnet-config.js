@@ -30,7 +30,11 @@ export function microMainnetConfigFromEnv(env = process.env) {
   const mode = value(env.ATLAS_EXECUTION_MODE || "PAPER_ONLY").toUpperCase();
   const enabled = envFlag(env.MICRO_MAINNET_ENABLED, false);
   const organizationId = value(env.TURNKEY_SIGNING_ORGANIZATION_ID);
-  const walletAddress = value(env.TURNKEY_SIGNING_WALLET_ADDRESS).toLowerCase();
+  // Turnkey treats `signWith` addresses as case-sensitive resource locators.
+  // Preserve the configured spelling for SDK calls while retaining the
+  // normalized address used by policy and EVM comparisons.
+  const walletSignWith = value(env.TURNKEY_SIGNING_WALLET_ADDRESS);
+  const walletAddress = walletSignWith.toLowerCase();
   const buyPolicyId = value(env.TURNKEY_SIGNING_BUY_POLICY_ID);
   const sellPolicyId = value(env.TURNKEY_SIGNING_SELL_POLICY_ID);
   const approvalPolicyId = value(env.TURNKEY_SIGNING_APPROVAL_POLICY_ID);
@@ -94,6 +98,7 @@ export function microMainnetConfigFromEnv(env = process.env) {
     enabled,
     organizationId,
     walletAddress,
+    walletSignWith,
     policyIds: Object.freeze({ buy: buyPolicyId, sell: sellPolicyId, approval: approvalPolicyId }),
     apiPublicKey,
     allowedRouters: Object.freeze(allowedRouters),

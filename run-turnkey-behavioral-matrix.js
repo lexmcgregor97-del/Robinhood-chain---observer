@@ -91,7 +91,7 @@ export async function submitActivity(client, config, entry, expectCompleted) {
   try {
     const response = await client.signTransaction({
       organizationId: config.organizationId,
-      signWith: config.walletAddress,
+      signWith: config.walletSignWith || config.walletAddress,
       type: "TRANSACTION_TYPE_ETHEREUM",
       unsignedTransaction: entry.unsignedTransaction.replace(/^0x/, ""),
     });

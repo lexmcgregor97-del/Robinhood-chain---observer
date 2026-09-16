@@ -6,6 +6,7 @@ import {
 } from "./micro-mainnet-config.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
+const mixedCaseWallet = "0x910136966075758A269D670B426459fCE098c177";
 const router = "0x2222222222222222222222222222222222222222";
 const configured = {
   ATLAS_EXECUTION_MODE: "MICRO_MAINNET",
@@ -53,6 +54,19 @@ test("requires an exact two-part activation ceremony and bounded spend", () => {
   assert.ok(microMainnetConfigFromEnv({ ...configured,
     MICRO_MAINNET_MAX_WETH_DAILY_WEI: "1" }).failures
     .includes("daily-spend-limit-below-transaction-limit"));
+});
+
+test("preserves Turnkey signWith address casing while normalizing EVM comparisons", () => {
+  const result = microMainnetConfigFromEnv({
+    ...configured,
+    TURNKEY_SIGNING_WALLET_ADDRESS: mixedCaseWallet,
+    TURNKEY_WALLET_ADDRESS: mixedCaseWallet.toLowerCase(),
+    MICRO_MAINNET_CONFIRMATION:
+      `ENABLE_ATLAS_MICRO_MAINNET:4663:${mixedCaseWallet.toLowerCase()}`,
+  });
+  assert.equal(result.configured, true);
+  assert.equal(result.walletAddress, mixedCaseWallet.toLowerCase());
+  assert.equal(result.walletSignWith, mixedCaseWallet);
 });
 
 test("keeps signing secrets out of public status", () => {

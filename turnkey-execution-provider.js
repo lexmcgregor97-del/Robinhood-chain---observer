@@ -31,7 +31,7 @@ export async function createTurnkeySigningAccount(config, apiPrivateKey) {
   const account = await createAccount({
     client,
     organizationId: config.organizationId,
-    signWith: config.walletAddress,
+    signWith: config.walletSignWith || config.walletAddress,
     ethereumAddress: config.walletAddress,
   });
   if (!isAddressEqual(account.address, config.walletAddress)) {
