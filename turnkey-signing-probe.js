@@ -1,6 +1,8 @@
 import { ROBINHOOD } from "./chain-config.js";
 import { getAddress } from "viem";
 
+const MAX_UINT256_WORD = "f".repeat(64);
+
 const UUID_IN_EXPRESSION = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 
 const compact = (input) => String(input || "").replace(/\s+/g, " ").trim();
@@ -43,7 +45,7 @@ export function expectedTurnkeySigningPolicies(config, userId) {
     sell: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
       condition: `${swap} && eth.tx.data[458..522] == '${wethWord}'` }),
     approval: Object.freeze({ effect: "EFFECT_ALLOW", consensus,
-      condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && (${routerWordCondition})` }),
+      condition: `${common} && eth.tx.data[0..10] == '0x095ea7b3' && (${routerWordCondition}) && eth.tx.data[74..138] != '${MAX_UINT256_WORD}'` }),
   });
 }
 

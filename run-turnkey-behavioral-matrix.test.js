@@ -87,6 +87,18 @@ test("retains the activity id surfaced by an sdk-server policy denial", async ()
     { unsignedTransaction: "0x1234" }, false), "activity-denial");
 });
 
+test("reports an unexpectedly completed denial without attempting rejection recovery", async () => {
+  let listed = false;
+  const client = {
+    signTransaction: async () => ({ activity: { id: "activity-unexpected-allow" } }),
+    getActivities: async () => { listed = true; return { activities: [] }; },
+  };
+  await assert.rejects(submitActivity(client, config,
+    { case: "approve-max-uint", unsignedTransaction: "0x1234" }, false),
+  /turnkey-matrix-denial-unexpectedly-completed:approve-max-uint:activity-unexpected-allow/);
+  assert.equal(listed, false);
+});
+
 test("recovers an expected denial omitted from the sdk error", async () => {
   const entry = { unsignedTransaction: "0x1234" };
   const client = {
