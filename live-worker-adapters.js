@@ -19,7 +19,7 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) return Object.freeze({
         endpointAuthenticated: false, responseValid: false,
-        eligibleForMicroMainnet: false,
+        eligibleForMicroMainnet: false, checks: null,
         failures: Object.freeze([response.status === 401 || response.status === 403
           ? "observer-live-readiness-unauthorized"
           : "observer-live-readiness-http-error"]),
@@ -41,24 +41,31 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean";
       if (!responseValid) return Object.freeze({
         endpointAuthenticated: true, responseValid: false,
-        eligibleForMicroMainnet: false,
+        eligibleForMicroMainnet: false, checks: null,
         failures: Object.freeze(["observer-live-readiness-invalid"]),
       });
       const lastCycleAt = Number(body?.automation?.lastCycleAt);
       const fresh = Number.isSafeInteger(lastCycleAt) && lastCycleAt <= now
         && now - lastCycleAt <= maxAgeMs;
-      const eligible = body?.mode === "PAPER_ONLY" && body?.newEntriesPaused !== true
-        && body?.automationBlockedReason == null && body?.evidence?.healthy === true
-        && body?.execution?.durability?.pendingExecutions === 0
-        && body?.execution?.signingVerification?.attestationVerified === true
-        && body?.liveReadiness?.eligibleForMicroMainnet === true && fresh;
+      const checks = Object.freeze({
+        paperOnly: body.mode === "PAPER_ONLY",
+        entriesUnpaused: body.newEntriesPaused === false,
+        automationUnblocked: body.automationBlockedReason == null,
+        evidenceHealthy: body.evidence.healthy === true,
+        noPendingExecutions: body.execution.durability.pendingExecutions === 0,
+        signingAttestationVerified:
+          body.execution.signingVerification.attestationVerified === true,
+        liveReadinessEligible: body.liveReadiness.eligibleForMicroMainnet === true,
+        cycleFresh: fresh,
+      });
+      const eligible = Object.values(checks).every((passed) => passed === true);
       return Object.freeze({ endpointAuthenticated: true, responseValid: true,
-        eligibleForMicroMainnet: eligible,
+        eligibleForMicroMainnet: eligible, checks,
         failures: eligible ? Object.freeze([])
           : Object.freeze(["observer-live-readiness-not-current"]) });
     } catch {
       return Object.freeze({ endpointAuthenticated: false, responseValid: false,
-        eligibleForMicroMainnet: false,
+        eligibleForMicroMainnet: false, checks: null,
         failures: Object.freeze(["observer-live-readiness-unavailable"]) });
     }
   };

@@ -52,6 +52,11 @@ test("proves authenticated observer reachability while reporting readiness block
   assert.equal(result.endpointAuthenticated, true);
   assert.equal(result.responseValid, true);
   assert.equal(result.eligibleForMicroMainnet, false);
+  assert.deepEqual(result.checks, {
+    paperOnly: true, entriesUnpaused: true, automationUnblocked: true,
+    evidenceHealthy: true, noPendingExecutions: true,
+    signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
+  });
   assert.deepEqual(result.failures, ["observer-live-readiness-not-current"]);
   assert.equal(JSON.stringify(result).includes(base.LIVE_WORKER_OBSERVER_BEARER_TOKEN), false);
 });
@@ -89,6 +94,7 @@ test("refuses network access when either activation flag is enabled", async () =
     assert.equal(called, false);
     assert.equal(result.verified, false);
     assert.equal(result.responseValid, false);
+    assert.equal(result.checks, null);
     assert.ok(result.failures.includes(failure));
   }
 });
