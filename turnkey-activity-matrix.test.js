@@ -105,6 +105,8 @@ async function fixture() {
   const denied = deniedTransactions();
   const activities = new Map(allows.map((entry) => [entry.activityId, {
     ...activityBase(entry.activityId), status: "ACTIVITY_STATUS_COMPLETED",
+    intent: { signTransactionIntentV2: { signWith: account.address,
+      unsignedTransaction: entry.unsignedTransaction } },
     result: { signTransactionResult: { signedTransaction: entry.signedTransaction } },
   }]));
   for (const entry of denials) activities.set(entry.activityId, {
@@ -140,6 +142,14 @@ test("accepts Turnkey transaction payloads without a 0x prefix", async () => {
   }
   const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
     getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, true);
+});
+
+test("accepts the null failure shape exported for a rejected Turnkey policy activity", async () => {
+  const { matrix, activities } = await fixture();
+  for (const entry of matrix.denials) activities.get(entry.activityId).failure = null;
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => ({ activity: activities.get(activityId) }) });
   assert.equal(result.verified, true);
 });
 
@@ -184,7 +194,8 @@ test("rejects a completed activity from the wrong organization or signer", async
 
 test("rejects a signed allow result that differs from the submitted intent", async () => {
   const { matrix, activities } = await fixture();
-  matrix.allows.find((entry) => entry.case === "approval").unsignedTransaction =
+  const approval = matrix.allows.find((entry) => entry.case === "approval");
+  activities.get(approval.activityId).intent.signTransactionIntentV2.unsignedTransaction =
     unsigned({ to: token, data: encodeFunctionData({ abi: APPROVE_ABI,
       functionName: "approve", args: [router, 100n] }), nonce: 2 });
   const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,

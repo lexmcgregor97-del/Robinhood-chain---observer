@@ -27,6 +27,11 @@ const allowedRouter = (address, config) =>
 const approvedBy = (activity, userId) => (activity.votes || []).some((vote) =>
   vote?.userId === userId && vote?.selection === "VOTE_SELECTION_APPROVED");
 const policyDenied = (activity) => {
+  // Turnkey's exported policy rejections currently carry a null `failure`.
+  // A terminal REJECTED status plus this signing user's approved vote is the
+  // policy-engine outcome; FAILED activities still require explicit policy
+  // failure evidence.
+  if (activity?.status === "ACTIVITY_STATUS_REJECTED" && activity?.failure == null) return true;
   const failure = JSON.stringify(activity?.failure || {});
   return /policy/i.test(failure) && /(denied|deny|rejected|reject)/i.test(failure);
 };
@@ -142,7 +147,7 @@ async function verifyAllowedActivity(activity, entry, config, signingUserId) {
     failures.push("matrix-signed-transaction-invalid");
   }
   if (transaction) {
-    if (!signedTransactionMatchesIntent(transaction, entry.unsignedTransaction)) {
+    if (!signedTransactionMatchesIntent(transaction, intent?.unsignedTransaction)) {
       failures.push("matrix-signed-transaction-mismatch");
     }
     failures.push(...validateAllowedCall(entry.case, transaction, entry, config));
