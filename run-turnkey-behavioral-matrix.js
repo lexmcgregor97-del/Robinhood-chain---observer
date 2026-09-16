@@ -15,6 +15,44 @@ const CONFIRMATION = "RUN_ATLAS_TURNKEY_MATRIX_NO_BROADCAST";
 const UNREACHABLE_NONCE = BigInt(Number.MAX_SAFE_INTEGER);
 const foreign = "0x000000000000000000000000000000000000dEaD";
 const other = "0x000000000000000000000000000000000000bEEF";
+const SIGN_TRANSACTION = "ACTIVITY_TYPE_SIGN_TRANSACTION_V2";
+const DENIED_STATUSES = new Set(["ACTIVITY_STATUS_FAILED", "ACTIVITY_STATUS_REJECTED"]);
+
+const normalizedTransaction = (value) => String(value || "").replace(/^0x/i, "").toLowerCase();
+const sameAddress = (left, right) => String(left || "").toLowerCase()
+  === String(right || "").toLowerCase();
+
+export async function recoverExpectedDenialActivity(client, config, entry,
+  requestedAt = Date.now(), { attempts = 5, wait = (ms) => new Promise((resolve) =>
+    setTimeout(resolve, ms)) } = {}) {
+  if (typeof client?.getActivities !== "function") {
+    throw new Error("turnkey-matrix-denial-list-activities-required");
+  }
+  const expectedTransaction = normalizedTransaction(entry?.unsignedTransaction);
+  const expectedSigner = config.walletSignWith || config.walletAddress;
+  const lowerBoundSeconds = Math.floor(Number(requestedAt) / 1000);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await client.getActivities({
+      organizationId: config.organizationId,
+      filterByType: [SIGN_TRANSACTION],
+      filterByStatus: [...DENIED_STATUSES],
+      paginationOptions: { limit: "100" },
+    });
+    const matches = (response?.activities || []).filter((activity) => {
+      const intent = activity?.intent?.signTransactionIntentV2;
+      return activity?.organizationId === config.organizationId
+        && activity?.type === SIGN_TRANSACTION
+        && DENIED_STATUSES.has(activity?.status)
+        && Number(activity?.createdAt?.seconds) >= lowerBoundSeconds
+        && sameAddress(intent?.signWith, expectedSigner)
+        && normalizedTransaction(intent?.unsignedTransaction) === expectedTransaction;
+    });
+    if (matches.length === 1 && matches[0]?.id) return matches[0].id;
+    if (matches.length > 1) throw new Error("turnkey-matrix-denial-activity-ambiguous");
+    if (attempt + 1 < attempts) await wait(250 * (attempt + 1));
+  }
+  throw new Error("turnkey-matrix-denial-activity-not-found");
+}
 
 function transaction(config, overrides = {}) {
   return {
@@ -88,6 +126,7 @@ export function buildTurnkeyBehavioralCases(config, tokenAddress) {
 }
 
 export async function submitActivity(client, config, entry, expectCompleted) {
+  const requestedAt = Date.now();
   try {
     const response = await client.signTransaction({
       organizationId: config.organizationId,
@@ -100,8 +139,9 @@ export async function submitActivity(client, config, entry, expectCompleted) {
     if (!expectCompleted) throw new Error("turnkey-matrix-denial-unexpectedly-completed");
     return activityId;
   } catch (error) {
-    if (expectCompleted || !error?.activityId) throw error;
-    return error.activityId;
+    if (expectCompleted) throw error;
+    if (error?.activityId) return error.activityId;
+    return recoverExpectedDenialActivity(client, config, entry, requestedAt);
   }
 }
 
