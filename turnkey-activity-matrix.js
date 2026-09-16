@@ -127,6 +127,19 @@ async function verifyAllowedActivity(activity, entry, config, signingUserId) {
   return failures;
 }
 
+export async function verifyTurnkeyAllowedActivity({
+  activity, entry, config, signingUserId,
+} = {}) {
+  if (!entry || !ALLOW_CASES.includes(entry.case)) {
+    return Object.freeze({ verified: false,
+      failures: Object.freeze(["matrix-allow-case-invalid"]) });
+  }
+  const failures = await verifyAllowedActivity(activity?.activity || activity,
+    entry, config, signingUserId);
+  return Object.freeze({ verified: failures.length === 0,
+    failures: Object.freeze([...new Set(failures)]) });
+}
+
 function verifyDeniedActivity(activity, config, signingUserId) {
   const failures = [];
   if (activity?.organizationId !== config.organizationId) failures.push("matrix-organization-mismatch");
