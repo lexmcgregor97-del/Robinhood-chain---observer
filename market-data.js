@@ -41,3 +41,12 @@ export function decodeSwapEvent(log, version) {
   };
 }
 
+export function isV2SellToQuote(pool, swap, quoteTokens = []) {
+  if (pool?.version !== "v2") return false;
+  const quotes = new Set(quoteTokens.map((address) => String(address).toLowerCase()));
+  const token0IsQuote = quotes.has(String(pool?.token0 || "").toLowerCase());
+  const token1IsQuote = quotes.has(String(pool?.token1 || "").toLowerCase());
+  if (token0IsQuote === token1IsQuote) return false;
+  const expectedDirection = token0IsQuote ? "token1-to-token0" : "token0-to-token1";
+  return swap?.direction === expectedDirection;
+}
