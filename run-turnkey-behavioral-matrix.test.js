@@ -4,7 +4,8 @@ import { decodeFunctionData, parseTransaction } from "viem";
 import { ROBINHOOD } from "./chain-config.js";
 import { V2_ROUTER_ABI } from "./router-calldata.js";
 import {
-  buildTurnkeyBehavioralCases, runTurnkeyBehavioralMatrix, submitActivity,
+  buildTurnkeyBehavioralCases, recoverExpectedDenialActivity,
+  runTurnkeyBehavioralMatrix, submitActivity,
 } from "./run-turnkey-behavioral-matrix.js";
 
 const router = "0x2222222222222222222222222222222222222222";
@@ -84,4 +85,38 @@ test("retains the activity id surfaced by an sdk-server policy denial", async ()
   const client = { signTransaction: async () => { throw denial; } };
   assert.equal(await submitActivity(client, config,
     { unsignedTransaction: "0x1234" }, false), "activity-denial");
+});
+
+test("recovers an expected denial omitted from the sdk error", async () => {
+  const entry = { unsignedTransaction: "0x1234" };
+  const client = {
+    signTransaction: async () => { throw new Error("policy denied"); },
+    getActivities: async (request) => {
+      assert.deepEqual(request.filterByStatus,
+        ["ACTIVITY_STATUS_FAILED", "ACTIVITY_STATUS_REJECTED"]);
+      return { activities: [{ id: "activity-rejected",
+        organizationId: config.organizationId,
+        type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+        status: "ACTIVITY_STATUS_REJECTED",
+        createdAt: { seconds: String(Math.floor(Date.now() / 1000)), nanos: "0" },
+        intent: { signTransactionIntentV2: {
+          signWith: config.walletSignWith.toLowerCase(), unsignedTransaction: "1234",
+        } },
+      }] };
+    },
+  };
+  assert.equal(await submitActivity(client, config, entry, false), "activity-rejected");
+});
+
+test("denial recovery rejects ambiguous matching activities", async () => {
+  const activity = { id: "one", organizationId: config.organizationId,
+    type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2", status: "ACTIVITY_STATUS_REJECTED",
+    createdAt: { seconds: String(Math.floor(Date.now() / 1000)), nanos: "0" },
+    intent: { signTransactionIntentV2: {
+      signWith: config.walletSignWith, unsignedTransaction: "1234",
+    } } };
+  await assert.rejects(recoverExpectedDenialActivity({
+    getActivities: async () => ({ activities: [activity, { ...activity, id: "two" }] }),
+  }, config, { unsignedTransaction: "0x1234" }, Date.now(), { attempts: 1 }),
+  /denial-activity-ambiguous/);
 });
