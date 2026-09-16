@@ -108,7 +108,7 @@ const MICRO_MAINNET_CONFIG = microMainnetConfigFromEnv(process.env);
 const SIGNING_ATTESTATION_FILE = String(process.env.TURNKEY_SIGNING_ATTESTATION_FILE || "");
 const SIGNING_ATTESTATION_PUBLIC_KEY = process.env.TURNKEY_SIGNING_ATTESTATION_PUBLIC_KEY_PEM_B64
   ? Buffer.from(process.env.TURNKEY_SIGNING_ATTESTATION_PUBLIC_KEY_PEM_B64, "base64").toString("utf8") : "";
-const PAPER_STRATEGY_VERSION = "2026-09-15-paper-v6b-lossless-recovery";
+const PAPER_STRATEGY_VERSION = "2026-09-16-paper-v7-sellability-gated";
 const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
   || (STATE_FILE ? join(dirname(STATE_FILE), "evidence") : ""));
 const EVIDENCE_FILE = EVIDENCE_DIR
@@ -146,6 +146,7 @@ const QUALIFYING_PAPER_RISK_POLICY = Object.freeze({
   maxPriceImpactPct: 1.5,
   maxExecutionCostPct: 4,
   requireGasEstimate: true,
+  requireSellProbe: true,
   allowedSignals: ["active"],
   minSwaps: 4,
   minAcceleration: 0.75,
