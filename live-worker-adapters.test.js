@@ -16,7 +16,13 @@ test("accepts only a fresh healthy observer cohort with no pending execution", a
       execution: { durability: { pendingExecutions: 0 },
         signingVerification: { attestationVerified: true } },
       liveReadiness: { eligibleForMicroMainnet: true } }) }; } });
-  assert.equal((await adapter({ now })).eligibleForMicroMainnet, true);
+  const result = await adapter({ now });
+  assert.equal(result.eligibleForMicroMainnet, true);
+  assert.deepEqual(result.checks, {
+    paperOnly: true, entriesUnpaused: true, automationUnblocked: true,
+    evidenceHealthy: true, noPendingExecutions: true,
+    signingAttestationVerified: true, liveReadinessEligible: true, cycleFresh: true,
+  });
 });
 
 test("fails closed on stale or unreachable observer readiness", async () => {
@@ -65,6 +71,25 @@ test("reports sanitized authorization and HTTP failures separately", async () =>
       fetchImpl: async () => ({ ok: false, status }) });
     assert.deepEqual((await adapter()).failures, [failure]);
   }
+});
+
+test("reports a sanitized per-check vector for a valid blocked observer", async () => {
+  const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
+    expectedHostname: "observer.example", bearerToken: "a".repeat(32),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ mode: "PAPER_ONLY",
+      newEntriesPaused: true, automationBlockedReason: "private-reason-text",
+      automation: { lastCycleAt: 1 }, evidence: { healthy: false },
+      execution: { durability: { pendingExecutions: 1 },
+        signingVerification: { attestationVerified: false } },
+      liveReadiness: { eligibleForMicroMainnet: false } }) }) });
+  const result = await adapter({ now: 100 });
+  assert.equal(result.eligibleForMicroMainnet, false);
+  assert.deepEqual(result.checks, {
+    paperOnly: true, entriesUnpaused: false, automationUnblocked: false,
+    evidenceHealthy: false, noPendingExecutions: false,
+    signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
+  });
+  assert.equal(JSON.stringify(result).includes("private-reason-text"), false);
 });
 
 test("refuses readiness requests to a host other than the pinned observer", () => {
