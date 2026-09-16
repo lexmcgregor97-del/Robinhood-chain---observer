@@ -35,10 +35,52 @@ test("fails closed on stale or unreachable observer readiness", async () => {
   assert.deepEqual((await down()).failures, ["observer-live-readiness-unavailable"]);
 });
 
+test("refuses redirected or final-origin-mismatched observer responses", async () => {
+  const body = { mode: "PAPER_ONLY", newEntriesPaused: false,
+    automationBlockedReason: null, automation: { lastCycleAt: 99 },
+    evidence: { healthy: true }, execution: { durability: { pendingExecutions: 0 },
+      signingVerification: { attestationVerified: true } },
+    liveReadiness: { eligibleForMicroMainnet: true } };
+  for (const response of [
+    { ok: true, redirected: true, url: "https://elsewhere.example/readiness", body },
+    { ok: true, redirected: false, url: "https://elsewhere.example/readiness", body },
+  ]) {
+    const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
+      expectedHostname: "observer.example", bearerToken: "a".repeat(32),
+      fetchImpl: async (_url, request) => {
+        assert.equal(request.redirect, "error");
+        return { ...response, json: async () => response.body };
+      } });
+    assert.deepEqual((await adapter({ now: 100 })).failures,
+      ["observer-live-readiness-unavailable"]);
+  }
+});
+
+test("reports sanitized authorization and HTTP failures separately", async () => {
+  for (const [status, failure] of [[401, "observer-live-readiness-unauthorized"],
+    [403, "observer-live-readiness-unauthorized"],
+    [500, "observer-live-readiness-http-error"]]) {
+    const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
+      expectedHostname: "observer.example", bearerToken: "a".repeat(32),
+      fetchImpl: async () => ({ ok: false, status }) });
+    assert.deepEqual((await adapter()).failures, [failure]);
+  }
+});
+
 test("refuses readiness requests to a host other than the pinned observer", () => {
   assert.throws(() => createObserverReadinessAdapter({ url: "https://observer.example",
     expectedHostname: "different.example", bearerToken: "a".repeat(32) }),
   /hostname-mismatch/);
+});
+
+test("distinguishes malformed authenticated output from an unavailable observer", async () => {
+  const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
+    expectedHostname: "observer.example", bearerToken: "a".repeat(32),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ mode: "PAPER_ONLY" }) }) });
+  const result = await adapter();
+  assert.equal(result.endpointAuthenticated, true);
+  assert.equal(result.responseValid, false);
+  assert.deepEqual(result.failures, ["observer-live-readiness-invalid"]);
 });
 
 test("signing adapter converts probe failures to a closed credential boundary", async () => {

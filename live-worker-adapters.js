@@ -15,9 +15,35 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
     try {
       const response = await fetchImpl(endpoint, { method: "GET",
         headers: { accept: "application/json", authorization: `Bearer ${bearerToken}` },
+        redirect: "error",
         signal: AbortSignal.timeout(timeoutMs) });
-      if (!response.ok) throw new Error();
+      if (!response.ok) return Object.freeze({
+        endpointAuthenticated: false, responseValid: false,
+        eligibleForMicroMainnet: false,
+        failures: Object.freeze([response.status === 401 || response.status === 403
+          ? "observer-live-readiness-unauthorized"
+          : "observer-live-readiness-http-error"]),
+      });
+      if (response.redirected === true) throw new Error();
+      if (response.url) {
+        const finalUrl = new URL(response.url);
+        if (finalUrl.origin.toLowerCase() !== endpoint.origin.toLowerCase()) throw new Error();
+      }
       const body = await response.json();
+      const responseValid = body?.mode === "PAPER_ONLY"
+        && typeof body?.newEntriesPaused === "boolean"
+        && (body?.automationBlockedReason == null
+          || typeof body.automationBlockedReason === "string")
+        && body?.automation !== null && typeof body?.automation === "object"
+        && typeof body?.evidence?.healthy === "boolean"
+        && Number.isSafeInteger(body?.execution?.durability?.pendingExecutions)
+        && typeof body?.execution?.signingVerification?.attestationVerified === "boolean"
+        && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean";
+      if (!responseValid) return Object.freeze({
+        endpointAuthenticated: true, responseValid: false,
+        eligibleForMicroMainnet: false,
+        failures: Object.freeze(["observer-live-readiness-invalid"]),
+      });
       const lastCycleAt = Number(body?.automation?.lastCycleAt);
       const fresh = Number.isSafeInteger(lastCycleAt) && lastCycleAt <= now
         && now - lastCycleAt <= maxAgeMs;
@@ -26,11 +52,13 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         && body?.execution?.durability?.pendingExecutions === 0
         && body?.execution?.signingVerification?.attestationVerified === true
         && body?.liveReadiness?.eligibleForMicroMainnet === true && fresh;
-      return Object.freeze({ eligibleForMicroMainnet: eligible,
+      return Object.freeze({ endpointAuthenticated: true, responseValid: true,
+        eligibleForMicroMainnet: eligible,
         failures: eligible ? Object.freeze([])
           : Object.freeze(["observer-live-readiness-not-current"]) });
     } catch {
-      return Object.freeze({ eligibleForMicroMainnet: false,
+      return Object.freeze({ endpointAuthenticated: false, responseValid: false,
+        eligibleForMicroMainnet: false,
         failures: Object.freeze(["observer-live-readiness-unavailable"]) });
     }
   };
