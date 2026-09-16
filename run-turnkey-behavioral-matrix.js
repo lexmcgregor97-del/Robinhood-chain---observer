@@ -127,22 +127,26 @@ export function buildTurnkeyBehavioralCases(config, tokenAddress) {
 
 export async function submitActivity(client, config, entry, expectCompleted) {
   const requestedAt = Date.now();
+  let response;
   try {
-    const response = await client.signTransaction({
+    response = await client.signTransaction({
       organizationId: config.organizationId,
       signWith: config.walletSignWith || config.walletAddress,
       type: "TRANSACTION_TYPE_ETHEREUM",
       unsignedTransaction: entry.unsignedTransaction.replace(/^0x/, ""),
     });
-    const activityId = response?.activity?.id ?? response?.activityId ?? response?.id;
-    if (!activityId) throw new Error("turnkey-matrix-activity-id-missing");
-    if (!expectCompleted) throw new Error("turnkey-matrix-denial-unexpectedly-completed");
-    return activityId;
   } catch (error) {
     if (expectCompleted) throw error;
     if (error?.activityId) return error.activityId;
     return recoverExpectedDenialActivity(client, config, entry, requestedAt);
   }
+  const activityId = response?.activity?.id ?? response?.activityId ?? response?.id;
+  if (!activityId) throw new Error("turnkey-matrix-activity-id-missing");
+  if (!expectCompleted) {
+    throw new Error(`turnkey-matrix-denial-unexpectedly-completed:${
+      entry?.case || "unknown"}:${activityId}`);
+  }
+  return activityId;
 }
 
 export async function runTurnkeyBehavioralMatrix(env = process.env, {
