@@ -2,6 +2,12 @@ import { pathToFileURL } from "node:url";
 import { createObserverReadinessAdapter } from "./live-worker-adapters.js";
 import { liveWorkerConfigFromEnv } from "./live-worker-config.js";
 
+const PROBE = "observer-endpoint-verification-only";
+
+export function liveWorkerReadinessExitCode(result) {
+  return result?.verified === true ? 0 : 1;
+}
+
 export async function verifyDormantObserverReadiness(env = process.env,
   { fetchImpl = fetch, now = Date.now() } = {}) {
   const config = liveWorkerConfigFromEnv(env);
@@ -9,8 +15,10 @@ export async function verifyDormantObserverReadiness(env = process.env,
   if (config.connected) failures.push("live-worker-readiness-submission-must-remain-disabled");
   if (config.automatic) failures.push("live-worker-readiness-automatic-must-remain-disabled");
   if (failures.length > 0) return Object.freeze({
+    probe: PROBE,
     verified: false,
     endpointAuthenticated: false,
+    responseValid: false,
     eligibleForMicroMainnet: false,
     mode: config.mode,
     connected: config.connected,
@@ -19,14 +27,22 @@ export async function verifyDormantObserverReadiness(env = process.env,
     failures: Object.freeze([...new Set(failures)]),
   });
 
-  const readiness = await createObserverReadinessAdapter({
-    url: config.observerUrl,
-    expectedHostname: config.observerHostname,
-    bearerToken: config.observerBearerToken,
-    fetchImpl,
-  })({ now });
+  let readiness;
+  try {
+    readiness = await createObserverReadinessAdapter({
+      url: config.observerUrl,
+      expectedHostname: config.observerHostname,
+      bearerToken: config.observerBearerToken,
+      fetchImpl,
+    })({ now });
+  } catch {
+    readiness = Object.freeze({ endpointAuthenticated: false, responseValid: false,
+      eligibleForMicroMainnet: false,
+      failures: Object.freeze(["observer-live-readiness-adapter-invalid"]) });
+  }
   const endpointAuthenticated = readiness.endpointAuthenticated === true;
   return Object.freeze({
+    probe: PROBE,
     verified: endpointAuthenticated && readiness.responseValid === true,
     endpointAuthenticated,
     responseValid: readiness.responseValid === true,
@@ -42,5 +58,5 @@ export async function verifyDormantObserverReadiness(env = process.env,
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const result = await verifyDormantObserverReadiness();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (!result.verified) process.exitCode = 1;
+  process.exitCode = liveWorkerReadinessExitCode(result);
 }

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyDormantObserverReadiness } from "./verify-live-worker-readiness.js";
+import { liveWorkerReadinessExitCode, verifyDormantObserverReadiness }
+  from "./verify-live-worker-readiness.js";
 
 const wallet = "0x1111111111111111111111111111111111111111";
 const base = {
@@ -47,6 +48,7 @@ test("proves authenticated observer reachability while reporting readiness block
         liveReadiness: { eligibleForMicroMainnet: false } }) };
     } });
   assert.equal(result.verified, true);
+  assert.equal(result.probe, "observer-endpoint-verification-only");
   assert.equal(result.endpointAuthenticated, true);
   assert.equal(result.responseValid, true);
   assert.equal(result.eligibleForMicroMainnet, false);
@@ -70,16 +72,30 @@ test("fails when observer authentication or reachability fails", async () => {
   });
   assert.equal(result.verified, false);
   assert.equal(result.endpointAuthenticated, false);
-  assert.deepEqual(result.failures, ["observer-live-readiness-unavailable"]);
+  assert.deepEqual(result.failures, ["observer-live-readiness-http-error"]);
 });
 
 test("refuses network access when either activation flag is enabled", async () => {
-  let called = false;
-  const result = await verifyDormantObserverReadiness({ ...base,
-    LIVE_WORKER_SUBMISSION_CONNECTED: "true" }, {
-    fetchImpl: async () => { called = true; throw new Error("must not run"); },
-  });
-  assert.equal(called, false);
-  assert.equal(result.verified, false);
-  assert.ok(result.failures.includes("live-worker-readiness-submission-must-remain-disabled"));
+  for (const [key, failure] of [
+    ["LIVE_WORKER_SUBMISSION_CONNECTED",
+      "live-worker-readiness-submission-must-remain-disabled"],
+    ["LIVE_WORKER_AUTOMATIC_SUBMISSION_ENABLED",
+      "live-worker-readiness-automatic-must-remain-disabled"],
+  ]) {
+    let called = false;
+    const result = await verifyDormantObserverReadiness({ ...base, [key]: "true" }, {
+      fetchImpl: async () => { called = true; throw new Error("must not run"); },
+    });
+    assert.equal(called, false);
+    assert.equal(result.verified, false);
+    assert.equal(result.responseValid, false);
+    assert.ok(result.failures.includes(failure));
+  }
+});
+
+test("pins CLI exit semantics to endpoint verification rather than eligibility", () => {
+  assert.equal(liveWorkerReadinessExitCode({ verified: true,
+    eligibleForMicroMainnet: false }), 0);
+  assert.equal(liveWorkerReadinessExitCode({ verified: false,
+    eligibleForMicroMainnet: true }), 1);
 });

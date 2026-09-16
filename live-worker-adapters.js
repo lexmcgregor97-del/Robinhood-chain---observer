@@ -15,14 +15,26 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
     try {
       const response = await fetchImpl(endpoint, { method: "GET",
         headers: { accept: "application/json", authorization: `Bearer ${bearerToken}` },
+        redirect: "error",
         signal: AbortSignal.timeout(timeoutMs) });
-      if (!response.ok) throw new Error();
+      if (!response.ok) return Object.freeze({
+        endpointAuthenticated: false, responseValid: false,
+        eligibleForMicroMainnet: false,
+        failures: Object.freeze([response.status === 401 || response.status === 403
+          ? "observer-live-readiness-unauthorized"
+          : "observer-live-readiness-http-error"]),
+      });
+      if (response.redirected === true) throw new Error();
+      if (response.url) {
+        const finalUrl = new URL(response.url);
+        if (finalUrl.origin.toLowerCase() !== endpoint.origin.toLowerCase()) throw new Error();
+      }
       const body = await response.json();
       const responseValid = body?.mode === "PAPER_ONLY"
         && typeof body?.newEntriesPaused === "boolean"
         && (body?.automationBlockedReason == null
           || typeof body.automationBlockedReason === "string")
-        && typeof body?.automation === "object"
+        && body?.automation !== null && typeof body?.automation === "object"
         && typeof body?.evidence?.healthy === "boolean"
         && Number.isSafeInteger(body?.execution?.durability?.pendingExecutions)
         && typeof body?.execution?.signingVerification?.attestationVerified === "boolean"
