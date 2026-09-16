@@ -90,6 +90,18 @@ export function sellProbeConfigFromEnv(env = process.env) {
   });
 }
 
+export function isSellProbeReady(status, config, now = Date.now()) {
+  if (config?.configured !== true) return false;
+  const checkedAt = Date.parse(status?.lastSuccessAt || "");
+  const maxAgeMs = Number(config?.maxAgeMs);
+  if (!Number.isFinite(checkedAt) || !Number.isFinite(maxAgeMs)
+      || maxAgeMs <= 0 || now < checkedAt || now - checkedAt > maxAgeMs) return false;
+  if (status?.passed === true) return true;
+  return Array.isArray(status?.failures)
+    && status.failures.length === 1
+    && status.failures[0] === "sell-probe-candidate-unavailable";
+}
+
 export async function probeStateOverrideSupport({
   token, walletAddress, balanceSlot = 51, rpc,
   now = Date.now(),
