@@ -6,7 +6,8 @@ import { decodeSwapEvent } from "./market-data.js";
 import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
-  DEFAULT_PAPER_STRATEGY, planPaperEntry, paperExitReason, paperCircuitFailures,
+  DEFAULT_PAPER_STRATEGY, planPaperEntry, paperEntryFailureDetails,
+  paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { ShadowEvaluator } from "./shadow-evaluator.js";
@@ -132,7 +133,7 @@ let SELL_PROBE_STATUS = {
   lastSuccessAt: null,
   checkedPool: null,
   method: null,
-  observedHolderPassed: false,
+  observedSellPassed: false,
   selfSimulationPassed: false,
   failures: [...SELL_PROBE_CONFIG.failures],
 };
@@ -570,7 +571,7 @@ async function verifySellProbeOverrideSupport() {
   });
   if (!SELL_PROBE_OVERRIDE_STATUS.supported) {
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
-      observedHolderPassed: false, selfSimulationPassed: false,
+      observedSellPassed: false, selfSimulationPassed: false,
       failures: [...SELL_PROBE_OVERRIDE_STATUS.failures] };
   }
 }
@@ -1014,7 +1015,7 @@ function publicSellProbeStatus(now = Date.now()) {
     lastSuccessAt: SELL_PROBE_STATUS.lastSuccessAt,
     checkedPool: SELL_PROBE_STATUS.checkedPool,
     method: SELL_PROBE_STATUS.method,
-    observedHolderPassed: SELL_PROBE_STATUS.observedHolderPassed === true,
+    observedSellPassed: SELL_PROBE_STATUS.observedSellPassed === true,
     selfSimulationPassed: SELL_PROBE_STATUS.selfSimulationPassed === true,
     maxAgeMs: SELL_PROBE_CONFIG.maxAgeMs,
     failures: [...SELL_PROBE_STATUS.failures],
@@ -1049,7 +1050,7 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!eligible.length) {
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
       lastAttemptAt: new Date(now).toISOString(), checkedPool: null,
-      observedHolderPassed: false, selfSimulationPassed: false,
+      observedSellPassed: false, selfSimulationPassed: false,
       failures: ["sell-probe-candidate-unavailable"] };
     return;
   }
@@ -1081,7 +1082,7 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       ? lastResult.result.checkedAt : SELL_PROBE_STATUS.lastSuccessAt,
     checkedPool: lastResult?.candidate?.address || null,
     method: lastResult?.result?.method || null,
-    observedHolderPassed: lastResult?.result?.observedHolderPassed === true,
+    observedSellPassed: lastResult?.result?.observedSellPassed === true,
     selfSimulationPassed: lastResult?.result?.selfSimulationPassed === true,
     failures: lastResult?.result?.failures || ["sell-probe-candidate-unavailable"],
   };
@@ -1092,7 +1093,7 @@ function scheduleSellProbe(measured) {
   sellProbePromise = maybeRunSellProbe(measured)
     .catch(() => {
       SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
-        observedHolderPassed: false, selfSimulationPassed: false,
+        observedSellPassed: false, selfSimulationPassed: false,
         lastAttemptAt: new Date().toISOString(), failures: ["sell-probe-background-failed"] };
     })
     .finally(() => { sellProbePromise = null; });
@@ -1463,7 +1464,8 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       const plan = planPaperEntry(candidate, paperState, policy, Date.now());
       if (!plan.approved) {
         rememberPaperDecision({ type: "reject", quote: book.symbol,
-          pool: candidate.address, reasons: plan.failures });
+          pool: candidate.address,
+          reasons: paperEntryFailureDetails(candidate, plan.failures) });
         continue;
       }
       const feeRate = poolFeeRate(candidate);

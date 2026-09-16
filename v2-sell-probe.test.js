@@ -86,7 +86,7 @@ test("simulates an exact bounded sell from a recent observed seller", async () =
   assert.equal("holder" in result, false);
   assert.equal("router" in result, false);
   assert.equal("transactionHash" in result, false);
-  assert.equal(result.observedHolderPassed, true);
+  assert.equal(result.observedSellPassed, true);
   assert.equal(result.selfSimulationPassed, true);
   const selfCall = calls.find((call) => call.method === "eth_call"
     && call.params[0].to === router && call.params[0].from === atlas);
@@ -108,26 +108,26 @@ test("fails closed for a buy-side observation or stale seller", async () => {
   assert.ok(stale.failures.includes("sell-probe-observed-sell-stale"));
 });
 
-test("requires the observed router, balance, and allowance", async () => {
+test("requires the observed router but not the seller's post-sale balance", async () => {
   const foreign = await probeV2Sell({
     pool, safety, lastSwap, latestBlock: 1_000,
     allowedRouters: ["0x6666666666666666666666666666666666666666"],
     atlasWalletAddress: atlas, rpc: successfulRpc(),
   });
   assert.ok(foreign.failures.includes("sell-probe-observed-router-not-allowed"));
-  const balance = await probeV2Sell({
+  const calls = [];
+  const soldBalance = await probeV2Sell({
     pool, safety, lastSwap, latestBlock: 1_000, allowedRouters: [router],
-    atlasWalletAddress: atlas, rpc: successfulRpc({ balance: 999n }),
+    atlasWalletAddress: atlas,
+    rpc: successfulRpc({ balance: 0n, allowance: 0n }, calls),
   });
-  assert.ok(balance.failures.includes("sell-probe-holder-balance-insufficient"));
-  const allowance = await probeV2Sell({
-    pool, safety, lastSwap, latestBlock: 1_000, allowedRouters: [router],
-    atlasWalletAddress: atlas, rpc: successfulRpc({ allowance: 999n }),
-  });
-  assert.ok(allowance.failures.includes("sell-probe-holder-allowance-insufficient"));
+  assert.equal(soldBalance.passed, true, JSON.stringify(soldBalance));
+  assert.equal(soldBalance.observedSellPassed, true);
+  assert.equal(calls.some((call) => call.method === "eth_call"
+    && call.params[0].to === base && !call.params[2]), false);
 });
 
-test("a router revert never becomes sell evidence", async () => {
+test("an Atlas router revert never becomes sell evidence", async () => {
   const rpc = successfulRpc();
   const result = await probeV2Sell({
     pool, safety, lastSwap, latestBlock: 1_000, allowedRouters: [router],
@@ -138,7 +138,7 @@ test("a router revert never becomes sell evidence", async () => {
     },
   });
   assert.equal(result.passed, false);
-  assert.deepEqual(result.failures, ["sell-probe-rpc-simulation-failed"]);
+  assert.deepEqual(result.failures, ["sell-probe-self-simulation-failed"]);
 });
 
 test("a privileged observed seller cannot substitute for Atlas self-simulation", async () => {
@@ -153,7 +153,7 @@ test("a privileged observed seller cannot substitute for Atlas self-simulation",
     },
   });
   assert.equal(result.passed, false);
-  assert.equal(result.observedHolderPassed, true);
+  assert.equal(result.observedSellPassed, true);
   assert.equal(result.selfSimulationPassed, false);
   assert.deepEqual(result.failures, ["sell-probe-self-simulation-failed"]);
 });
@@ -178,7 +178,7 @@ test("Atlas wallet and bounded storage discovery are mandatory", async () => {
       return uint(10_000n);
     },
   });
-  assert.equal(noSlots.observedHolderPassed, true);
+  assert.equal(noSlots.observedSellPassed, true);
   assert.deepEqual(noSlots.failures, ["sell-probe-balance-slot-unresolved"]);
 });
 

@@ -182,8 +182,8 @@ export async function probeV2Sell({
   const checkedAt = new Date(nowSeconds * 1_000).toISOString();
   const fail = (...failures) => Object.freeze({
     passed: false, checkedAt,
-    method: "dual-observed-holder-and-atlas-state-override-eth-call",
-    observedHolderPassed: false, selfSimulationPassed: false,
+    method: "observed-sell-and-atlas-state-override-eth-call",
+    observedSellPassed: false, selfSimulationPassed: false,
     failures: [...new Set(failures)],
   });
   if (pool?.version !== "v2") return fail("sell-probe-v2-required");
@@ -236,32 +236,6 @@ export async function probeV2Sell({
     const router = lower(transaction?.to);
     if (!isAddress(holder)) return fail("sell-probe-holder-unavailable");
     if (!routers.includes(router)) return fail("sell-probe-observed-router-not-allowed");
-    const balanceData = encodeFunctionData({
-      abi: ERC20_SELL_PROBE_ABI, functionName: "balanceOf", args: [getAddress(holder)],
-    });
-    const allowanceData = encodeFunctionData({
-      abi: ERC20_SELL_PROBE_ABI, functionName: "allowance",
-      args: [getAddress(holder), getAddress(router)],
-    });
-    const [balanceResult, allowanceResult] = await Promise.all([
-      rpc("eth_call", [{ to: baseToken, data: balanceData }, "latest"]),
-      rpc("eth_call", [{ to: baseToken, data: allowanceData }, "latest"]),
-    ]);
-    if (uintResult(balanceResult, "sell-probe-balance-invalid") < amountIn) {
-      return fail("sell-probe-holder-balance-insufficient");
-    }
-    if (uintResult(allowanceResult, "sell-probe-allowance-invalid") < amountIn) {
-      return fail("sell-probe-holder-allowance-insufficient");
-    }
-    const observedCall = routerSellCall({ wallet: holder, router, baseToken, quoteToken,
-      amountIn, amountOutMin, nowSeconds });
-    const { validation } = observedCall;
-    if (!validation.approved) return fail("sell-probe-calldata-rejected");
-    const result = await rpc("eth_call", [{ from: holder, to: router,
-      data: observedCall.data }, "latest"]);
-    if (!validRouterResult(result, amountIn, amountOutMin)) {
-      return fail("sell-probe-router-output-invalid");
-    }
 
     const atlasBalanceData = encodeFunctionData({
       abi: ERC20_SELL_PROBE_ABI, functionName: "balanceOf", args: [getAddress(atlasWallet)],
@@ -272,7 +246,7 @@ export async function probeV2Sell({
     });
     let slots = storageSlotCache.get(baseToken);
     if (slots?.failure && slots.expiresAt > Date.now()) {
-      return Object.freeze({ ...fail(slots.failure), observedHolderPassed: true });
+      return Object.freeze({ ...fail(slots.failure), observedSellPassed: true });
     }
     if (slots?.failure) {
       storageSlotCache.delete(baseToken);
@@ -286,7 +260,7 @@ export async function probeV2Sell({
         storageSlotCache.set(baseToken, { failure: "sell-probe-balance-slot-unresolved",
           expiresAt: Date.now() + Number(negativeCacheMs) });
         return Object.freeze({ ...fail("sell-probe-balance-slot-unresolved"),
-          observedHolderPassed: true });
+          observedSellPassed: true });
       }
       const allowance = await discoverStorageSlot({ token: baseToken, callData: atlasAllowanceData,
         addressForSlot: atlasWallet, spender: router, sentinel: ALLOWANCE_SENTINEL,
@@ -295,7 +269,7 @@ export async function probeV2Sell({
         storageSlotCache.set(baseToken, { failure: "sell-probe-allowance-slot-unresolved",
           expiresAt: Date.now() + Number(negativeCacheMs) });
         return Object.freeze({ ...fail("sell-probe-allowance-slot-unresolved"),
-          observedHolderPassed: true });
+          observedSellPassed: true });
       }
       slots = { balanceSlot: balance.slot, allowanceSlot: allowance.slot };
       storageSlotCache.set(baseToken, slots);
@@ -305,7 +279,7 @@ export async function probeV2Sell({
     const atlasCall = routerSellCall({ wallet: atlasWallet, router, baseToken, quoteToken,
       amountIn, amountOutMin, nowSeconds });
     if (!atlasCall.validation.approved) return Object.freeze({
-      ...fail("sell-probe-self-calldata-rejected"), observedHolderPassed: true,
+      ...fail("sell-probe-self-calldata-rejected"), observedSellPassed: true,
     });
     const stateOverride = { [baseToken]: { stateDiff: {
       [balanceKey]: uintWord(amountIn), [allowanceKey]: uintWord(amountIn),
@@ -316,16 +290,16 @@ export async function probeV2Sell({
         data: atlasCall.data }, "latest", stateOverride]);
     } catch {
       return Object.freeze({ ...fail("sell-probe-self-simulation-failed"),
-        observedHolderPassed: true });
+        observedSellPassed: true });
     }
     if (!validRouterResult(selfResult, amountIn, amountOutMin)) {
       return Object.freeze({ ...fail("sell-probe-self-router-output-invalid"),
-        observedHolderPassed: true });
+        observedSellPassed: true });
     }
     return Object.freeze({
       passed: true, checkedAt,
-      method: "dual-observed-holder-and-atlas-state-override-eth-call",
-      observedHolderPassed: true, selfSimulationPassed: true,
+      method: "observed-sell-and-atlas-state-override-eth-call",
+      observedSellPassed: true, selfSimulationPassed: true,
       amountIn: amountIn.toString(), amountOutMin: amountOutMin.toString(),
       failures: [],
     });

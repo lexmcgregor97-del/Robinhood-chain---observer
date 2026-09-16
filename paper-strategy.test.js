@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_PAPER_STRATEGY, MAX_PAPER_DRAWDOWN_PCT,
-  planPaperEntry, paperExitReason, paperCircuitFailures,
+  planPaperEntry, paperEntryFailureDetails, paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
 import { DEFAULT_LIVE_PROMOTION_POLICY } from "./live-readiness.js";
 
@@ -35,6 +35,16 @@ test("paper entry fails closed without risk approval or price", () => {
     } }, { cash: 1000, openPositions: [] });
   assert.equal(plan.approved, false);
   assert.deepEqual(plan.failures, ["risk-gate-rejected", "price-unavailable"]);
+});
+
+test("reports the exact sanitized risk-gate reasons for rejected entries", () => {
+  assert.deepEqual(paperEntryFailureDetails({
+    riskGate: { failures: ["sell-probe-required", "execution-cost-too-high"] },
+  }, ["risk-gate-rejected", "price-unavailable"]), [
+    "sell-probe-required", "execution-cost-too-high", "price-unavailable",
+  ]);
+  assert.deepEqual(paperEntryFailureDetails({}, ["risk-gate-rejected"]),
+    ["risk-gate-rejected"]);
 });
 
 test("prevents duplicate pool positions", () => {
