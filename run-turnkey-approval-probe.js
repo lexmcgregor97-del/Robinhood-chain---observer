@@ -9,6 +9,12 @@ import { probeTurnkeySigningPolicy } from "./turnkey-signing-probe.js";
 
 const CONFIRMATION = "RUN_ATLAS_TURNKEY_APPROVAL_PROBE_NO_BROADCAST";
 
+export function approvalProbeErrorMessage(error) {
+  const message = error instanceof Error ? error.message : "";
+  return /^turnkey-approval-probe-[a-z-]+(?::[a-z0-9,-]+)?$/.test(message)
+    ? message : "turnkey-approval-probe-failed";
+}
+
 export async function runTurnkeyApprovalProbe(env = process.env, {
   makeClient,
   verifyPolicy = probeTurnkeySigningPolicy,
@@ -63,7 +69,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     process.stdout.write(`${JSON.stringify(await runTurnkeyApprovalProbe(), null, 2)}\n`);
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${approvalProbeErrorMessage(error)}\n`);
     process.exitCode = 1;
   }
 }

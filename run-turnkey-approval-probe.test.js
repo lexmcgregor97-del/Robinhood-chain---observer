@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseTransaction } from "viem";
-import { runTurnkeyApprovalProbe } from "./run-turnkey-approval-probe.js";
+import {
+  approvalProbeErrorMessage, runTurnkeyApprovalProbe,
+} from "./run-turnkey-approval-probe.js";
 
 const env = {
   TURNKEY_APPROVAL_PROBE_CONFIRMATION: "RUN_ATLAS_TURNKEY_APPROVAL_PROBE_NO_BROADCAST",
@@ -83,4 +85,13 @@ test("does not request a signature when the configured policy set is not exact",
       failures: ["turnkey-signing-policy-set-not-exact"] }),
   }), /turnkey-approval-probe-policy-verification-failed/);
   assert.equal(signed, false);
+});
+
+test("redacts unrecognized SDK errors while preserving coded probe failures", () => {
+  assert.equal(approvalProbeErrorMessage(new Error(
+    "request failed for organization secret-context")),
+  "turnkey-approval-probe-failed");
+  assert.equal(approvalProbeErrorMessage(new Error(
+    "turnkey-approval-probe-config-invalid")),
+  "turnkey-approval-probe-config-invalid");
 });

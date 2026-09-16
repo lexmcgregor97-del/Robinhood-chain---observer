@@ -26,10 +26,10 @@ async function signed(data, to = router) {
 }
 
 function unsigned({ data, to = router, chainId = ROBINHOOD.chainId, value = 0n,
-  gas = 150000n, maxFeePerGas = 1000000000n,
+  nonce = 1, gas = 150000n, maxFeePerGas = 1000000000n,
   maxPriorityFeePerGas = 1000000n } = {}) {
   return serializeTransaction({ chainId, type: "eip1559", to, data, value,
-    nonce: 1, gas, maxFeePerGas, maxPriorityFeePerGas });
+    nonce, gas, maxFeePerGas, maxPriorityFeePerGas });
 }
 
 const swapData = ({ amountIn = 100n, amountOutMin = 90n,
@@ -80,13 +80,25 @@ async function fixture() {
     functionName: "approve", args: [router, 100n] }), token);
   const approvalReset = await signed(encodeFunctionData({ abi: APPROVE_ABI,
     functionName: "approve", args: [router, 0n] }), token);
+  const buyUnsigned = unsigned({ data: swapData() });
+  const sellUnsigned = unsigned({ data: swapData({ amountOutMin: 1n,
+    path: [token, ROBINHOOD.weth] }) });
+  const approvalUnsigned = unsigned({ to: token,
+    data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
+      args: [router, 100n] }) });
+  const approvalResetUnsigned = unsigned({ to: token,
+    data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve",
+      args: [router, 0n] }) });
   const allows = [
-    { case: "buy", activityId: "allow-buy", signedTransaction: buy },
-    { case: "sell", activityId: "allow-sell", signedTransaction: sell },
+    { case: "buy", activityId: "allow-buy", signedTransaction: buy,
+      unsignedTransaction: buyUnsigned },
+    { case: "sell", activityId: "allow-sell", signedTransaction: sell,
+      unsignedTransaction: sellUnsigned },
     { case: "approval", activityId: "allow-approval", signedTransaction: approval,
-      token, amount: "100" },
+      unsignedTransaction: approvalUnsigned, token, amount: "100" },
     { case: "approval-reset", activityId: "allow-approval-reset",
-      signedTransaction: approvalReset, token, amount: "0" },
+      signedTransaction: approvalReset, unsignedTransaction: approvalResetUnsigned,
+      token, amount: "0" },
   ];
   const denials = REQUIRED_DENIAL_CASES.map((kind, index) =>
     ({ case: kind, activityId: `deny-${index + 1}` }));
@@ -168,6 +180,17 @@ test("rejects a completed activity from the wrong organization or signer", async
   assert.equal(result.verified, false);
   assert.ok(result.failures.includes("matrix-organization-mismatch"));
   assert.ok(result.failures.includes("matrix-signing-user-vote-missing"));
+});
+
+test("rejects a signed allow result that differs from the submitted intent", async () => {
+  const { matrix, activities } = await fixture();
+  matrix.allows.find((entry) => entry.case === "approval").unsignedTransaction =
+    unsigned({ to: token, data: encodeFunctionData({ abi: APPROVE_ABI,
+      functionName: "approve", args: [router, 100n] }), nonce: 2 });
+  const result = await verifyTurnkeyActivityMatrix({ matrix, config, signingUserId,
+    getActivity: async ({ activityId }) => activities.get(activityId) });
+  assert.equal(result.verified, false);
+  assert.ok(result.failures.includes("matrix-signed-transaction-mismatch"));
 });
 
 test("rejects relabelled denials unless the unsigned transaction has exactly the named defect", async () => {
