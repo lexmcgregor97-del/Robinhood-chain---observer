@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createObserverReadinessAdapter, createSigningPolicyAdapter }
   from "./live-worker-adapters.js";
 
-test("accepts only a fresh healthy observer cohort with no pending execution", async () => {
+test("accepts fresh observer readiness independently of worker signing verification", async () => {
   const now = 1_000_000;
   const adapter = createObserverReadinessAdapter({ url: "https://observer.example",
     expectedHostname: "observer.example",
@@ -14,14 +14,14 @@ test("accepts only a fresh healthy observer cohort with no pending execution", a
       newEntriesPaused: false, automationBlockedReason: null,
       automation: { lastCycleAt: now - 1 }, evidence: { healthy: true },
       execution: { durability: { pendingExecutions: 0 },
-        signingVerification: { attestationVerified: true } },
+        signingVerification: { attestationVerified: false } },
       liveReadiness: { eligibleForMicroMainnet: true, failures: [] } }) }; } });
   const result = await adapter({ now });
   assert.equal(result.eligibleForMicroMainnet, true);
   assert.deepEqual(result.checks, {
     paperOnly: true, entriesUnpaused: true, automationUnblocked: true,
     evidenceHealthy: true, noPendingExecutions: true,
-    signingAttestationVerified: true, liveReadinessEligible: true, cycleFresh: true,
+    liveReadinessEligible: true, cycleFresh: true,
   });
   assert.equal(Object.values(result.liveReadinessBlockers).some(Boolean), false);
 });
@@ -45,8 +45,7 @@ test("fails closed on stale or unreachable observer readiness", async () => {
 test("refuses redirected or final-origin-mismatched observer responses", async () => {
   const body = { mode: "PAPER_ONLY", newEntriesPaused: false,
     automationBlockedReason: null, automation: { lastCycleAt: 99 },
-    evidence: { healthy: true }, execution: { durability: { pendingExecutions: 0 },
-      signingVerification: { attestationVerified: true } },
+    evidence: { healthy: true }, execution: { durability: { pendingExecutions: 0 } },
     liveReadiness: { eligibleForMicroMainnet: true, failures: [] } };
   for (const response of [
     { ok: true, redirected: true, url: "https://elsewhere.example/readiness", body },
@@ -80,8 +79,7 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
     fetchImpl: async () => ({ ok: true, json: async () => ({ mode: "PAPER_ONLY",
       newEntriesPaused: true, automationBlockedReason: "private-reason-text",
       automation: { lastCycleAt: 1 }, evidence: { healthy: false },
-      execution: { durability: { pendingExecutions: 1 },
-        signingVerification: { attestationVerified: false } },
+      execution: { durability: { pendingExecutions: 1 } },
       liveReadiness: { eligibleForMicroMainnet: false, failures: [
         "paper-sample-too-small", "private-unknown-reason",
       ] } }) }) });
@@ -90,7 +88,7 @@ test("reports a sanitized per-check vector for a valid blocked observer", async 
   assert.deepEqual(result.checks, {
     paperOnly: true, entriesUnpaused: false, automationUnblocked: false,
     evidenceHealthy: false, noPendingExecutions: false,
-    signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
+    liveReadinessEligible: false, cycleFresh: true,
   });
   assert.equal(result.liveReadinessBlockers.paperSampleTooSmall, true);
   assert.equal(result.liveReadinessBlockers.paperExpectancyNotPositive, false);

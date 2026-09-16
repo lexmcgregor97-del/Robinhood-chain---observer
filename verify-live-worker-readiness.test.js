@@ -43,8 +43,7 @@ test("proves authenticated observer reachability while reporting readiness block
       return { ok: true, json: async () => ({ mode: "PAPER_ONLY",
         newEntriesPaused: false, automationBlockedReason: null,
         automation: { lastCycleAt: now - 1 }, evidence: { healthy: true },
-        execution: { durability: { pendingExecutions: 0 },
-          signingVerification: { attestationVerified: false } },
+        execution: { durability: { pendingExecutions: 0 } },
         liveReadiness: { eligibleForMicroMainnet: false,
           failures: ["paper-sample-too-small", "sell-probe-not-ready"] } }) };
     } });
@@ -56,7 +55,7 @@ test("proves authenticated observer reachability while reporting readiness block
   assert.deepEqual(result.checks, {
     paperOnly: true, entriesUnpaused: true, automationUnblocked: true,
     evidenceHealthy: true, noPendingExecutions: true,
-    signingAttestationVerified: false, liveReadinessEligible: false, cycleFresh: true,
+    liveReadinessEligible: false, cycleFresh: true,
   });
   assert.equal(result.liveReadinessBlockers.paperSampleTooSmall, true);
   assert.equal(result.liveReadinessBlockers.sellProbeNotReady, true);

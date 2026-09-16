@@ -63,7 +63,6 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         && body?.automation !== null && typeof body?.automation === "object"
         && typeof body?.evidence?.healthy === "boolean"
         && Number.isSafeInteger(body?.execution?.durability?.pendingExecutions)
-        && typeof body?.execution?.signingVerification?.attestationVerified === "boolean"
         && typeof body?.liveReadiness?.eligibleForMicroMainnet === "boolean"
         && Array.isArray(body?.liveReadiness?.failures)
         && body.liveReadiness.failures.every((failure) => typeof failure === "string");
@@ -81,8 +80,8 @@ export function createObserverReadinessAdapter({ url, expectedHostname, bearerTo
         automationUnblocked: body.automationBlockedReason == null,
         evidenceHealthy: body.evidence.healthy === true,
         noPendingExecutions: body.execution.durability.pendingExecutions === 0,
-        signingAttestationVerified:
-          body.execution.signingVerification.attestationVerified === true,
+        // The private worker verifies its own signing credential and exact policy
+        // before constructing an account; observer signing metadata is not authority.
         liveReadinessEligible: body.liveReadiness.eligibleForMicroMainnet === true,
         cycleFresh: fresh,
       });
