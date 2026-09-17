@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent, isV2SellToQuote } from "./market-data.js";
+import { quoteFlowFromSwap } from "./adaptive-flow.js";
 import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
@@ -85,6 +86,8 @@ const SIGNAL_HISTORY_MS = Math.max(
   Number(process.env.SIGNAL_HISTORY_MS || 10 * 60_000),
 );
 const SIGNAL_MIN_SWAPS = Number(process.env.SIGNAL_MIN_SWAPS || 3);
+const FLOW_HISTORY_MS = 61 * 60_000;
+const MAX_FLOW_BUCKETS_PER_POOL = 62;
 const PAPER_INITIAL_CASH = Number(process.env.PAPER_INITIAL_CASH || 1000);
 const PAPER_MAX_POSITIONS = Number(process.env.PAPER_MAX_POSITIONS || 3);
 const PAPER_WETH_INITIAL_CASH = Number(process.env.PAPER_WETH_INITIAL_CASH || 0.1);
@@ -445,6 +448,20 @@ async function restoreState() {
         recentBlocks: Array.isArray(savedPool.recentBlocks)
           ? savedPool.recentBlocks.filter((bucket) => Number.isFinite(Number(bucket.timestampMs)))
           : [],
+        recentFlows: Array.isArray(savedPool.recentFlows)
+          ? savedPool.recentFlows.filter((flow) => {
+            const quoteAmount = Number(flow.quoteAmount);
+            const buyQuoteVolume = Number(flow.buyQuoteVolume);
+            const sellQuoteVolume = Number(flow.sellQuoteVolume);
+            const legacyValid = ["buy", "sell"].includes(flow.side)
+              && Number.isFinite(quoteAmount) && quoteAmount > 0;
+            const bucketValid = Number.isFinite(buyQuoteVolume) && buyQuoteVolume >= 0
+              && Number.isFinite(sellQuoteVolume) && sellQuoteVolume >= 0
+              && buyQuoteVolume + sellQuoteVolume > 0;
+            return Number.isFinite(Number(flow.timestampMs)) && (legacyValid || bucketValid);
+          })
+            .slice(-MAX_FLOW_BUCKETS_PER_POOL)
+          : [],
       };
       delete pool.recent;
       pools.set(pool.address, pool);
@@ -600,6 +617,7 @@ function registerPool(pool) {
     lastSwapBlock: 0,
     lastSwapTimestampMs: 0,
     recentBlocks: [],
+    recentFlows: [],
   });
   if (pool.version === "v2") metrics.v2Pools += 1;
   else metrics.v3Pools += 1;
@@ -645,6 +663,32 @@ function recordSwap(log, timestampMs) {
       ...decodeSwapEvent(log, pool.version),
     };
     pool.lastSwap = decodedSwap;
+    const quoteFlow = quoteFlowFromSwap(pool, decodedSwap, ROBINHOOD.quoteTokens);
+    if (quoteFlow) {
+      const flows = pool.recentFlows || (pool.recentFlows = []);
+      const minuteTimestampMs = Math.floor(timestampMs / 60_000) * 60_000;
+      let bucket = flows.at(-1);
+      if (bucket?.timestampMs !== minuteTimestampMs) {
+        bucket = {
+          timestampMs: minuteTimestampMs,
+          buyQuoteVolume: 0,
+          sellQuoteVolume: 0,
+          buys: 0,
+          sells: 0,
+        };
+        flows.push(bucket);
+      }
+      if (quoteFlow.side === "buy") {
+        bucket.buyQuoteVolume += quoteFlow.quoteAmount;
+        bucket.buys += 1;
+      } else {
+        bucket.sellQuoteVolume += quoteFlow.quoteAmount;
+        bucket.sells += 1;
+      }
+      const flowFloor = timestampMs - FLOW_HISTORY_MS;
+      while (flows.length && (flows[0].timestampMs < flowFloor
+        || flows.length > MAX_FLOW_BUCKETS_PER_POOL)) flows.shift();
+    }
     if (isV2SellToQuote(pool, decodedSwap,
       ROBINHOOD.quoteTokens.map((token) => token.address))) {
       pool.lastSellSwap = decodedSwap;

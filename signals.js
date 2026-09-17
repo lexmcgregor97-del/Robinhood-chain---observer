@@ -1,3 +1,5 @@
+import { adaptiveFlowSignal } from "./adaptive-flow.js";
+
 function totalSwaps(blocks, fromMs, toMs) {
   return blocks.reduce((total, bucket) => {
     const timestampMs = Number(bucket.timestampMs);
@@ -37,6 +39,7 @@ export function scorePool(pool, nowMs, options = {}) {
     acceleration: Math.round(acceleration * 100) / 100,
     windowMs,
     baselineMs,
+    adaptiveFlow: adaptiveFlowSignal(pool.recentFlows, nowMs, options.flow),
   };
 }
 
