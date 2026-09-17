@@ -120,3 +120,12 @@ test("counts a partial and final close as one lifecycle trade", () => {
   assert.equal(result.averageMaxFavorableExcursionPct, 25);
   assert.equal(result.averageMaxAdverseExcursionPct, -3);
 });
+
+test("reports orphaned partial records instead of silently dropping them", () => {
+  const result = analyzePaperTrades({ initialCash: 100, trades: [
+    { type: "partial-close", pool: "missing", pnl: 4, fee: 0.1 },
+  ] });
+  assert.equal(result.partialCloses, 0);
+  assert.equal(result.orphanedPartialCloses, 1);
+  assert.equal(result.realizedPnl, 0);
+});
