@@ -58,6 +58,7 @@ import { createExecutionMutationSerializer } from "./execution-mutation-queue.js
 import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
 import { workerObserverAuthorized } from "./worker-observer-auth.js";
+import { selectSellProbeTargets } from "./sell-probe-targets.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -1084,17 +1085,33 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       sellProbeByPool.delete(poolAddress);
     }
   }
-  const eligible = measured.map((candidate) => ({
-    candidate,
-    observedSell: candidate.lastSellSwap
+  const eligible = selectSellProbeTargets(measured, {
+    observedSellFor: (candidate) => candidate.lastSellSwap
       || (isV2SellToQuote(candidate, candidate.lastSwap,
         ROBINHOOD.quoteTokens.map((token) => token.address)) ? candidate.lastSwap : null),
-  })).filter(({ candidate, observedSell }) => (
-    candidate.version === "v2"
-    && candidate.marketSafety?.buyMathOk === true
-    && candidate.marketSafety?.sellMathOk === true
-    && observedSell?.transactionHash
-  )).slice(0, 3);
+    hasFreshProbe: (candidate) => freshSellProbe(candidate.address, now) !== null,
+    isPaperEntryEligible: (candidate) => {
+      const book = paperBooks.get(candidate.marketSafety?.quoteToken);
+      if (!book) return false;
+      const policy = book.symbol === "WETH"
+        ? { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+        : { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
+      const withPassingProbe = {
+        ...candidate,
+        marketSafety: {
+          ...candidate.marketSafety,
+          sellProbe: { passed: true, checkedAt: new Date(now).toISOString() },
+        },
+      };
+      withPassingProbe.riskGate = evaluateRiskGate(
+        withPassingProbe, QUALIFYING_PAPER_RISK_POLICY,
+      );
+      return planPaperEntry(
+        withPassingProbe, book.portfolio.serialize(), policy, now,
+      ).approved;
+    },
+    limit: 3,
+  });
   if (!eligible.length) {
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
       lastAttemptAt: new Date(now).toISOString(), checkedPool: null,
