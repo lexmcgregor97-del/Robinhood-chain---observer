@@ -91,3 +91,32 @@ test("retains the running maximum marked drawdown after an open position recover
   assert.equal(recovered.currentMarkedDrawdownPct, 0);
   assert.equal(recovered.maxMarkedDrawdownPct, 5);
 });
+
+test("counts a partial and final close as one lifecycle trade", () => {
+  const result = analyzePaperTrades({
+    initialCash: 100,
+    trades: [
+      { type: "open", pool: "p", token: "TOK", notional: 20, gasCost: 1,
+        fee: 0.1, timestamp: 1, audit: { strategyVersion: "lifecycle" } },
+      { type: "partial-close", pool: "p", pnl: 4, allocatedCostBasis: 10.5,
+        gasCost: 0.2, fee: 0.1, timestamp: 2, reason: "partial-take-profit" },
+      { type: "close", pool: "p", pnl: -1, gasCost: 0.3, fee: 0.1,
+        timestamp: 3, reason: "adaptive-trailing-stop", partialProfitTaken: true,
+        maxFavorableExcursionPct: 25, maxAdverseExcursionPct: -3 },
+    ],
+    strategyVersion: "lifecycle",
+  });
+  assert.equal(result.closedTrades, 1);
+  assert.equal(result.realizedPnl, 3);
+  assert.equal(result.expectancyPerTrade, 3);
+  assert.equal(result.partialCloses, 1);
+  assert.equal(result.positionsWithPartial, 1);
+  assert.equal(result.partialRealizedPnl, 4);
+  assert.equal(result.remainderPnlAfterPartial, -1);
+  assert.equal(result.byPartialExitReason["partial-take-profit"].trades, 1);
+  assert.equal(result.byExitReason["adaptive-trailing-stop"].pnl, 3);
+  assert.equal(result.gasPaid, 1.5);
+  assert.ok(Math.abs(result.feesPaid - 0.3) < 1e-12);
+  assert.equal(result.averageMaxFavorableExcursionPct, 25);
+  assert.equal(result.averageMaxAdverseExcursionPct, -3);
+});
