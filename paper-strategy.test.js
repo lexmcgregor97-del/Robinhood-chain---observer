@@ -116,6 +116,61 @@ test("caps repeated entries into one pool within an epoch", () => {
   assert.ok(plan.failures.includes("pool-epoch-entry-limit"));
 });
 
+test("rolling entry limit expires old pool entries without changing the epoch default", () => {
+  const now = 10 * 60 * 60_000;
+  const portfolio = {
+    cash: 2000,
+    maxPositions: 3,
+    openPositions: [],
+    trades: [
+      { type: "open", pool: candidate.address, timestamp: now - 7 * 60 * 60_000 },
+      { type: "open", pool: candidate.address, timestamp: now - 5 * 60 * 60_000 },
+      { type: "open", pool: candidate.address, timestamp: now - 4 * 60 * 60_000 },
+      { type: "open", pool: candidate.address, timestamp: now - 3 * 60 * 60_000 },
+    ],
+  };
+  const rolling = planPaperEntry(candidate, portfolio, {
+    ...DEFAULT_PAPER_STRATEGY,
+    maxEntriesPerPool: 3,
+    entryWindowMs: 6 * 60 * 60_000,
+  }, now);
+  assert.equal(rolling.approved, false);
+  assert.ok(rolling.failures.includes("pool-window-entry-limit"));
+
+  const afterExpiry = planPaperEntry(candidate, portfolio, {
+    ...DEFAULT_PAPER_STRATEGY,
+    maxEntriesPerPool: 3,
+    entryWindowMs: 2 * 60 * 60_000,
+  }, now);
+  assert.equal(afterExpiry.approved, true);
+
+  const epoch = planPaperEntry(candidate, portfolio, {
+    ...DEFAULT_PAPER_STRATEGY,
+    maxEntriesPerPool: 3,
+  }, now);
+  assert.equal(epoch.approved, false);
+  assert.ok(epoch.failures.includes("pool-epoch-entry-limit"));
+});
+
+test("epoch entry limit still counts legacy opens without timestamps", () => {
+  const portfolio = {
+    cash: 2000,
+    maxPositions: 3,
+    openPositions: [],
+    trades: [
+      { type: "open", pool: candidate.address },
+      { type: "open", pool: candidate.address, timestamp: "invalid" },
+      { type: "open", pool: candidate.address, timestamp: 1 },
+    ],
+  };
+  const epoch = planPaperEntry(candidate, portfolio, {
+    ...DEFAULT_PAPER_STRATEGY,
+    maxEntriesPerPool: 3,
+  }, 100);
+  assert.equal(epoch.approved, false);
+  assert.ok(epoch.failures.includes("pool-epoch-entry-limit"));
+});
+
 test("drawdown circuit fails closed for invalid policy", () => {
   assert.deepEqual(
     paperCircuitFailures({ maxRealizedDrawdownPct: 1 }, { maxRealizedDrawdownPct: 0 }),

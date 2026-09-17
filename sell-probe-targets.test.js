@@ -42,3 +42,27 @@ test("rejects candidates that cannot support the exact V2 sell probe", () => {
   ], callbacks());
   assert.deepEqual(targets.map(({ candidate: item }) => item.address), ["valid"]);
 });
+
+test("the same pool across cohorts consumes only one probe slot", () => {
+  const targets = selectSellProbeTargets([
+    candidate("0xABC", { paperCohort: "v7-control" }),
+    candidate("0xabc", { paperCohort: "frequency-candidate" }),
+    candidate("0xdef"),
+  ], callbacks());
+  assert.deepEqual(targets.map(({ candidate: item }) => item.address), ["0xABC", "0xdef"]);
+  assert.equal(targets[0].candidate.paperCohort, "v7-control");
+});
+
+test("an ineligible control copy cannot hide an eligible candidate copy", () => {
+  const control = candidate("0xABC", { paperCohort: "v7-control", eligible: false });
+  const frequency = candidate("0xabc", {
+    paperCohort: "frequency-candidate", eligible: true,
+  });
+  const targets = selectSellProbeTargets([control, frequency], {
+    observedSellFor: (item) => item.lastSellSwap,
+    hasFreshProbe: () => false,
+    isPaperEntryEligible: (item) => item.eligible,
+  });
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].candidate.paperCohort, "frequency-candidate");
+});

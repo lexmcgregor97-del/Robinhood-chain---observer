@@ -31,3 +31,27 @@ test("rejects a ledger mutation missing from the journal", () => {
     journal: journal(),
   }), /evidence-ledger-divergence/);
 });
+
+test("reconciles the isolated frequency-candidate ledger independently", () => {
+  const state = {
+    evidenceSequence: 2,
+    evidenceLastHash: "a".repeat(64),
+    paperBooks: {},
+    frequencyCandidateVersion: "candidate-v1",
+    frequencyCandidateBooks: {
+      weth: { state: { trades: [{ type: "open" }, { type: "close" }] } },
+    },
+  };
+  const journal = {
+    sequence: 2,
+    lastHash: "a".repeat(64),
+    typeCounts: {
+      "candidate-v1-open": 1,
+      "candidate-v1-close": 1,
+    },
+  };
+  assert.equal(validateEvidenceCheckpoint({ state, journal }), true);
+  journal.typeCounts["candidate-v1-close"] = 0;
+  assert.throws(() => validateEvidenceCheckpoint({ state, journal }),
+    /frequency-candidate-evidence-ledger-divergence/);
+});
