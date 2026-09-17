@@ -10,6 +10,28 @@ const finiteNonNegative = (value, name) => {
   return parsed;
 };
 
+const exactPartialRatio = (partUnits, totalUnits) => {
+  const ratio = Number(partUnits) / Number(totalUnits);
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) {
+    throw new Error("invalid-partial-quantity-units");
+  }
+  return ratio;
+};
+
+export function floorPartialQuantityUnits(quantityUnits, closeFraction) {
+  if (typeof quantityUnits !== "string" || !/^[0-9]+$/.test(quantityUnits)) {
+    throw new Error("invalid-partial-quantity-units");
+  }
+  if (typeof closeFraction !== "number" || !Number.isFinite(closeFraction)
+      || closeFraction <= 0 || closeFraction >= 1) throw new Error("invalid-close-fraction");
+  const heldUnits = BigInt(quantityUnits);
+  const scale = 1_000_000_000_000_000n;
+  const scaledFraction = BigInt(Math.floor(closeFraction * Number(scale)));
+  const soldUnits = (heldUnits * scaledFraction) / scale;
+  if (soldUnits <= 0n || soldUnits >= heldUnits) throw new Error("invalid-partial-quantity-units");
+  return String(soldUnits);
+}
+
 export class PaperPortfolio {
   constructor({ initialCash = 1_000, maxPositions = 3, state } = {}) {
     this.initialCash = finitePositive(initialCash, "initialCash");
@@ -63,6 +85,70 @@ export class PaperPortfolio {
     return this.positionSnapshot(position);
   }
 
+  recordLifecycleMark(pool, { returnPct, observedPrice, maxSamples = 12 } = {}) {
+    const position = this.positions.get(pool);
+    if (!position) throw new Error("position-not-found");
+    returnPct = Number(returnPct);
+    observedPrice = Number(observedPrice ?? position.markPrice);
+    maxSamples = Number(maxSamples);
+    if (!Number.isFinite(returnPct) || !Number.isFinite(observedPrice)
+        || observedPrice <= 0 || !Number.isInteger(maxSamples)
+        || maxSamples < 2 || maxSamples > 100) throw new Error("invalid-lifecycle-mark");
+    position.maxFavorableExcursionPct = position.maxFavorableExcursionPct == null
+      ? returnPct : Math.max(position.maxFavorableExcursionPct, returnPct);
+    position.maxAdverseExcursionPct = position.maxAdverseExcursionPct == null
+      ? returnPct : Math.min(position.maxAdverseExcursionPct, returnPct);
+    position.observedPrices = [...(position.observedPrices || []), observedPrice].slice(-maxSamples);
+    return this.positionSnapshot(position);
+  }
+
+  partialClose({
+    pool, quantityUnits, price, proceeds: filledProceeds,
+    fee = 0, gasCost = 0, timestamp = Date.now(), reason = "partial", audit = null,
+  }) {
+    const position = this.positions.get(pool);
+    if (!position) throw new Error("position-not-found");
+    if (typeof position.quantityUnits !== "string") throw new Error("partial-exact-units-required");
+    if (typeof quantityUnits !== "string" || !/^[0-9]+$/.test(quantityUnits)) {
+      throw new Error("invalid-partial-quantity-units");
+    }
+    const heldUnits = BigInt(position.quantityUnits);
+    const soldUnits = BigInt(quantityUnits);
+    if (soldUnits <= 0n || soldUnits >= heldUnits) throw new Error("invalid-partial-quantity-units");
+    const ratio = exactPartialRatio(soldUnits, heldUnits);
+    price = filledProceeds === undefined
+      ? finitePositive(price, "price") : finiteNonNegative(price, "price");
+    fee = Number(fee);
+    gasCost = Number(gasCost);
+    if (!Number.isFinite(fee) || fee < 0) throw new Error("invalid-fee");
+    if (!Number.isFinite(gasCost) || gasCost < 0) throw new Error("invalid-gas-cost");
+    const quantity = position.quantity * ratio;
+    const grossProceeds = filledProceeds === undefined
+      ? quantity * price - fee : finiteNonNegative(filledProceeds, "proceeds");
+    const proceeds = Math.max(0, grossProceeds - gasCost);
+    const allocatedCostBasis = position.costBasis * ratio;
+    const pnl = proceeds - allocatedCostBasis;
+    const remainingRatio = 1 - ratio;
+    position.quantity -= quantity;
+    position.quantityUnits = String(heldUnits - soldUnits);
+    position.costBasis -= allocatedCostBasis;
+    position.entryNotional *= remainingRatio;
+    position.entryFee *= remainingRatio;
+    position.entryGasCost *= remainingRatio;
+    position.partialProfitTaken = true;
+    this.cash += proceeds;
+    this.realizedPnl += pnl;
+    const trade = { type: "partial-close", pool, token: position.token, price,
+      quantity, quantityUnits, remainingQuantity: position.quantity,
+      remainingQuantityUnits: position.quantityUnits, grossProceeds, proceeds,
+      allocatedCostBasis, gasCost, fee, pnl, reason, timestamp,
+      maxFavorableExcursionPct: position.maxFavorableExcursionPct ?? null,
+      maxAdverseExcursionPct: position.maxAdverseExcursionPct ?? null,
+      audit: audit ? structuredClone(audit) : null };
+    this.trades.push(trade);
+    return { ...trade };
+  }
+
   close({
     pool, price, proceeds: filledProceeds,
     fee = 0, gasCost = 0, timestamp = Date.now(), reason = "manual", audit = null,
@@ -88,6 +174,9 @@ export class PaperPortfolio {
     const trade = { type: "close", pool, token: position.token, price,
       quantity: position.quantity, grossProceeds, proceeds, gasCost, fee, pnl, reason, timestamp,
       measurementFailure: measurementFailure === true,
+      partialProfitTaken: position.partialProfitTaken === true,
+      maxFavorableExcursionPct: position.maxFavorableExcursionPct ?? null,
+      maxAdverseExcursionPct: position.maxAdverseExcursionPct ?? null,
       audit: audit ? structuredClone(audit) : null };
     this.trades.push(trade);
     return { ...trade };
@@ -121,6 +210,20 @@ export class PaperPortfolio {
 
   restore(state) {
     if (state.mode !== "PAPER_ONLY" || !Array.isArray(state.openPositions) || !Array.isArray(state.trades)) throw new Error("invalid-paper-state");
+    if (state.openPositions.some((position) =>
+      (position.partialProfitTaken !== undefined
+        && typeof position.partialProfitTaken !== "boolean")
+      || (position.maxFavorableExcursionPct !== undefined
+        && (typeof position.maxFavorableExcursionPct !== "number"
+          || !Number.isFinite(position.maxFavorableExcursionPct)))
+      || (position.maxAdverseExcursionPct !== undefined
+        && (typeof position.maxAdverseExcursionPct !== "number"
+          || !Number.isFinite(position.maxAdverseExcursionPct)))
+      || (position.observedPrices !== undefined
+        && (!Array.isArray(position.observedPrices)
+          || position.observedPrices.length > 100
+          || position.observedPrices.some((price) => typeof price !== "number"
+            || !Number.isFinite(price) || price <= 0))))) throw new Error("invalid-paper-state");
     this.cash = Number(state.cash);
     this.realizedPnl = Number(state.realizedPnl);
     this.trades = structuredClone(state.trades);
@@ -135,10 +238,25 @@ export class PaperPortfolio {
       openedAt: position.openedAt,
       peakPrice: Number(position.peakPrice || position.markPrice),
       entryAudit: position.entryAudit ? structuredClone(position.entryAudit) : null,
+      ...(position.partialProfitTaken !== undefined
+        ? { partialProfitTaken: position.partialProfitTaken === true } : {}),
+      ...(position.maxFavorableExcursionPct !== undefined
+        ? { maxFavorableExcursionPct: position.maxFavorableExcursionPct } : {}),
+      ...(position.maxAdverseExcursionPct !== undefined
+        ? { maxAdverseExcursionPct: position.maxAdverseExcursionPct } : {}),
+      ...(position.observedPrices !== undefined
+        ? { observedPrices: [...position.observedPrices] } : {}),
     }]));
     if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [
       p.quantity, p.entryPrice, p.markPrice, p.costBasis, p.entryNotional, p.entryGasCost,
     ])].every(Number.isFinite)) throw new Error("invalid-paper-state");
+    if ([...this.positions.values()].some((position) =>
+      (position.maxFavorableExcursionPct != null
+        && !Number.isFinite(Number(position.maxFavorableExcursionPct)))
+      || (position.maxAdverseExcursionPct != null
+        && !Number.isFinite(Number(position.maxAdverseExcursionPct)))
+      || (position.observedPrices || []).some((price) => !Number.isFinite(price) || price <= 0)
+      || (position.observedPrices || []).length > 100)) throw new Error("invalid-paper-state");
     const accounted = this.cash + [...this.positions.values()]
       .reduce((sum, position) => sum + position.costBasis, 0);
     const expected = this.initialCash + this.realizedPnl;
