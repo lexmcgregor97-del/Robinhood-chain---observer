@@ -10,12 +10,14 @@ export function paperLedgerTradeCount(paperBooks = {}) {
 
 export function paperJournalRecordCount(typeCounts = {}) {
   return Number(typeCounts?.["paper-open"] || 0)
+    + Number(typeCounts?.["paper-partial-close"] || 0)
     + Number(typeCounts?.["paper-close"] || 0);
 }
 
 export function frequencyCandidateJournalRecordCount(typeCounts = {}, version = "") {
   if (!version) return 0;
   return Number(typeCounts?.[`${version}-open`] || 0)
+    + Number(typeCounts?.[`${version}-partial-close`] || 0)
     + Number(typeCounts?.[`${version}-close`] || 0);
 }
 
