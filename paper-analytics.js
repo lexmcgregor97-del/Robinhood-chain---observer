@@ -37,6 +37,7 @@ export function analyzePaperTrades({
   let equity = initialCash;
   let peakEquity = initialCash;
   let maxDrawdownPct = 0;
+  let orphanedPartialCloses = 0;
 
   for (const trade of trades) {
     if (!strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
@@ -49,7 +50,10 @@ export function analyzePaperTrades({
     }
     if (trade.type === "partial-close") {
       const lifecycle = openByPool.get(trade.pool);
-      if (!lifecycle) continue;
+      if (!lifecycle) {
+        orphanedPartialCloses += 1;
+        continue;
+      }
       if (strategyVersion) feesPaid += Math.max(0, finite(trade.fee));
       const pnl = finite(trade.pnl);
       lifecycle.partialPnl += pnl;
@@ -145,6 +149,7 @@ export function analyzePaperTrades({
     estimatedLpFees: feesPaid,
     gasPaid: closed.reduce((sum, record) => sum + record.gasCost, 0),
     partialCloses: partials.length,
+    orphanedPartialCloses,
     positionsWithPartial: closed.filter((record) => record.partialCloseCount > 0).length,
     partialRealizedPnl: partials.reduce((sum, record) => sum + record.pnl, 0),
     remainderPnlAfterPartial: closed.filter((record) => record.partialCloseCount > 0)
