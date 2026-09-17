@@ -449,10 +449,17 @@ async function restoreState() {
           ? savedPool.recentBlocks.filter((bucket) => Number.isFinite(Number(bucket.timestampMs)))
           : [],
         recentFlows: Array.isArray(savedPool.recentFlows)
-          ? savedPool.recentFlows.filter((flow) => Number.isFinite(Number(flow.timestampMs))
-            && (Number.isFinite(Number(flow.quoteAmount))
-              || Number.isFinite(Number(flow.buyQuoteVolume))
-              || Number.isFinite(Number(flow.sellQuoteVolume))))
+          ? savedPool.recentFlows.filter((flow) => {
+            const quoteAmount = Number(flow.quoteAmount);
+            const buyQuoteVolume = Number(flow.buyQuoteVolume);
+            const sellQuoteVolume = Number(flow.sellQuoteVolume);
+            const legacyValid = ["buy", "sell"].includes(flow.side)
+              && Number.isFinite(quoteAmount) && quoteAmount > 0;
+            const bucketValid = Number.isFinite(buyQuoteVolume) && buyQuoteVolume >= 0
+              && Number.isFinite(sellQuoteVolume) && sellQuoteVolume >= 0
+              && buyQuoteVolume + sellQuoteVolume > 0;
+            return Number.isFinite(Number(flow.timestampMs)) && (legacyValid || bucketValid);
+          })
             .slice(-MAX_FLOW_BUCKETS_PER_POOL)
           : [],
       };

@@ -303,6 +303,7 @@ export class ShadowEvaluator {
         && (!rule.version || sample.ruleDefinitionVersion === rule.version));
       const summary = summarizeSamples(matching);
       byRule[rule.name] = {
+        ruleDefinitionVersion: rule.version || RULE_VERSION,
         openSamples: matching.filter((sample) => !sample.closedAt
           && !sample.censoredAt).length,
         ...summary,

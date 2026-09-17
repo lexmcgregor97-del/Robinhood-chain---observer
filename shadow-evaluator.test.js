@@ -203,3 +203,21 @@ test("snapshot separates legacy samples from the current measurement epoch", () 
   assert.equal(snapshot.recentSamples.length, 1);
   assert.equal(snapshot.recentSamples[0].pool, "0xpool");
 });
+
+test("adding the adaptive rule does not change existing rule episode identity", () => {
+  const flowRule = {
+    name: "adaptive-buy-flow", version: "2026-09-17-v1", signals: ["escape-velocity"],
+    minSwaps: 5, minVolumeMultiple: 2, minBuyShare: 0.6,
+    minBaselineMinutes: 10, maxDeviationPct: 5,
+  };
+  const flowing = candidate();
+  flowing.signal.adaptiveFlow = {
+    ready: true, volumeMultiple: 3, buyShare: 0.7, activeBaselineMinutes: 12,
+  };
+  const evaluator = new ShadowEvaluator({ rules: [escapeRule, flowRule] });
+  evaluator.record([flowing], 1_000);
+  const state = evaluator.serialize();
+  assert.equal(state.episodes["escape-activity:0xpool"].episodeId,
+    "escape-activity:0xpool:1000");
+  assert.ok(state.episodes["adaptive-buy-flow:2026-09-17-v1:0xpool"]);
+});

@@ -19,14 +19,67 @@ test("uses a sparse zero-inclusive trimmed hourly baseline", () => {
   for (let index = 2; index <= 21; index += 1) {
     flows.push({ timestampMs: now - index * minute + 1_000, quoteAmount: 10, side: "buy" });
   }
-  flows.push({ timestampMs: now - 30_000, quoteAmount: 20, side: "buy" });
-  flows.push({ timestampMs: now - 20_000, quoteAmount: 10, side: "sell" });
-  const result = adaptiveFlowSignal(flows, now);
+  flows.push({ timestampMs: now, quoteAmount: 20, side: "buy" });
+  flows.push({ timestampMs: now, quoteAmount: 10, side: "sell" });
+  const result = adaptiveFlowSignal(flows, now + 1_000);
   assert.equal(result.ready, true);
   assert.equal(result.activeBaselineMinutes, 20);
-  assert.equal(result.baselineQuoteVolumePerMinute, 160 / 60);
-  assert.equal(result.volumeMultiple, 11.25);
+  assert.equal(result.baselineQuoteVolumePerMinute, 10);
+  assert.equal(result.volumeMultiple, 3);
   assert.equal(result.buyShare, 2 / 3);
+});
+
+test("orients token0 quote flow and rejects ambiguous quote pools", () => {
+  const quotes = [{ address: "0xquote", symbol: "USDG", decimals: 6 }];
+  assert.equal(quoteFlowFromSwap({ token0: "0xquote", token1: "0xbase" }, {
+    amount0: "1500000", amount1: "-2000000000000000000",
+  }, quotes).side, "buy");
+  assert.equal(quoteFlowFromSwap({ token0: "0xquote", token1: "0xbase" }, {
+    amount0: "-1500000", amount1: "2000000000000000000",
+  }, quotes).side, "sell");
+  assert.equal(quoteFlowFromSwap({ token0: "0xbase", token1: "0xother" }, {
+    amount0: "1", amount1: "-1",
+  }, quotes), null);
+  assert.equal(quoteFlowFromSwap({ token0: "0xquote", token1: "0xquote" }, {
+    amount0: "1", amount1: "-1",
+  }, quotes), null);
+});
+
+test("aligns the current window to the latest wall-clock minute", () => {
+  const minuteStart = 100 * minute;
+  const flows = [];
+  for (let index = 1; index <= 20; index += 1) {
+    flows.push({ timestampMs: minuteStart - index * minute, quoteAmount: 10, side: "buy" });
+  }
+  flows.push({ timestampMs: minuteStart, quoteAmount: 40, side: "buy" });
+  const early = adaptiveFlowSignal(flows, minuteStart + 1_000);
+  const late = adaptiveFlowSignal(flows, minuteStart + 59_000);
+  assert.equal(early.currentQuoteVolume, 40);
+  assert.equal(late.currentQuoteVolume, 40);
+  assert.equal(early.volumeMultiple, late.volumeMultiple);
+});
+
+test("trims one extreme active-minute outlier", () => {
+  const now = 100 * minute;
+  const flows = [];
+  for (let index = 2; index <= 20; index += 1) {
+    flows.push({ timestampMs: now - index * minute, quoteAmount: 10, side: "buy" });
+  }
+  flows.push({ timestampMs: now - 21 * minute, quoteAmount: 10_000, side: "buy" });
+  flows.push({ timestampMs: now, quoteAmount: 20, side: "buy" });
+  const result = adaptiveFlowSignal(flows, now + 1_000);
+  assert.equal(result.baselineQuoteVolumePerMinute, 10);
+  assert.equal(result.volumeMultiple, 2);
+});
+
+test("ignores malformed and non-positive flow records", () => {
+  const now = 100 * minute;
+  const result = adaptiveFlowSignal([
+    { timestampMs: now, buyQuoteVolume: "abc", sellQuoteVolume: null },
+    { timestampMs: now, quoteAmount: -10, side: "buy" },
+  ], now + 1_000);
+  assert.equal(result.currentQuoteVolume, 0);
+  assert.equal(result.ready, false);
 });
 
 test("refuses a flow multiple before enough baseline minutes exist", () => {
@@ -52,13 +105,13 @@ test("accepts minute-compressed buy and sell flow buckets", () => {
     });
   }
   flows.push({
-    timestampMs: now - 30_000,
+    timestampMs: now,
     buyQuoteVolume: 20,
     sellQuoteVolume: 10,
     buys: 4,
     sells: 2,
   });
-  const result = adaptiveFlowSignal(flows, now);
+  const result = adaptiveFlowSignal(flows, now + 1_000);
   assert.equal(result.currentQuoteVolume, 30);
   assert.equal(result.buyShare, 2 / 3);
   assert.equal(result.buys, 4);

@@ -45,7 +45,7 @@ export function adaptiveFlowSignal(flows = [], nowMs = Date.now(), options = {})
   const baselineMs = options.baselineMs ?? DEFAULT_BASELINE_MS;
   const trimFraction = options.trimFraction ?? DEFAULT_TRIM_FRACTION;
   const minActiveBaselineMinutes = options.minActiveBaselineMinutes ?? 10;
-  const currentFloor = nowMs - windowMs;
+  const currentFloor = Math.floor(nowMs / windowMs) * windowMs;
   const baselineFloor = currentFloor - baselineMs;
   const currentFlows = flows.filter((flow) => {
     const timestampMs = Number(flow?.timestampMs);
@@ -61,8 +61,9 @@ export function adaptiveFlowSignal(flows = [], nowMs = Date.now(), options = {})
   const active = volumes.filter(finitePositive).sort((a, b) => a - b);
   const trimCount = Math.floor(active.length * trimFraction);
   const kept = active.slice(0, Math.max(1, active.length - trimCount));
-  const baselineQuoteVolumePerMinute = volumes.length
-    ? kept.reduce((sum, value) => sum + value, 0) / volumes.length : 0;
+  const baselineDivisor = Math.max(kept.length, minActiveBaselineMinutes);
+  const baselineQuoteVolumePerMinute = kept.length
+    ? kept.reduce((sum, value) => sum + value, 0) / baselineDivisor : 0;
   const ready = active.length >= minActiveBaselineMinutes
     && finitePositive(baselineQuoteVolumePerMinute);
   return {
@@ -77,6 +78,7 @@ export function adaptiveFlowSignal(flows = [], nowMs = Date.now(), options = {})
       + (Number(flow?.sells) || (flow.side === "sell" ? 1 : 0)), 0),
     activeBaselineMinutes: active.length,
     baselineMinutes: volumes.length,
+    baselineMethod: "trimmed-active-minute-mean",
     trimFraction,
   };
 }
