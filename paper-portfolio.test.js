@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PaperPortfolio } from "./paper-portfolio.js";
+import { floorPartialQuantityUnits, PaperPortfolio } from "./paper-portfolio.js";
+import { planPaperLifecycleExit } from "./paper-lifecycle-candidate.js";
 
 test("tracks virtual entry, mark, and profitable exit", () => {
   const book = new PaperPortfolio({ initialCash: 100, maxPositions: 2 });
@@ -106,4 +107,73 @@ test("restore rejects a broken paper ledger invariant", () => {
   state.cash = 0.5;
   assert.throws(() => new PaperPortfolio({ initialCash: 1, state }),
     /paper-ledger-invariant-failed/);
+});
+
+test("partially closes exact units and allocates cost basis proportionally", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "partial", token: "TOK", price: 2, quantity: 10,
+    quantityUnits: "1000", notional: 20, timestamp: 1 });
+  const partial = book.partialClose({ pool: "partial", quantityUnits: "500",
+    price: 3, proceeds: 15, gasCost: 1, timestamp: 2,
+    reason: "partial-take-profit" });
+  assert.equal(partial.quantityUnits, "500");
+  assert.equal(partial.remainingQuantityUnits, "500");
+  assert.equal(partial.allocatedCostBasis, 10);
+  assert.equal(partial.pnl, 4);
+  const remaining = book.snapshot().openPositions[0];
+  assert.equal(remaining.quantity, 5);
+  assert.equal(remaining.quantityUnits, "500");
+  assert.equal(remaining.costBasis, 10);
+  assert.equal(remaining.partialProfitTaken, true);
+  const final = book.close({ pool: "partial", price: 2.4, proceeds: 12,
+    timestamp: 3, reason: "final-take-profit" });
+  assert.equal(final.pnl, 2);
+  assert.equal(final.partialProfitTaken, true);
+  assert.equal(book.snapshot().realizedPnl, 6);
+  assert.equal(book.snapshot().equity, 106);
+});
+
+test("floors policy fractions directly into exact base units", () => {
+  assert.equal(floorPartialQuantityUnits("5", 0.5), "2");
+  assert.equal(floorPartialQuantityUnits("1000000000000000001", 0.5),
+    "500000000000000000");
+  assert.throws(() => floorPartialQuantityUnits("1", 0.5),
+    /invalid-partial-quantity-units/);
+  assert.throws(() => floorPartialQuantityUnits("10", 1), /invalid-close-fraction/);
+});
+
+test("partial close refuses missing, zero, or full exact quantities", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "exact", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "10", notional: 10 });
+  assert.throws(() => book.partialClose({ pool: "exact", quantityUnits: "0", price: 1 }),
+    /invalid-partial-quantity-units/);
+  assert.throws(() => book.partialClose({ pool: "exact", quantityUnits: "10", price: 1 }),
+    /invalid-partial-quantity-units/);
+  const legacy = new PaperPortfolio({ initialCash: 100 });
+  legacy.open({ pool: "legacy", token: "TOK", price: 1, quantity: 10, notional: 10 });
+  assert.throws(() => legacy.partialClose({ pool: "legacy", quantityUnits: "5", price: 1 }),
+    /partial-exact-units-required/);
+});
+
+test("lifecycle telemetry and partial state survive restart without changing decisions", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "restart", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "100", notional: 10, timestamp: 1 });
+  book.recordLifecycleMark("restart", { returnPct: 7, observedPrice: 1.07 });
+  book.recordLifecycleMark("restart", { returnPct: -2, observedPrice: 0.98 });
+  book.partialClose({ pool: "restart", quantityUnits: "50", price: 1.2,
+    proceeds: 6, reason: "partial-take-profit", timestamp: 2 });
+  const before = book.snapshot().openPositions[0];
+  const restored = new PaperPortfolio({ initialCash: 100, state: book.serialize() });
+  const after = restored.snapshot().openPositions[0];
+  assert.equal(after.partialProfitTaken, true);
+  assert.equal(after.maxFavorableExcursionPct, 7);
+  assert.equal(after.maxAdverseExcursionPct, -2);
+  assert.deepEqual(after.observedPrices, [1.07, 0.98]);
+  const decisionInput = (position) => ({ ...position, returnPct: 22,
+    peakReturnPct: 22, openedAt: 1 });
+  assert.deepEqual(planPaperLifecycleExit(decisionInput(after), 2),
+    planPaperLifecycleExit(decisionInput(before), 2));
+  assert.equal(planPaperLifecycleExit(decisionInput(after), 2), null);
 });
