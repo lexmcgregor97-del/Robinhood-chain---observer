@@ -42,3 +42,13 @@ test("rejects candidates that cannot support the exact V2 sell probe", () => {
   ], callbacks());
   assert.deepEqual(targets.map(({ candidate: item }) => item.address), ["valid"]);
 });
+
+test("the same pool across cohorts consumes only one probe slot", () => {
+  const targets = selectSellProbeTargets([
+    candidate("0xABC", { paperCohort: "v7-control" }),
+    candidate("0xabc", { paperCohort: "frequency-candidate" }),
+    candidate("0xdef"),
+  ], callbacks());
+  assert.deepEqual(targets.map(({ candidate: item }) => item.address), ["0xABC", "0xdef"]);
+  assert.equal(targets[0].candidate.paperCohort, "v7-control");
+});

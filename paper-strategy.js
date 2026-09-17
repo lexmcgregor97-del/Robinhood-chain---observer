@@ -58,7 +58,7 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
     const entryWindowStart = rollingWindow ? now - entryWindowMs : -Infinity;
     const priorEntries = (portfolio?.trades || []).filter((trade) => (
       trade?.type === "open" && trade.pool === candidate?.address
-        && Number(trade.timestamp) >= entryWindowStart
+        && (!rollingWindow || Number(trade.timestamp) >= entryWindowStart)
     )).length;
     if (priorEntries >= maxEntriesPerPool) {
       failures.push(rollingWindow ? "pool-window-entry-limit" : "pool-epoch-entry-limit");

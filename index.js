@@ -65,6 +65,11 @@ import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
 import { workerObserverAuthorized } from "./worker-observer-auth.js";
 import { selectSellProbeTargets } from "./sell-probe-targets.js";
+import {
+  cohortComparison, createAsyncReadCache, recordCohortApproval,
+  recordCohortMeasurement, recordCohortRejection, recordFirstMark,
+  runIsolatedCohortStage,
+} from "./paper-cohort-runtime.js";
 
 const FORBIDDEN_RUNTIME_SECRETS = forbiddenRuntimeSecretFailures(process.env);
 if (FORBIDDEN_RUNTIME_SECRETS.length) throw new Error(FORBIDDEN_RUNTIME_SECRETS.join(","));
@@ -207,6 +212,10 @@ function createPaperAutomation() {
   cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
   recoveryExitCycles: 0, recoveryExits: 0, lastRecoveryExitCycleAt: null,
   maxMarkedDrawdownPctByQuote: {},
+  measurementCycles: 0, candidatesMeasured: 0,
+  entryAttempts: 0, entryApprovals: 0, rejectionReasons: {},
+  enteredPools: [], firstMarks: [], stageFailures: {},
+  totalCycleDurationMs: 0, lastCycleDurationMs: null, maxCycleDurationMs: 0,
   firstCycleAt: null, lastCycleAt: null, lastError: null, recentDecisions: [],
   };
 }
@@ -610,6 +619,11 @@ async function rpc(method, params) {
   });
 }
 
+// Cohorts use different notionals but the same chain snapshot. Keying raw
+// reads by the observer block lets both simulations reuse reserves/slot data
+// without carrying stale values into a later block. Rejected reads are evicted.
+const marketRead = createAsyncReadCache(rpc);
+
 async function sellProbeRpc(method, params) {
   return sellProbeRpcScheduler.schedule(() => sellProbeRpcTransport.request(method, params));
 }
@@ -927,7 +941,8 @@ async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
   const cached = v3BoundaryCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.boundaryTick;
 
-  const currentBitmap = decodeUint(await rpc("eth_call", [{
+  const currentBitmap = decodeUint(await marketRead(
+    metrics.latestBlock || metrics.cursor, "eth_call", [{
     to: pool.address, data: encodeInt16Call("0x5339c296", wordPos),
   }, "latest"]), "tick-bitmap");
   const initializedTick = findInitializedTickInWord({
@@ -1037,7 +1052,8 @@ async function marketSafety(pool, {
     if (!plannedNotionalQuote) throw new Error("paper-notional-unavailable");
     const quoteAmountIn = humanToUnits(plannedNotionalQuote, quoteDecimals);
     if (pool.version === "v2") {
-      const reserves = decodeV2Reserves(await rpc("eth_call",
+      const reserves = decodeV2Reserves(await marketRead(
+        metrics.latestBlock || metrics.cursor, "eth_call",
         [{ to: pool.address, data: "0x0902f1ac" }, "latest"]));
       const safety = evaluateV2MarketSafety(pool, {
         latestBlock: metrics.latestBlock || metrics.cursor,
@@ -1052,13 +1068,16 @@ async function marketSafety(pool, {
       }) }, quoteAddress, plannedNotionalQuote);
     }
     const [slot0Result, liquidityResult] = await Promise.all([
-      rpc("eth_call", [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
-      rpc("eth_call", [{ to: pool.address, data: "0x1a686502" }, "latest"]),
+      marketRead(metrics.latestBlock || metrics.cursor, "eth_call",
+        [{ to: pool.address, data: "0x3850c7bd" }, "latest"]),
+      marketRead(metrics.latestBlock || metrics.cursor, "eth_call",
+        [{ to: pool.address, data: "0x1a686502" }, "latest"]),
     ]);
     const slot0 = decodeV3Slot0(slot0Result);
     let tickSpacing = Number(pool.tickSpacing);
     if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) {
-      const tickSpacingResult = await rpc("eth_call", [{
+      const tickSpacingResult = await marketRead(
+        metrics.latestBlock || metrics.cursor, "eth_call", [{
         to: pool.address, data: "0xd0c93a7c",
       }, "latest"]);
       tickSpacing = Number(decodeUint(tickSpacingResult, "tick-spacing"));
@@ -1452,6 +1471,7 @@ async function runCohortEntries({
   for (const candidate of measured) {
     const book = books.get(candidate.marketSafety.quoteToken);
     if (!book) {
+      recordCohortRejection(automation, ["unsupported-paper-quote"]);
       rememberPaperDecision({ type: "reject", pool: candidate.address,
         reasons: ["unsupported-paper-quote"] }, automation);
       continue;
@@ -1468,15 +1488,17 @@ async function runCohortEntries({
         automation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
     }), policy);
     if (circuitFailures.length) {
+      recordCohortRejection(automation, circuitFailures);
       rememberPaperDecision({ type: "reject", quote: book.symbol,
         pool: candidate.address, reasons: circuitFailures }, automation);
       continue;
     }
     const plan = planPaperEntry(candidate, paperState, policy, Date.now());
     if (!plan.approved) {
+      const reasons = paperEntryFailureDetails(candidate, plan.failures);
+      recordCohortRejection(automation, reasons);
       rememberPaperDecision({ type: "reject", quote: book.symbol,
-        pool: candidate.address,
-        reasons: paperEntryFailureDetails(candidate, plan.failures) }, automation);
+        pool: candidate.address, reasons }, automation);
       continue;
     }
     const feeRate = poolFeeRate(candidate);
@@ -1486,6 +1508,7 @@ async function runCohortEntries({
       audit: paperEntryAudit(candidate, feeRate, strategyVersion),
     });
     automation.entries += 1;
+    recordCohortApproval(automation, candidate.address);
     await appendEvidence({ type: `${evidencePrefix}-open`, epoch: strategyVersion,
       cohort: strategyVersion, quote: book.symbol,
       trade: structuredClone(book.portfolio.trades.at(-1)) });
@@ -1496,6 +1519,7 @@ async function runCohortEntries({
 }
 
 async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {}) {
+  const cycleStartedAt = Date.now();
   lastPaperCycleAt = Date.now();
   const cohorts = [
     {
@@ -1514,6 +1538,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     },
   ];
   for (const { automation } of cohorts) {
+    automation.lastError = null;
     if (exitsOnly) {
       automation.recoveryExitCycles += 1;
       automation.lastRecoveryExitCycleAt = lastPaperCycleAt;
@@ -1524,7 +1549,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     }
   }
   try {
-    for (const cohort of cohorts) {
+    const exitResults = await runIsolatedCohortStage(cohorts, async (cohort) => {
       const {
         books, automation, strategy, strategyVersion, evidencePrefix,
       } = cohort;
@@ -1577,7 +1602,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
             || exit.quoteToken !== quoteToken
             || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
-        updateMarkedDrawdownHistory();
+        recordFirstMark(automation, position, marked);
         const reason = paperExitReason({ ...marked,
           exitPriceImpactPct: exit.priceImpactPct }, Date.now(), strategy);
         if (reason) {
@@ -1616,24 +1641,30 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
         }
       }
     }
-    }
+    }, { stage: "exits", globallyBlocked: () => persistence.writeBlocked });
 
     updateMarkedDrawdownHistory();
 
     if (exitsOnly) {
-      paperAutomation.lastError = null;
-      frequencyCandidateAutomation.lastError = null;
       return;
     }
 
     if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
-      paperAutomation.lastError = null;
-      frequencyCandidateAutomation.lastError = null;
       return;
     }
 
-    const measured = await candidates(10);
-    const frequencyMeasured = await frequencyCandidates(10);
+    const measurementResults = await runIsolatedCohortStage(
+      cohorts, async (cohort) => {
+        const measured = cohort.strategyVersion === PAPER_STRATEGY_VERSION
+          ? await candidates(10) : await frequencyCandidates(10);
+        recordCohortMeasurement(cohort.automation, measured);
+        return measured;
+      }, { stage: "measurement", globallyBlocked: () => persistence.writeBlocked },
+    );
+    const controlMeasurement = measurementResults.get(PAPER_STRATEGY_VERSION);
+    const frequencyMeasurement = measurementResults.get(PAPER_FREQUENCY_CANDIDATE_VERSION);
+    const measured = controlMeasurement?.ok ? controlMeasurement.value : [];
+    const frequencyMeasured = frequencyMeasurement?.ok ? frequencyMeasurement.value : [];
     latestSellProbeCandidates = [...measured, ...frequencyMeasured];
     const rankedAddresses = new Set(measured.map((candidate) => candidate.address));
     const pendingPools = shadowEvaluator.pendingPoolAddresses()
@@ -1644,7 +1675,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       address: pool.address,
       marketSafety: await marketSafety(pool),
     })));
-    if (!SHADOW_RECORDING_PAUSED) {
+    if (!SHADOW_RECORDING_PAUSED && controlMeasurement?.ok) {
       const previousCount = shadowEvaluator.samples.length;
       const previousState = new Map(shadowEvaluator.samples.map((sample) => [
         sample.episodeId, { closedAt: sample.closedAt, censoredAt: sample.censoredAt },
@@ -1670,33 +1701,32 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       if (evidenceEvents.length) await appendEvidenceBatch(evidenceEvents);
     }
     if (PAPER_ENTRIES_PAUSED) {
-      paperAutomation.lastError = null;
-      frequencyCandidateAutomation.lastError = null;
       return;
     }
-    await runCohortEntries({
-      measured,
-      books: paperBooks,
-      automation: paperAutomation,
-      strategy: QUALIFYING_PAPER_STRATEGY,
-      strategyVersion: PAPER_STRATEGY_VERSION,
-      evidencePrefix: "paper",
-    });
-    await runCohortEntries({
-      measured: frequencyMeasured,
-      books: frequencyCandidateBooks,
-      automation: frequencyCandidateAutomation,
-      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
-      strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
-      evidencePrefix: PAPER_FREQUENCY_CANDIDATE_VERSION,
-    });
+    const entryCohorts = cohorts.filter((cohort) => (
+      exitResults.get(cohort.strategyVersion)?.ok
+      && measurementResults.get(cohort.strategyVersion)?.ok
+    ));
+    await runIsolatedCohortStage(entryCohorts, async (cohort) => {
+      await runCohortEntries({
+        measured: measurementResults.get(cohort.strategyVersion).value,
+        ...cohort,
+      });
+    }, { stage: "entries", globallyBlocked: () => persistence.writeBlocked });
     updateMarkedDrawdownHistory();
-    paperAutomation.lastError = null;
-    frequencyCandidateAutomation.lastError = null;
   } catch (error) {
-    paperAutomation.lastError = error instanceof Error ? error.message : String(error);
-    frequencyCandidateAutomation.lastError
-      = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    paperAutomation.lastError ||= message;
+    frequencyCandidateAutomation.lastError ||= message;
+  } finally {
+    const durationMs = Date.now() - cycleStartedAt;
+    for (const { automation } of cohorts) {
+      automation.lastCycleDurationMs = durationMs;
+      automation.totalCycleDurationMs = Number(automation.totalCycleDurationMs || 0) + durationMs;
+      automation.maxCycleDurationMs = Math.max(
+        Number(automation.maxCycleDurationMs || 0), durationMs,
+      );
+    }
   }
 }
 
@@ -1833,6 +1863,7 @@ function paperStatus() {
       hypothesis: PAPER_FREQUENCY_CANDIDATE_HYPOTHESIS,
       riskPolicy: PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
       strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      comparison: cohortComparison(paperAutomation, frequencyCandidateAutomation),
       books: frequencyBooks,
       automation: {
         ...frequencyCandidateAutomation,
@@ -1842,7 +1873,7 @@ function paperStatus() {
           ? (Number(frequencyCandidateAutomation.lastCycleAt)
             - Number(frequencyCandidateAutomation.firstCycleAt))
             / (frequencyCandidateAutomation.cycles - 1) : null,
-        lastCycleAt: lastPaperCycleAt || null,
+        lastCycleAt: frequencyCandidateAutomation.lastCycleAt || null,
       },
     },
     evidence: evidenceJournal.snapshot(),

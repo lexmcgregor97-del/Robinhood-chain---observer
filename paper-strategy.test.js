@@ -152,6 +152,25 @@ test("rolling entry limit expires old pool entries without changing the epoch de
   assert.ok(epoch.failures.includes("pool-epoch-entry-limit"));
 });
 
+test("epoch entry limit still counts legacy opens without timestamps", () => {
+  const portfolio = {
+    cash: 2000,
+    maxPositions: 3,
+    openPositions: [],
+    trades: [
+      { type: "open", pool: candidate.address },
+      { type: "open", pool: candidate.address, timestamp: "invalid" },
+      { type: "open", pool: candidate.address, timestamp: 1 },
+    ],
+  };
+  const epoch = planPaperEntry(candidate, portfolio, {
+    ...DEFAULT_PAPER_STRATEGY,
+    maxEntriesPerPool: 3,
+  }, 100);
+  assert.equal(epoch.approved, false);
+  assert.ok(epoch.failures.includes("pool-epoch-entry-limit"));
+});
+
 test("drawdown circuit fails closed for invalid policy", () => {
   assert.deepEqual(
     paperCircuitFailures({ maxRealizedDrawdownPct: 1 }, { maxRealizedDrawdownPct: 0 }),

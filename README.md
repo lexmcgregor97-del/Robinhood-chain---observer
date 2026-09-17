@@ -303,7 +303,13 @@ entries in a rolling six-hour window. It has independent cash, positions,
 trades, drawdown history, decisions, persistence, and evidence event types.
 The candidate preserves the v7 execution-safety gates, and its performance is
 excluded from live readiness. Its bounded comparison requires at least 24
-hours and 20 unique pools; no result promotes automatically.
+hours and 20 unique pools; no result promotes automatically. Both cohorts
+share block-scoped raw reserve reads while retaining notional-specific
+simulations. Sell-probe targets refresh only from paper cycles, are deduplicated
+by pool with the control cohort first, and are never mutated by public candidate
+API traffic. Durable cohort counters retain measured candidates, attempts,
+approvals, rejection reasons, unique-pool overlap, cycle duration, and each
+entry's first marked return for the later comparison.
 
 Shadow evaluation uses one five-minute horizon and one sample per rule/pool episode. Confirmed zero liquidity is recorded as a total loss; genuinely unavailable measurements are censored and reported. Promotion requires at least 20 unique pools, a positive median, and a positive pool-cluster bootstrap lower confidence bound. Promotion remains advisory.
 
