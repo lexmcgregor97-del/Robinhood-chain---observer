@@ -130,6 +130,27 @@ test("steady accumulation remains independent from escape activity", () => {
   assert.equal(shadowRuleMatches(steady, escapeRule), false);
 });
 
+test("adaptive buy flow requires a mature, buy-led volume expansion", () => {
+  const flowRule = {
+    name: "adaptive-buy-flow", version: "2026-09-17-v1", signals: ["active"],
+    minSwaps: 5, minVolumeMultiple: 2, minBuyShare: 0.6,
+    minBaselineMinutes: 10, maxDeviationPct: 5,
+  };
+  const flowing = candidate("active");
+  flowing.signal.swapsCurrentWindow = 5;
+  flowing.signal.adaptiveFlow = {
+    ready: true, volumeMultiple: 2.5, buyShare: 0.7, activeBaselineMinutes: 12,
+  };
+  assert.equal(shadowRuleMatches(flowing, flowRule), true);
+  const evaluator = new ShadowEvaluator({ rules: [flowRule] });
+  evaluator.record([flowing], 1_000);
+  const sample = evaluator.snapshot().recentSamples[0];
+  assert.equal(sample.ruleDefinitionVersion, "2026-09-17-v1");
+  assert.equal(sample.adaptiveFlow.volumeMultiple, 2.5);
+  flowing.signal.adaptiveFlow.buyShare = 0.59;
+  assert.equal(shadowRuleMatches(flowing, flowRule), false);
+});
+
 test("activity pullback records only after a controlled retracement", () => {
   const pullbackRule = {
     name: "activity-pullback",

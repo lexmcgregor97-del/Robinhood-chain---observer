@@ -12,6 +12,10 @@ export const SHADOW_RULES = Object.freeze([
   { name: "activity-pullback", signals: ["active", "breakout-watch", "escape-velocity"],
     minSwaps: 3, maxDeviationPct: 5, pullbackMinPct: 2, pullbackMaxPct: 12,
     setupMaxAgeMs: FIVE_MINUTES },
+  { name: "adaptive-buy-flow", version: "2026-09-17-v1",
+    signals: ["active", "breakout-watch", "escape-velocity"], minSwaps: 5,
+    minVolumeMultiple: 2, minBuyShare: 0.6, minBaselineMinutes: 10,
+    maxDeviationPct: 5 },
 ]);
 
 export const DEFAULT_PROMOTION_POLICY = Object.freeze({
@@ -24,12 +28,20 @@ export function shadowRuleMatches(candidate, rule) {
   const safety = candidate?.marketSafety || {};
   const signal = candidate?.signal || {};
   const acceptedSignals = rule.signals || [rule.signal];
+  const flow = signal.adaptiveFlow || {};
   return acceptedSignals.includes(signal.state)
     && (!finite(rule.minSwaps) || Number(signal.swapsCurrentWindow) >= Number(rule.minSwaps))
     && (!finite(rule.minAcceleration)
       || Number(signal.acceleration) >= Number(rule.minAcceleration))
     && (!finite(rule.maxAcceleration)
       || Number(signal.acceleration) <= Number(rule.maxAcceleration))
+    && (!finite(rule.minVolumeMultiple)
+      || (flow.ready === true
+        && Number(flow.volumeMultiple) >= Number(rule.minVolumeMultiple)))
+    && (!finite(rule.minBuyShare)
+      || Number(flow.buyShare) >= Number(rule.minBuyShare))
+    && (!finite(rule.minBaselineMinutes)
+      || Number(flow.activeBaselineMinutes) >= Number(rule.minBaselineMinutes))
     && safety.quoteTokenKnown === true
     && safety.liquidityKnown === true
     && safety.buyMathOk === true
@@ -213,7 +225,10 @@ export class ShadowEvaluator {
     for (const candidate of candidates) {
       for (const rule of this.rules) {
         if (!shadowRuleMatches(candidate, rule)) continue;
-        const key = `${rule.name}:${candidate.address}`;
+        const definitionVersion = rule.version || RULE_VERSION;
+        const key = rule.version
+          ? `${rule.name}:${definitionVersion}:${candidate.address}`
+          : `${rule.name}:${candidate.address}`;
         observedEpisodeKeys.add(key);
         if (finite(rule.pullbackMinPct)) {
           observedPullbackKeys.add(key);
@@ -241,6 +256,7 @@ export class ShadowEvaluator {
         this.samples.push({
           rule: rule.name,
           ruleVersion: RULE_VERSION,
+          ruleDefinitionVersion: definitionVersion,
           episodeId,
           horizonMs: this.horizonMs,
           pool: candidate.address,
@@ -255,6 +271,8 @@ export class ShadowEvaluator {
           },
           baseTokenDecimals: candidate.marketSafety.baseTokenDecimals ?? null,
           lastSwapTransactionHash: candidate.lastSwap?.transactionHash ?? null,
+          adaptiveFlow: candidate.signal?.adaptiveFlow
+            ? { ...candidate.signal.adaptiveFlow } : null,
         });
         if (finite(rule.pullbackMinPct)) this.pullbackSetups.delete(key);
       }
@@ -281,7 +299,8 @@ export class ShadowEvaluator {
     );
     const byRule = {};
     for (const rule of this.rules) {
-      const matching = currentSamples.filter((sample) => sample.rule === rule.name);
+      const matching = currentSamples.filter((sample) => sample.rule === rule.name
+        && (!rule.version || sample.ruleDefinitionVersion === rule.version));
       const summary = summarizeSamples(matching);
       byRule[rule.name] = {
         openSamples: matching.filter((sample) => !sample.closedAt
