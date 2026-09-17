@@ -55,3 +55,31 @@ test("reconciles the isolated frequency-candidate ledger independently", () => {
   assert.throws(() => validateEvidenceCheckpoint({ state, journal }),
     /frequency-candidate-evidence-ledger-divergence/);
 });
+
+test("reconciles partial-close records in control and candidate journals", () => {
+  const checkpointState = {
+    evidenceSequence: 6,
+    evidenceLastHash: hash,
+    paperBooks: { weth: { state: { trades: [
+      { type: "open" }, { type: "partial-close" }, { type: "close" },
+    ] } } },
+    frequencyCandidateVersion: "candidate-v1",
+    frequencyCandidateBooks: { weth: { state: { trades: [
+      { type: "open" }, { type: "partial-close" }, { type: "close" },
+    ] } } },
+  };
+  const checkpointJournal = {
+    sequence: 6,
+    lastHash: hash,
+    typeCounts: {
+      "paper-open": 1, "paper-partial-close": 1, "paper-close": 1,
+      "candidate-v1-open": 1, "candidate-v1-partial-close": 1,
+      "candidate-v1-close": 1,
+    },
+  };
+  assert.equal(validateEvidenceCheckpoint({ state: checkpointState,
+    journal: checkpointJournal }), true);
+  checkpointJournal.typeCounts["candidate-v1-partial-close"] = 0;
+  assert.throws(() => validateEvidenceCheckpoint({ state: checkpointState,
+    journal: checkpointJournal }), /frequency-candidate-evidence-ledger-divergence/);
+});
