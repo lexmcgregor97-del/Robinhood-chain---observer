@@ -66,7 +66,7 @@ import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
 import { workerObserverAuthorized } from "./worker-observer-auth.js";
 import { selectSellProbeTargets } from "./sell-probe-targets.js";
 import {
-  cohortComparison, createAsyncReadCache, recordCohortApproval,
+  cohortComparison, createAsyncReadCache, entryReadyCohorts, recordCohortApproval,
   recordCohortMeasurement, recordCohortRejection, recordFirstMark,
   runIsolatedCohortStage,
 } from "./paper-cohort-runtime.js";
@@ -1441,18 +1441,26 @@ function updateCohortMarkedDrawdownHistory(books, automation, strategyVersion) {
     automation.maxMarkedDrawdownPctByQuote = {};
   }
   for (const book of books.values()) {
-    const state = book.portfolio.serialize();
-    const analytics = analyzePaperTrades({
-      initialCash: state.initialCash,
-      trades: state.trades,
-      openPositions: state.openPositions,
-      strategyVersion,
-      priorMaxMarkedDrawdownPct:
-        automation.maxMarkedDrawdownPctByQuote[book.symbol] || 0,
-    });
-    automation.maxMarkedDrawdownPctByQuote[book.symbol]
-      = analytics.maxMarkedDrawdownPct;
+    updateBookMarkedDrawdownHistory(book, automation, strategyVersion);
   }
+}
+
+function updateBookMarkedDrawdownHistory(book, automation, strategyVersion) {
+  if (!automation.maxMarkedDrawdownPctByQuote
+      || typeof automation.maxMarkedDrawdownPctByQuote !== "object") {
+    automation.maxMarkedDrawdownPctByQuote = {};
+  }
+  const state = book.portfolio.serialize();
+  const analytics = analyzePaperTrades({
+    initialCash: state.initialCash,
+    trades: state.trades,
+    openPositions: state.openPositions,
+    strategyVersion,
+    priorMaxMarkedDrawdownPct:
+      automation.maxMarkedDrawdownPctByQuote[book.symbol] || 0,
+  });
+  automation.maxMarkedDrawdownPctByQuote[book.symbol]
+    = analytics.maxMarkedDrawdownPct;
 }
 
 function updateMarkedDrawdownHistory() {
@@ -1603,6 +1611,9 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
             || !Number.isFinite(exit.executionPrice)) continue;
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
         recordFirstMark(automation, position, marked);
+        // Preserve the pre-candidate circuit-breaker sensitivity after each
+        // changed mark, but recompute only the affected cohort book.
+        updateBookMarkedDrawdownHistory(book, automation, strategyVersion);
         const reason = paperExitReason({ ...marked,
           exitPriceImpactPct: exit.priceImpactPct }, Date.now(), strategy);
         if (reason) {
@@ -1671,10 +1682,16 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       .filter((address) => !rankedAddresses.has(address))
       .map((address) => pools.get(address))
       .filter(Boolean);
-    const pendingMeasurements = await Promise.all(pendingPools.map(async (pool) => ({
-      address: pool.address,
-      marketSafety: await marketSafety(pool),
-    })));
+    const shadowMeasurementResults = await runIsolatedCohortStage(
+      [cohorts[0]],
+      async () => Promise.all(pendingPools.map(async (pool) => ({
+        address: pool.address,
+        marketSafety: await marketSafety(pool),
+      }))),
+      { stage: "shadow-measurement", globallyBlocked: () => persistence.writeBlocked },
+    );
+    const pendingMeasurements = shadowMeasurementResults
+      .get(PAPER_STRATEGY_VERSION)?.value || [];
     if (!SHADOW_RECORDING_PAUSED && controlMeasurement?.ok) {
       const previousCount = shadowEvaluator.samples.length;
       const previousState = new Map(shadowEvaluator.samples.map((sample) => [
@@ -1703,10 +1720,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     if (PAPER_ENTRIES_PAUSED) {
       return;
     }
-    const entryCohorts = cohorts.filter((cohort) => (
-      exitResults.get(cohort.strategyVersion)?.ok
-      && measurementResults.get(cohort.strategyVersion)?.ok
-    ));
+    const entryCohorts = entryReadyCohorts(cohorts, exitResults, measurementResults);
     await runIsolatedCohortStage(entryCohorts, async (cohort) => {
       await runCohortEntries({
         measured: measurementResults.get(cohort.strategyVersion).value,

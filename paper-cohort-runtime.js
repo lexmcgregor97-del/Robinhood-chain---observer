@@ -45,6 +45,13 @@ export async function runIsolatedCohortStage(cohorts, operation, {
   return results;
 }
 
+export function entryReadyCohorts(cohorts, exitResults, measurementResults) {
+  return cohorts.filter((cohort) => (
+    exitResults.get(cohort.strategyVersion)?.ok
+    && measurementResults.get(cohort.strategyVersion)?.ok
+  ));
+}
+
 export function recordCohortMeasurement(automation, candidates) {
   automation.measurementCycles = Number(automation.measurementCycles || 0) + 1;
   automation.candidatesMeasured = Number(automation.candidatesMeasured || 0)

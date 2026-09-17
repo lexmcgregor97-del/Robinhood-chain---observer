@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  cohortComparison, createAsyncReadCache, recordCohortApproval,
+  cohortComparison, createAsyncReadCache, entryReadyCohorts, recordCohortApproval,
   recordCohortMeasurement, recordCohortRejection, recordFirstMark,
   runIsolatedCohortStage,
 } from "./paper-cohort-runtime.js";
@@ -38,6 +38,23 @@ test("global persistence failure aborts later cohort mutations", async () => {
   }, { stage: "entries", globallyBlocked: () => blocked }),
   /evidence-state-persist-failed/);
   assert.equal(candidateCalled, false);
+});
+
+test("a cohort with a failed exit stage is excluded from entries", () => {
+  const control = cohort("control");
+  const candidate = cohort("candidate");
+  const exitResults = new Map([
+    ["control", { ok: true }],
+    ["candidate", { ok: false, error: "exit-rpc-failed" }],
+  ]);
+  const measurementResults = new Map([
+    ["control", { ok: true, value: [] }],
+    ["candidate", { ok: true, value: [] }],
+  ]);
+  assert.deepEqual(
+    entryReadyCohorts([control, candidate], exitResults, measurementResults),
+    [control],
+  );
 });
 
 test("one scoped cache shares identical raw reads and retries failures", async () => {
