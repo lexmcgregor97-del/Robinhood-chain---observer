@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PaperPortfolio } from "./paper-portfolio.js";
+import { floorPartialQuantityUnits, PaperPortfolio } from "./paper-portfolio.js";
+import { planPaperLifecycleExit } from "./paper-lifecycle-candidate.js";
 
 test("tracks virtual entry, mark, and profitable exit", () => {
   const book = new PaperPortfolio({ initialCash: 100, maxPositions: 2 });
@@ -106,4 +107,150 @@ test("restore rejects a broken paper ledger invariant", () => {
   state.cash = 0.5;
   assert.throws(() => new PaperPortfolio({ initialCash: 1, state }),
     /paper-ledger-invariant-failed/);
+});
+
+test("partially closes exact units and allocates cost basis proportionally", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "partial", token: "TOK", price: 2, quantity: 10,
+    quantityUnits: "1000", notional: 20, timestamp: 1 });
+  const partial = book.partialClose({ pool: "partial", quantityUnits: "500",
+    price: 3, proceeds: 15, gasCost: 1, timestamp: 2,
+    reason: "partial-take-profit" });
+  assert.equal(partial.quantityUnits, "500");
+  assert.equal(partial.remainingQuantityUnits, "500");
+  assert.equal(partial.allocatedCostBasis, 10);
+  assert.equal(partial.pnl, 4);
+  const remaining = book.snapshot().openPositions[0];
+  assert.equal(remaining.quantity, 5);
+  assert.equal(remaining.quantityUnits, "500");
+  assert.equal(remaining.costBasis, 10);
+  assert.equal(remaining.partialProfitTaken, true);
+  const final = book.close({ pool: "partial", price: 2.4, proceeds: 12,
+    timestamp: 3, reason: "final-take-profit" });
+  assert.equal(final.pnl, 2);
+  assert.equal(final.partialProfitTaken, true);
+  assert.equal(book.snapshot().realizedPnl, 6);
+  assert.equal(book.snapshot().equity, 106);
+});
+
+test("partial and final close build audit evidence before mutating the ledger", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "atomic", token: "TOK", price: 2, quantity: 10,
+    quantityUnits: "100", notional: 20 });
+  const beforePartial = structuredClone(book.serialize());
+  assert.throws(() => book.partialClose({ pool: "atomic", quantityUnits: "50",
+    price: 3, audit: { invalid: () => true } }), /clone/i);
+  assert.deepEqual(book.serialize(), beforePartial);
+  const beforeClose = structuredClone(book.serialize());
+  assert.throws(() => book.close({ pool: "atomic", price: 3,
+    audit: { invalid: () => true } }), /clone/i);
+  assert.deepEqual(book.serialize(), beforeClose);
+});
+
+test("open builds audit evidence before mutating the ledger", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  const before = structuredClone(book.serialize());
+  assert.throws(() => book.open({ pool: "bad-open", token: "TOK", price: 1,
+    quantity: 10, quantityUnits: "10", notional: 10,
+    audit: { invalid: () => true } }), /clone/i);
+  assert.deepEqual(book.serialize(), before);
+});
+
+test("remainder retains a full expected exit gas charge after a partial", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "gas-remainder", token: "TOK", price: 2, quantity: 10,
+    quantityUnits: "100", notional: 20, gasCost: 1 });
+  assert.equal(book.snapshot().openPositions[0].expectedExitGasCost, 1);
+  book.partialClose({ pool: "gas-remainder", quantityUnits: "50", price: 2,
+    proceeds: 10 });
+  const remainder = book.snapshot().openPositions[0];
+  assert.equal(remainder.entryGasCost, 0.5);
+  assert.equal(remainder.expectedExitGasCost, 1);
+  assert.ok(Math.abs(remainder.returnPct - (-14.28571428571429)) < 1e-12);
+});
+
+test("durable lifecycle state permits exactly one partial close", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "one-partial", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "100", notional: 10 });
+  book.partialClose({ pool: "one-partial", quantityUnits: "50", price: 1 });
+  const before = structuredClone(book.serialize());
+  assert.throws(() => book.partialClose({ pool: "one-partial", quantityUnits: "25", price: 1 }),
+    /partial-already-taken/);
+  assert.deepEqual(book.serialize(), before);
+});
+
+test("floors policy fractions directly into exact base units", () => {
+  assert.equal(floorPartialQuantityUnits("5", 0.5), "2");
+  assert.equal(floorPartialQuantityUnits("1000000000000000001", 0.5),
+    "500000000000000000");
+  assert.throws(() => floorPartialQuantityUnits("1", 0.5),
+    /invalid-partial-quantity-units/);
+  assert.throws(() => floorPartialQuantityUnits("10", 1), /invalid-close-fraction/);
+});
+
+test("large exact-unit positions keep numeric quantity proportional", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "large-units", token: "TOK", price: 10, quantity: 1,
+    quantityUnits: "1000000000000000001", notional: 10 });
+  const soldUnits = floorPartialQuantityUnits("1000000000000000001", 0.5);
+  book.partialClose({ pool: "large-units", quantityUnits: soldUnits, price: 10,
+    proceeds: 5 });
+  const remainder = book.snapshot().openPositions[0];
+  assert.equal(remainder.quantityUnits, "500000000000000001");
+  assert.ok(Math.abs(remainder.quantity - 0.5) < 1e-15);
+});
+
+test("partial close refuses missing, zero, or full exact quantities", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "exact", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "10", notional: 10 });
+  assert.throws(() => book.partialClose({ pool: "exact", quantityUnits: "0", price: 1 }),
+    /invalid-partial-quantity-units/);
+  assert.throws(() => book.partialClose({ pool: "exact", quantityUnits: "10", price: 1 }),
+    /invalid-partial-quantity-units/);
+  const legacy = new PaperPortfolio({ initialCash: 100 });
+  legacy.open({ pool: "legacy", token: "TOK", price: 1, quantity: 10, notional: 10 });
+  assert.throws(() => legacy.partialClose({ pool: "legacy", quantityUnits: "5", price: 1 }),
+    /partial-exact-units-required/);
+});
+
+test("lifecycle telemetry and partial state survive restart without changing decisions", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "restart", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "100", notional: 10, timestamp: 1 });
+  book.recordLifecycleMark("restart", { returnPct: 7, observedPrice: 1.07 });
+  book.recordLifecycleMark("restart", { returnPct: -2, observedPrice: 0.98 });
+  book.partialClose({ pool: "restart", quantityUnits: "50", price: 1.2,
+    proceeds: 6, reason: "partial-take-profit", timestamp: 2 });
+  const before = book.snapshot().openPositions[0];
+  const restored = new PaperPortfolio({ initialCash: 100, state: book.serialize() });
+  const after = restored.snapshot().openPositions[0];
+  assert.equal(after.partialProfitTaken, true);
+  assert.equal(after.maxFavorableExcursionPct, 7);
+  assert.equal(after.maxAdverseExcursionPct, -2);
+  assert.deepEqual(after.observedPrices, [1.07, 0.98]);
+  const decisionInput = (position) => ({ ...position, returnPct: 22,
+    peakReturnPct: 22, openedAt: 1 });
+  assert.deepEqual(planPaperLifecycleExit(decisionInput(after), 2),
+    planPaperLifecycleExit(decisionInput(before), 2));
+  assert.equal(planPaperLifecycleExit(decisionInput(after), 2), null);
+  const final = restored.close({ pool: "restart", price: 1.1, proceeds: 5.5,
+    reason: "adaptive-trailing-stop", timestamp: 3 });
+  assert.equal(final.partialProfitTaken, true);
+  const afterFinalRestart = new PaperPortfolio({ initialCash: 100,
+    state: restored.serialize() });
+  assert.equal(afterFinalRestart.snapshot().openPositions.length, 0);
+});
+
+test("legacy exact-unit positions can restore, mark, and partially close", () => {
+  const first = new PaperPortfolio({ initialCash: 100 });
+  first.open({ pool: "legacy-exact", token: "TOK", price: 1, quantity: 10,
+    quantityUnits: "100", notional: 10 });
+  const legacyState = first.serialize();
+  const restored = new PaperPortfolio({ initialCash: 100, state: legacyState });
+  restored.mark("legacy-exact", 1.1);
+  const partial = restored.partialClose({ pool: "legacy-exact", quantityUnits: "50",
+    price: 1.1 });
+  assert.equal(partial.remainingQuantityUnits, "50");
 });
