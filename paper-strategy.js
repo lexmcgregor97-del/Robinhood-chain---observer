@@ -53,10 +53,16 @@ export function planPaperEntry(candidate, portfolio, policy = DEFAULT_PAPER_STRA
   if (!Number.isInteger(maxEntriesPerPool) || maxEntriesPerPool <= 0) {
     failures.push("invalid-pool-entry-limit");
   } else {
+    const entryWindowMs = Number(policy.entryWindowMs);
+    const rollingWindow = finite(entryWindowMs) && entryWindowMs > 0;
+    const entryWindowStart = rollingWindow ? now - entryWindowMs : -Infinity;
     const priorEntries = (portfolio?.trades || []).filter((trade) => (
       trade?.type === "open" && trade.pool === candidate?.address
+        && Number(trade.timestamp) >= entryWindowStart
     )).length;
-    if (priorEntries >= maxEntriesPerPool) failures.push("pool-epoch-entry-limit");
+    if (priorEntries >= maxEntriesPerPool) {
+      failures.push(rollingWindow ? "pool-window-entry-limit" : "pool-epoch-entry-limit");
+    }
   }
   const cooldownMs = Number(policy.reentryCooldownMs);
   if (finite(cooldownMs) && cooldownMs > 0) {

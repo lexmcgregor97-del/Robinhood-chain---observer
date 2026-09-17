@@ -10,6 +10,12 @@ import {
   DEFAULT_PAPER_STRATEGY, planPaperEntry, paperEntryFailureDetails,
   paperExitReason, paperCircuitFailures,
 } from "./paper-strategy.js";
+import {
+  PAPER_FREQUENCY_CANDIDATE_HYPOTHESIS,
+  PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
+  PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+  PAPER_FREQUENCY_CANDIDATE_VERSION,
+} from "./paper-frequency-candidate.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { ShadowEvaluator } from "./shadow-evaluator.js";
 import { auditSwapPrice } from "./price-audit.js";
@@ -166,16 +172,22 @@ const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004
 
 const pools = new Map();
  const v3BoundaryCache = new Map();
-const wethPaperPortfolio = new PaperPortfolio({
-  initialCash: PAPER_WETH_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS,
-});
-const paperBooks = new Map([
+function createPaperBooks() {
+  return new Map([
   [ROBINHOOD.usdg.toLowerCase(), {
     symbol: "USDG",
     portfolio: new PaperPortfolio({ initialCash: PAPER_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS }),
   }],
-  [ROBINHOOD.weth.toLowerCase(), { symbol: "WETH", portfolio: wethPaperPortfolio }],
-]);
+  [ROBINHOOD.weth.toLowerCase(), {
+    symbol: "WETH",
+    portfolio: new PaperPortfolio({
+      initialCash: PAPER_WETH_INITIAL_CASH, maxPositions: PAPER_MAX_POSITIONS,
+    }),
+  }],
+  ]);
+}
+const paperBooks = createPaperBooks();
+const frequencyCandidateBooks = createPaperBooks();
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 const rpcTransport = new RpcTransport({ urls: RPC_URLS });
 const sellProbeRpcScheduler = new RpcScheduler({
@@ -188,12 +200,18 @@ let nextPollDelayMs = POLL_MS;
 let lastPaperCycleAt = 0;
 let candidateCache = null;
 let candidatePromise = null;
-const paperAutomation = {
+let frequencyCandidateCache = null;
+let frequencyCandidatePromise = null;
+function createPaperAutomation() {
+  return {
   cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
   recoveryExitCycles: 0, recoveryExits: 0, lastRecoveryExitCycleAt: null,
   maxMarkedDrawdownPctByQuote: {},
   firstCycleAt: null, lastCycleAt: null, lastError: null, recentDecisions: [],
-};
+  };
+}
+const paperAutomation = createPaperAutomation();
+const frequencyCandidateAutomation = createPaperAutomation();
 const shadowEvaluator = new ShadowEvaluator();
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
 // These three components must always share one serializer. The persistence
@@ -420,6 +438,13 @@ function persistedState() {
       quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
     ])),
     paperStrategyVersion: PAPER_STRATEGY_VERSION,
+    frequencyCandidateBooks: Object.fromEntries(
+      [...frequencyCandidateBooks].map(([quoteToken, book]) => [
+        quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
+      ]),
+    ),
+    frequencyCandidateVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
+    frequencyCandidateAutomation,
     paperArchives,
     paperAutomation,
     shadow: shadowEvaluator.serialize(),
@@ -512,6 +537,16 @@ async function restoreState() {
     }
     if (state.paperAutomation && samePaperEpoch) {
       Object.assign(paperAutomation, state.paperAutomation);
+    }
+    if (state.frequencyCandidateVersion === PAPER_FREQUENCY_CANDIDATE_VERSION
+        && state.frequencyCandidateBooks) {
+      for (const [quoteToken, saved] of Object.entries(state.frequencyCandidateBooks)) {
+        const book = frequencyCandidateBooks.get(quoteToken.toLowerCase());
+        if (book && saved?.state) book.portfolio.restore(saved.state);
+      }
+      if (state.frequencyCandidateAutomation) {
+        Object.assign(frequencyCandidateAutomation, state.frequencyCandidateAutomation);
+      }
     }
     if (state.shadow) shadowEvaluator.restore(state.shadow);
     logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
@@ -794,6 +829,8 @@ async function poll() {
         && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
       const openPositions = [...paperBooks.values()].reduce(
         (total, book) => total + book.portfolio.snapshot().openPositions.length, 0,
+      ) + [...frequencyCandidateBooks.values()].reduce(
+        (total, book) => total + book.portfolio.snapshot().openPositions.length, 0,
       );
       const cycleMode = recoveryPaperCycleMode({
         synchronized: ready.readyForPaper,
@@ -919,12 +956,14 @@ async function ensureDiscoveryTimestamp(pool) {
   return timestampMs;
 }
 
-function plannedPaperNotional(quoteAddress) {
-  const book = paperBooks.get(quoteAddress);
+function plannedPaperNotional(
+  quoteAddress, books = paperBooks, strategy = DEFAULT_PAPER_STRATEGY,
+) {
+  const book = books.get(quoteAddress);
   if (!book) return null;
   const cash = Number(book.portfolio.snapshot().cash);
   const cap = book.symbol === "WETH" ? PAPER_WETH_MAX_ENTRY : PAPER_USDG_MAX_ENTRY;
-  const notional = Math.min(cash * DEFAULT_PAPER_STRATEGY.entryCashPct / 100, cap);
+  const notional = Math.min(cash * Number(strategy.entryCashPct) / 100, cap);
   return Number.isFinite(notional) && notional > 0 ? notional : null;
 }
 
@@ -966,7 +1005,10 @@ function unitsToHuman(value, decimals) {
   return human;
 }
 
-async function marketSafety(pool) {
+async function marketSafety(pool, {
+  books = paperBooks,
+  strategy = DEFAULT_PAPER_STRATEGY,
+} = {}) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg];
   const quoteAddresses = quoteTokens.map((address) => address.toLowerCase());
   const quoteIsToken0 = quoteAddresses.includes(pool.token0);
@@ -991,7 +1033,7 @@ async function marketSafety(pool) {
     ]);
     const quoteAddress = quoteIsToken0 ? pool.token0 : pool.token1;
     const quoteDecimals = quoteIsToken0 ? token0Meta.decimals : token1Meta.decimals;
-    const plannedNotionalQuote = plannedPaperNotional(quoteAddress);
+    const plannedNotionalQuote = plannedPaperNotional(quoteAddress, books, strategy);
     if (!plannedNotionalQuote) throw new Error("paper-notional-unavailable");
     const quoteAmountIn = humanToUnits(plannedNotionalQuote, quoteDecimals);
     if (pool.version === "v2") {
@@ -1074,6 +1116,27 @@ function publicSellProbeStatus(now = Date.now()) {
   };
 }
 
+function paperEntryEligibleForCohort(candidate, {
+  books, strategy, riskPolicy,
+}, now) {
+  const book = books.get(candidate.marketSafety?.quoteToken);
+  if (!book) return false;
+  const policy = book.symbol === "WETH"
+    ? { ...strategy, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+    : { ...strategy, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
+  const withPassingProbe = {
+    ...candidate,
+    marketSafety: {
+      ...candidate.marketSafety,
+      sellProbe: { passed: true, checkedAt: new Date(now).toISOString() },
+    },
+  };
+  withPassingProbe.riskGate = evaluateRiskGate(withPassingProbe, riskPolicy);
+  return planPaperEntry(
+    withPassingProbe, book.portfolio.serialize(), policy, now,
+  ).approved;
+}
+
 async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!SELL_PROBE_CONFIG.configured) return;
   if (SELL_PROBE_OVERRIDE_STATUS.supported !== true) return;
@@ -1090,26 +1153,15 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       || (isV2SellToQuote(candidate, candidate.lastSwap,
         ROBINHOOD.quoteTokens.map((token) => token.address)) ? candidate.lastSwap : null),
     hasFreshProbe: (candidate) => freshSellProbe(candidate.address, now) !== null,
-    isPaperEntryEligible: (candidate) => {
-      const book = paperBooks.get(candidate.marketSafety?.quoteToken);
-      if (!book) return false;
-      const policy = book.symbol === "WETH"
-        ? { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
-        : { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
-      const withPassingProbe = {
-        ...candidate,
-        marketSafety: {
-          ...candidate.marketSafety,
-          sellProbe: { passed: true, checkedAt: new Date(now).toISOString() },
-        },
-      };
-      withPassingProbe.riskGate = evaluateRiskGate(
-        withPassingProbe, QUALIFYING_PAPER_RISK_POLICY,
-      );
-      return planPaperEntry(
-        withPassingProbe, book.portfolio.serialize(), policy, now,
-      ).approved;
-    },
+    isPaperEntryEligible: (candidate) => paperEntryEligibleForCohort(candidate, {
+      books: paperBooks,
+      strategy: QUALIFYING_PAPER_STRATEGY,
+      riskPolicy: QUALIFYING_PAPER_RISK_POLICY,
+    }, now) || paperEntryEligibleForCohort(candidate, {
+      books: frequencyCandidateBooks,
+      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      riskPolicy: PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
+    }, now),
     limit: 3,
   });
   if (!eligible.length) {
@@ -1248,7 +1300,12 @@ async function paperExitQuote(pool, position) {
   };
 }
 
-async function measureCandidates(limit) {
+async function measureCandidates(limit, {
+  books = paperBooks,
+  strategy = QUALIFYING_PAPER_STRATEGY,
+  riskPolicy = QUALIFYING_PAPER_RISK_POLICY,
+  cohort = "v7-control",
+} = {}) {
   const quoteTokens = new Set(ROBINHOOD.quoteTokens.map(
     (token) => token.address.toLowerCase(),
   ));
@@ -1257,16 +1314,16 @@ async function measureCandidates(limit) {
       && quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
   )).slice(0, limit);
   const measured = await Promise.all(ranked.map(async (pool) => ({
-    ...pool, marketSafety: await marketSafety(pool),
+    ...pool, paperCohort: cohort,
+    marketSafety: await marketSafety(pool, { books, strategy }),
   })));
-  latestSellProbeCandidates = measured;
   return measured.map((candidate) => {
     const sellProbe = freshSellProbe(candidate.address);
     const withProbe = sellProbe
       ? { ...candidate, marketSafety: { ...candidate.marketSafety, sellProbe } }
       : candidate;
     return { ...withProbe,
-      riskGate: evaluateRiskGate(withProbe, QUALIFYING_PAPER_RISK_POLICY) };
+      riskGate: evaluateRiskGate(withProbe, riskPolicy) };
   });
 }
 
@@ -1290,14 +1347,39 @@ async function candidates(limit = 10) {
   return (await candidatePromise).slice(0, boundedLimit);
 }
 
+async function frequencyCandidates(limit = 10) {
+  const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+  if (frequencyCandidateCache && frequencyCandidateCache.expiresAt > Date.now()
+      && frequencyCandidateCache.limit >= boundedLimit) {
+    return frequencyCandidateCache.value.slice(0, boundedLimit);
+  }
+  if (!frequencyCandidatePromise) {
+    frequencyCandidatePromise = measureCandidates(Math.max(10, boundedLimit), {
+      books: frequencyCandidateBooks,
+      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      riskPolicy: PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
+      cohort: "frequency-candidate",
+    })
+      .then((value) => {
+        frequencyCandidateCache = {
+          value, limit: Math.max(10, boundedLimit),
+          expiresAt: Date.now() + CANDIDATE_CACHE_MS,
+        };
+        return value;
+      })
+      .finally(() => { frequencyCandidatePromise = null; });
+  }
+  return (await frequencyCandidatePromise).slice(0, boundedLimit);
+}
+
 function poolFeeRate(pool) {
   if (pool.version === "v3") return Number(pool.fee || 3000) / 1_000_000;
   return pool.dex === "pancakeswap" ? 0.0025 : 0.003;
 }
 
-function paperEntryAudit(candidate, feeRate) {
+function paperEntryAudit(candidate, feeRate, strategyVersion = PAPER_STRATEGY_VERSION) {
   return {
-    strategyVersion: PAPER_STRATEGY_VERSION,
+    strategyVersion,
     block: metrics.latestBlock,
     signal: candidate.signal?.state,
     version: candidate.version,
@@ -1329,45 +1411,126 @@ function paperEntryAudit(candidate, feeRate) {
   };
 }
 
-function rememberPaperDecision(decision) {
-  paperAutomation.recentDecisions.push({ at: Date.now(), ...decision });
-  if (paperAutomation.recentDecisions.length > 50) paperAutomation.recentDecisions.shift();
+function rememberPaperDecision(decision, automation = paperAutomation) {
+  automation.recentDecisions.push({ at: Date.now(), ...decision });
+  if (automation.recentDecisions.length > 50) automation.recentDecisions.shift();
 }
 
-function updateMarkedDrawdownHistory() {
-  if (!paperAutomation.maxMarkedDrawdownPctByQuote
-      || typeof paperAutomation.maxMarkedDrawdownPctByQuote !== "object") {
-    paperAutomation.maxMarkedDrawdownPctByQuote = {};
+function updateCohortMarkedDrawdownHistory(books, automation, strategyVersion) {
+  if (!automation.maxMarkedDrawdownPctByQuote
+      || typeof automation.maxMarkedDrawdownPctByQuote !== "object") {
+    automation.maxMarkedDrawdownPctByQuote = {};
   }
-  for (const book of paperBooks.values()) {
+  for (const book of books.values()) {
     const state = book.portfolio.serialize();
     const analytics = analyzePaperTrades({
       initialCash: state.initialCash,
       trades: state.trades,
       openPositions: state.openPositions,
-      strategyVersion: PAPER_STRATEGY_VERSION,
+      strategyVersion,
       priorMaxMarkedDrawdownPct:
-        paperAutomation.maxMarkedDrawdownPctByQuote[book.symbol] || 0,
+        automation.maxMarkedDrawdownPctByQuote[book.symbol] || 0,
     });
-    paperAutomation.maxMarkedDrawdownPctByQuote[book.symbol]
+    automation.maxMarkedDrawdownPctByQuote[book.symbol]
       = analytics.maxMarkedDrawdownPct;
+  }
+}
+
+function updateMarkedDrawdownHistory() {
+  updateCohortMarkedDrawdownHistory(
+    paperBooks, paperAutomation, PAPER_STRATEGY_VERSION,
+  );
+  updateCohortMarkedDrawdownHistory(
+    frequencyCandidateBooks, frequencyCandidateAutomation,
+    PAPER_FREQUENCY_CANDIDATE_VERSION,
+  );
+}
+
+async function runCohortEntries({
+  measured, books, automation, strategy, strategyVersion, evidencePrefix,
+}) {
+  for (const candidate of measured) {
+    const book = books.get(candidate.marketSafety.quoteToken);
+    if (!book) {
+      rememberPaperDecision({ type: "reject", pool: candidate.address,
+        reasons: ["unsupported-paper-quote"] }, automation);
+      continue;
+    }
+    const policy = book.symbol === "WETH"
+      ? { ...strategy, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+      : { ...strategy, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
+    const paperState = book.portfolio.serialize();
+    const circuitFailures = paperCircuitFailures(analyzePaperTrades({
+      initialCash: paperState.initialCash, trades: paperState.trades,
+      openPositions: paperState.openPositions,
+      strategyVersion,
+      priorMaxMarkedDrawdownPct:
+        automation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
+    }), policy);
+    if (circuitFailures.length) {
+      rememberPaperDecision({ type: "reject", quote: book.symbol,
+        pool: candidate.address, reasons: circuitFailures }, automation);
+      continue;
+    }
+    const plan = planPaperEntry(candidate, paperState, policy, Date.now());
+    if (!plan.approved) {
+      rememberPaperDecision({ type: "reject", quote: book.symbol,
+        pool: candidate.address,
+        reasons: paperEntryFailureDetails(candidate, plan.failures) }, automation);
+      continue;
+    }
+    const feeRate = poolFeeRate(candidate);
+    const fee = plan.order.notional * feeRate;
+    book.portfolio.open({
+      ...plan.order, fee,
+      audit: paperEntryAudit(candidate, feeRate, strategyVersion),
+    });
+    automation.entries += 1;
+    await appendEvidence({ type: `${evidencePrefix}-open`, epoch: strategyVersion,
+      cohort: strategyVersion, quote: book.symbol,
+      trade: structuredClone(book.portfolio.trades.at(-1)) });
+    rememberPaperDecision({ type: "entry", quote: book.symbol,
+      pool: candidate.address, price: plan.order.price,
+      notional: plan.order.notional, fee }, automation);
   }
 }
 
 async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {}) {
   lastPaperCycleAt = Date.now();
-  if (exitsOnly) {
-    paperAutomation.recoveryExitCycles += 1;
-    paperAutomation.lastRecoveryExitCycleAt = lastPaperCycleAt;
-  } else {
-    if (!paperAutomation.firstCycleAt) paperAutomation.firstCycleAt = lastPaperCycleAt;
-    paperAutomation.lastCycleAt = lastPaperCycleAt;
-    paperAutomation.cycles += 1;
+  const cohorts = [
+    {
+      books: paperBooks,
+      automation: paperAutomation,
+      strategy: QUALIFYING_PAPER_STRATEGY,
+      strategyVersion: PAPER_STRATEGY_VERSION,
+      evidencePrefix: "paper",
+    },
+    {
+      books: frequencyCandidateBooks,
+      automation: frequencyCandidateAutomation,
+      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
+      evidencePrefix: PAPER_FREQUENCY_CANDIDATE_VERSION,
+    },
+  ];
+  for (const { automation } of cohorts) {
+    if (exitsOnly) {
+      automation.recoveryExitCycles += 1;
+      automation.lastRecoveryExitCycleAt = lastPaperCycleAt;
+    } else {
+      if (!automation.firstCycleAt) automation.firstCycleAt = lastPaperCycleAt;
+      automation.lastCycleAt = lastPaperCycleAt;
+      automation.cycles += 1;
+    }
   }
   try {
-    for (const [quoteToken, book] of paperBooks) {
+    for (const cohort of cohorts) {
+      const {
+        books, automation, strategy, strategyVersion, evidencePrefix,
+      } = cohort;
+      for (const [quoteToken, book] of books) {
       for (const position of book.portfolio.snapshot().openPositions) {
-        const key = `${quoteToken}:${position.pool}`;
+        const key = `${strategyVersion}:${quoteToken}:${position.pool}`;
         const pool = pools.get(position.pool);
         let exit = null;
         let livenessReason = null;
@@ -1386,7 +1549,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
               quote: book.symbol,
               pool: position.pool,
               error: error instanceof Error ? error.message : String(error),
-            });
+            }, automation);
           }
         }
         if (livenessReason) {
@@ -1400,13 +1563,14 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
             audit: { block: metrics.latestBlock, reason: livenessReason, duringRecovery,
               exitReserves: exit?.exitReserves ?? null },
           });
-          paperAutomation.exits += 1;
-          if (duringRecovery) paperAutomation.recoveryExits += 1;
-          await appendEvidence({ type: "paper-close", quote: book.symbol, trade });
+          automation.exits += 1;
+          if (duringRecovery) automation.recoveryExits += 1;
+          await appendEvidence({ type: `${evidencePrefix}-close`, epoch: strategyVersion,
+            cohort: strategyVersion, quote: book.symbol, trade });
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
             reason: livenessReason, price: 0, proceeds: 0,
-          });
+          }, automation);
           continue;
         }
         if (!exit || exit.liquidityZero
@@ -1415,7 +1579,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
         const marked = book.portfolio.mark(position.pool, exit.executionPrice);
         updateMarkedDrawdownHistory();
         const reason = paperExitReason({ ...marked,
-          exitPriceImpactPct: exit.priceImpactPct }, Date.now(), QUALIFYING_PAPER_STRATEGY);
+          exitPriceImpactPct: exit.priceImpactPct }, Date.now(), strategy);
         if (reason) {
           const feeRate = poolFeeRate(pool);
           const fee = exit.proceeds * feeRate;
@@ -1441,30 +1605,36 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
               exitReserves: exit.exitReserves,
             },
           });
-          paperAutomation.exits += 1;
-          if (duringRecovery) paperAutomation.recoveryExits += 1;
-          await appendEvidence({ type: "paper-close", quote: book.symbol, trade });
+          automation.exits += 1;
+          if (duringRecovery) automation.recoveryExits += 1;
+          await appendEvidence({ type: `${evidencePrefix}-close`, epoch: strategyVersion,
+            cohort: strategyVersion, quote: book.symbol, trade });
           rememberPaperDecision({
             type: "exit", quote: book.symbol, pool: position.pool,
             reason, price: exit.executionPrice, proceeds: exit.proceeds,
-          });
+          }, automation);
         }
       }
+    }
     }
 
     updateMarkedDrawdownHistory();
 
     if (exitsOnly) {
       paperAutomation.lastError = null;
+      frequencyCandidateAutomation.lastError = null;
       return;
     }
 
     if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;
+      frequencyCandidateAutomation.lastError = null;
       return;
     }
 
     const measured = await candidates(10);
+    const frequencyMeasured = await frequencyCandidates(10);
+    latestSellProbeCandidates = [...measured, ...frequencyMeasured];
     const rankedAddresses = new Set(measured.map((candidate) => candidate.address));
     const pendingPools = shadowEvaluator.pendingPoolAddresses()
       .filter((address) => !rankedAddresses.has(address))
@@ -1501,69 +1671,51 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     }
     if (PAPER_ENTRIES_PAUSED) {
       paperAutomation.lastError = null;
+      frequencyCandidateAutomation.lastError = null;
       return;
     }
-    for (const candidate of measured) {
-      const book = paperBooks.get(candidate.marketSafety.quoteToken);
-      if (!book) {
-        rememberPaperDecision({ type: "reject", pool: candidate.address,
-          reasons: ["unsupported-paper-quote"] });
-        continue;
-      }
-      const policy = book.symbol === "WETH"
-        ? { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
-        : { ...QUALIFYING_PAPER_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
-      const paperState = book.portfolio.serialize();
-      const circuitFailures = paperCircuitFailures(analyzePaperTrades({
-        initialCash: paperState.initialCash, trades: paperState.trades,
-        openPositions: paperState.openPositions,
-        strategyVersion: PAPER_STRATEGY_VERSION,
-        priorMaxMarkedDrawdownPct:
-          paperAutomation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
-      }), policy);
-      if (circuitFailures.length) {
-        rememberPaperDecision({ type: "reject", quote: book.symbol,
-          pool: candidate.address, reasons: circuitFailures });
-        continue;
-      }
-      const plan = planPaperEntry(candidate, paperState, policy, Date.now());
-      if (!plan.approved) {
-        rememberPaperDecision({ type: "reject", quote: book.symbol,
-          pool: candidate.address,
-          reasons: paperEntryFailureDetails(candidate, plan.failures) });
-        continue;
-      }
-      const feeRate = poolFeeRate(candidate);
-      const fee = plan.order.notional * feeRate;
-      book.portfolio.open({
-        ...plan.order, fee, audit: paperEntryAudit(candidate, feeRate),
-      });
-      paperAutomation.entries += 1;
-      await appendEvidence({ type: "paper-open", quote: book.symbol,
-        trade: structuredClone(book.portfolio.trades.at(-1)) });
-      rememberPaperDecision({ type: "entry", quote: book.symbol, pool: candidate.address,
-        price: plan.order.price, notional: plan.order.notional, fee });
-    }
+    await runCohortEntries({
+      measured,
+      books: paperBooks,
+      automation: paperAutomation,
+      strategy: QUALIFYING_PAPER_STRATEGY,
+      strategyVersion: PAPER_STRATEGY_VERSION,
+      evidencePrefix: "paper",
+    });
+    await runCohortEntries({
+      measured: frequencyMeasured,
+      books: frequencyCandidateBooks,
+      automation: frequencyCandidateAutomation,
+      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
+      evidencePrefix: PAPER_FREQUENCY_CANDIDATE_VERSION,
+    });
     updateMarkedDrawdownHistory();
     paperAutomation.lastError = null;
+    frequencyCandidateAutomation.lastError = null;
   } catch (error) {
     paperAutomation.lastError = error instanceof Error ? error.message : String(error);
+    frequencyCandidateAutomation.lastError
+      = error instanceof Error ? error.message : String(error);
   }
 }
 
-function paperBookStatus(book) {
+function paperBookStatus(book, {
+  strategyVersion = PAPER_STRATEGY_VERSION,
+  automation = paperAutomation,
+} = {}) {
   const state = book.portfolio.serialize();
   const currentAnalytics = analyzePaperTrades({
     initialCash: state.initialCash, trades: state.trades,
     openPositions: state.openPositions,
-    strategyVersion: PAPER_STRATEGY_VERSION,
+    strategyVersion,
     priorMaxMarkedDrawdownPct:
-      paperAutomation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
+      automation.maxMarkedDrawdownPctByQuote?.[book.symbol] || 0,
   });
   return {
     quote: book.symbol,
     ...book.portfolio.snapshot(),
-    strategyVersion: PAPER_STRATEGY_VERSION,
+    strategyVersion,
     analytics: currentAnalytics,
     legacyAnalytics: analyzePaperTrades({
       initialCash: state.initialCash, trades: state.trades,
@@ -1642,6 +1794,15 @@ function paperStatus() {
   const books = Object.fromEntries([...paperBooks.values()].map((book) => [
     book.symbol, paperBookStatus(book),
   ]));
+  const frequencyBooks = Object.fromEntries(
+    [...frequencyCandidateBooks.values()].map((book) => [
+      book.symbol,
+      paperBookStatus(book, {
+        strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
+        automation: frequencyCandidateAutomation,
+      }),
+    ]),
+  );
   const shadow = shadowEvaluator.snapshot();
   const operational = snapshot().readiness;
   const liveReadiness = currentLiveReadiness(operational.readyForPaper, books, shadow);
@@ -1666,6 +1827,24 @@ function paperStatus() {
         ? (Number(paperAutomation.lastCycleAt) - Number(paperAutomation.firstCycleAt))
           / (paperAutomation.cycles - 1) : null,
       lastCycleAt: lastPaperCycleAt || null },
+    frequencyCandidate: {
+      mode: "PAPER_ONLY_ISOLATED_COHORT",
+      strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
+      hypothesis: PAPER_FREQUENCY_CANDIDATE_HYPOTHESIS,
+      riskPolicy: PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
+      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
+      books: frequencyBooks,
+      automation: {
+        ...frequencyCandidateAutomation,
+        cycleIntervalMs: PAPER_CYCLE_MS,
+        configuredCycleIntervalMs: PAPER_CYCLE_MS,
+        observedCycleAverageMs: frequencyCandidateAutomation.cycles > 1
+          ? (Number(frequencyCandidateAutomation.lastCycleAt)
+            - Number(frequencyCandidateAutomation.firstCycleAt))
+            / (frequencyCandidateAutomation.cycles - 1) : null,
+        lastCycleAt: lastPaperCycleAt || null,
+      },
+    },
     evidence: evidenceJournal.snapshot(),
     gasMeasurement: GAS_MEASUREMENT,
     sellProbe: publicSellProbeStatus(),
