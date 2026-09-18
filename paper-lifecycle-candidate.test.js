@@ -5,167 +5,244 @@ import {
   PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
   PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
   adaptiveTrailingDrawdownPct,
+  adverseBoundaryPct,
+  assessPositionSignal,
   estimateObservedVolatilityPct,
   lifecycleTelemetry,
   planPaperLifecycleExit,
+  signalConditionedEntryPlan,
+  signalConditionedEntryCashPct,
+  updateStopCounterfactuals,
   validatePaperLifecyclePolicy,
 } from "./paper-lifecycle-candidate.js";
 import {
-  PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
-  PAPER_FREQUENCY_CANDIDATE_STRATEGY,
-} from "./paper-frequency-candidate.js";
+  PAPER_CONTROL_RISK_POLICY,
+  PAPER_CONTROL_STRATEGY,
+} from "./paper-control-policy.js";
 
 const minute = 60_000;
-const now = 1_000_000;
+const now = 100 * minute;
+const healthy = { state: "healthy", reasons: [] };
+const weakening = { state: "weakening", reasons: ["activity-weakening"] };
+const deepBoundary = { entryAdverseBoundaryPct: 20 };
+const standardBoundary = { entryAdverseBoundaryPct: 30 };
 
-test("lifecycle candidate preserves the frequency candidate entry policy", () => {
-  assert.deepEqual(PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
-    PAPER_FREQUENCY_CANDIDATE_RISK_POLICY);
-  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.runtimeEnabled, false);
-  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.currentCohortUnchanged, true);
-});
-
-test("lifecycle candidate preserves every frequency-candidate entry field", () => {
+test("lifecycle candidate preserves the v7 control entry policy and stays dormant", () => {
+  assert.deepEqual(PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY, PAPER_CONTROL_RISK_POLICY);
   for (const field of [
-    "entryCashPct", "maxEntryNotional", "maxEntriesPerPool",
-    "reentryCooldownMs", "entryWindowMs",
+    "maxEntryNotional", "maxEntriesPerPool", "reentryCooldownMs",
   ]) {
     assert.equal(PAPER_LIFECYCLE_CANDIDATE_STRATEGY[field],
-      PAPER_FREQUENCY_CANDIDATE_STRATEGY[field], field);
+      PAPER_CONTROL_STRATEGY[field], field);
   }
-  assert.equal(PAPER_LIFECYCLE_CANDIDATE_STRATEGY.entryWindowMs, 6 * 60 * 60_000);
-  assert.equal(PAPER_LIFECYCLE_CANDIDATE_STRATEGY.maxHoldMs, 90 * minute);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.runtimeEnabled, false);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.currentCohortUnchanged, true);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.requiresFreshIsolatedCohort, true);
 });
 
-test("catastrophe stop replaces an ordinary tight stop", () => {
-  assert.equal(planPaperLifecycleExit({
-    returnPct: -12, peakReturnPct: 0, openedAt: now,
-  }, now), null);
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: -18, peakReturnPct: 0, openedAt: now,
-  }, now), { reason: "catastrophe-stop", closeFraction: 1 });
+test("signal assessment distinguishes strengthening, healthy, weakening, and invalidated", () => {
+  const marketSafety = {
+    liquidityKnown: true, sellMathOk: true, priceImpactPct: 1,
+    sellProbe: { passed: true },
+  };
+  assert.equal(assessPositionSignal({
+    marketSafety,
+    signal: { state: "active", swapsCurrentWindow: 4, acceleration: 1 },
+  }).state, "healthy");
+  assert.equal(assessPositionSignal({
+    marketSafety,
+    signal: { state: "breakout-watch", swapsCurrentWindow: 5, acceleration: 2 },
+  }).state, "strengthening");
+  assert.equal(assessPositionSignal({
+    marketSafety,
+    signal: { state: "active", swapsCurrentWindow: 3, acceleration: 0.6 },
+  }).state, "weakening");
+  assert.equal(assessPositionSignal({
+    marketSafety,
+    signal: { state: "quiet", swapsCurrentWindow: 1, acceleration: 0.2 },
+  }).state, "invalidated");
 });
 
-test("trailing stop activates only after positive movement", () => {
+test("signal assessment honors an explicit candidate liquidity-collapse policy", () => {
+  const input = {
+    marketSafety: {
+      liquidityKnown: true, sellMathOk: true, priceImpactPct: 4,
+      sellProbe: { passed: true },
+    },
+    signal: { state: "active", swapsCurrentWindow: 4, acceleration: 1 },
+  };
+  assert.equal(assessPositionSignal(input).state, "healthy");
+  assert.equal(assessPositionSignal(input, {
+    ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+    liquidityCollapseImpactPct: 4,
+  }).state, "emergency");
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_STRATEGY.liquidityCollapseImpactPct, 5);
+});
+
+test("sellability and liquidity failures always become emergency signals", () => {
+  assert.deepEqual(assessPositionSignal({
+    marketSafety: { liquidityKnown: true, sellMathOk: false, priceImpactPct: 1 },
+  }), { state: "emergency", reasons: ["sellability-unverified"] });
+  assert.deepEqual(assessPositionSignal({
+    marketSafety: { liquidityZero: true },
+  }), { state: "emergency", reasons: ["liquidity-zero"] });
+});
+
+test("healthy positive signal holds through price gains and ordinary drawdowns", () => {
   assert.equal(planPaperLifecycleExit({
-    returnPct: -7, peakReturnPct: 2, openedAt: now,
-    observedVolatilityPct: 4,
-  }, now), null);
+    ...standardBoundary, returnPct: 80, peakReturnPct: 80, openedAt: now,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), null);
+  assert.equal(planPaperLifecycleExit({
+    ...standardBoundary, returnPct: -29, peakReturnPct: 10, openedAt: now,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), null);
+});
+
+test("entry-time liquidity boundaries cap otherwise healthy holds", () => {
+  assert.equal(adverseBoundaryPct(0.4), 20);
+  assert.equal(adverseBoundaryPct(1), 30);
+  assert.throws(() => adverseBoundaryPct(undefined), /invalid-exit-price-impact/);
   assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 3, peakReturnPct: 10, openedAt: now,
-    observedVolatilityPct: 4,
-  }, now), {
-    reason: "adaptive-trailing-stop", closeFraction: 1, trailWidthPct: 6,
+    ...deepBoundary, returnPct: -20, peakReturnPct: 2, openedAt: now,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), {
+    reason: "volatility-risk-boundary", closeFraction: 1,
+    entryBoundaryPct: 20, appliedBoundaryPct: 20,
   });
 });
 
-test("adaptive trail widens with volatility but remains bounded", () => {
-  assert.equal(adaptiveTrailingDrawdownPct(2), 6);
-  assert.equal(adaptiveTrailingDrawdownPct(6), 9);
-  assert.equal(adaptiveTrailingDrawdownPct(20), 12);
-  assert.equal(adaptiveTrailingDrawdownPct(null), 6);
+test("risk-budget sizing shrinks as the permitted adverse boundary widens", () => {
+  assert.equal(signalConditionedEntryCashPct({ exitPriceImpactPct: 0.4 }), 2);
+  assert.equal(signalConditionedEntryCashPct({ exitPriceImpactPct: 1 }), 4 / 3);
+  assert.deepEqual(signalConditionedEntryPlan({ exitPriceImpactPct: 0.4 }), {
+    entryAdverseBoundaryPct: 20, entryCashPct: 2, riskBudgetPct: 0.4,
+  });
+  assert.equal(2 * 20 / 100, 0.4);
+  assert.equal((4 / 3) * 30 / 100, 0.4);
 });
 
-test("takes one partial profit before allowing the remainder to run", () => {
+test("entry boundary is frozen and never widens with later liquidity drift", () => {
   assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 20, peakReturnPct: 20, openedAt: now,
-  }, now), { reason: "partial-take-profit", closeFraction: 0.5 });
-  assert.equal(planPaperLifecycleExit({
-    returnPct: 20, peakReturnPct: 20, openedAt: now, partialProfitTaken: true,
-  }, now), null);
+    ...deepBoundary, returnPct: -20, peakReturnPct: 2, openedAt: now,
+    exitPriceImpactPct: 1,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), {
+    reason: "volatility-risk-boundary", closeFraction: 1,
+    entryBoundaryPct: 20, appliedBoundaryPct: 20,
+  });
   assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 50, peakReturnPct: 50, openedAt: now, partialProfitTaken: true,
-  }, now), { reason: "final-take-profit", closeFraction: 1 });
-});
-
-test("an already-triggered protective trail precedes a first partial profit", () => {
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 22, peakReturnPct: 30, openedAt: now,
-    observedVolatilityPct: 2,
-  }, now), {
-    reason: "adaptive-trailing-stop", closeFraction: 1, trailWidthPct: 6,
+    returnPct: 0, peakReturnPct: 0, openedAt: now,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), {
+    reason: "entry-risk-boundary-unavailable", closeFraction: 1,
   });
 });
 
-test("time stop closes stagnant trades without clipping early momentum", () => {
-  assert.equal(planPaperLifecycleExit({
-    returnPct: 0, peakReturnPct: 2, openedAt: now - 14 * minute,
-  }, now), null);
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 0, peakReturnPct: 2, openedAt: now - 15 * minute,
-  }, now), { reason: "stagnation-time-stop", closeFraction: 1 });
-  assert.equal(planPaperLifecycleExit({
-    returnPct: 4, peakReturnPct: 5, openedAt: now - 15 * minute,
-  }, now), null);
+test("weakening does not retroactively tighten a losing position", () => {
+  const position = {
+    ...deepBoundary, returnPct: -18, peakReturnPct: 1, openedAt: now,
+  };
+  assert.equal(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), null);
+  assert.equal(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, weakening), null);
 });
 
-test("liquidity collapse takes priority over reported return", () => {
+test("profit taking and trailing protection require a weakening signal", () => {
+  const position = {
+    ...standardBoundary,
+    returnPct: 25, peakReturnPct: 25, openedAt: now,
+    observedVolatilityPct: 8, observedMarkIntervalMs: 13_000,
+  };
+  assert.equal(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), null);
+  assert.deepEqual(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, weakening), {
+    reason: "signal-weakening-partial", closeFraction: 0.5,
+  });
   assert.deepEqual(planPaperLifecycleExit({
-    returnPct: -30, peakReturnPct: 0, exitPriceImpactPct: 25, openedAt: now,
-  }, now), { reason: "liquidity-collapse", closeFraction: 1 });
+    ...position, partialProfitTaken: true, returnPct: 8, peakReturnPct: 25,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, weakening), {
+    reason: "signal-weakening-trail", closeFraction: 1, trailWidthPct: 16,
+    observedMarkIntervalMs: 13_000,
+  });
 });
 
-test("records maximum favorable and adverse excursion", () => {
-  let telemetry = lifecycleTelemetry({}, 4);
-  telemetry = lifecycleTelemetry(telemetry, -7);
-  telemetry = lifecycleTelemetry(telemetry, 11);
-  assert.deepEqual(telemetry, {
-    maxFavorableExcursionPct: 11,
+test("weakening partial outranks trail and post-partial equality triggers the trail", () => {
+  const position = {
+    ...standardBoundary, returnPct: 22, peakReturnPct: 40, openedAt: now,
+    observedVolatilityPct: 6,
+  };
+  assert.deepEqual(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, weakening), {
+    reason: "signal-weakening-partial", closeFraction: 0.5,
+  });
+  assert.deepEqual(planPaperLifecycleExit({
+    ...position, partialProfitTaken: true, returnPct: 28,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, weakening), {
+    reason: "signal-weakening-trail", closeFraction: 1, trailWidthPct: 12,
+    observedMarkIntervalMs: null,
+  });
+});
+
+test("invalidated, emergency, and missing assessments fail closed", () => {
+  const position = { ...standardBoundary, returnPct: 5, peakReturnPct: 5, openedAt: now };
+  assert.deepEqual(planPaperLifecycleExit(position, now), {
+    reason: "signal-assessment-unavailable", closeFraction: 1,
+  });
+  assert.deepEqual(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY, { state: "invalidated", reasons: [] }), {
+    reason: "signal-invalidated", closeFraction: 1,
+  });
+  assert.deepEqual(planPaperLifecycleExit(position, now,
+    PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+    { state: "emergency", reasons: ["liquidity-collapse"] }), {
+    reason: "liquidity-collapse", closeFraction: 1,
+  });
+});
+
+test("counterfactual stop telemetry records breaches and later recovery", () => {
+  let state = updateStopCounterfactuals({}, -22);
+  assert.deepEqual(state, {
+    8: { breached: true, recoveredToBreakEven: false },
+    15: { breached: true, recoveredToBreakEven: false },
+    20: { breached: true, recoveredToBreakEven: false },
+    30: { breached: false, recoveredToBreakEven: false },
+  });
+  state = updateStopCounterfactuals(state, 3);
+  assert.equal(state["8"].recoveredToBreakEven, true);
+  assert.equal(state["20"].recoveredToBreakEven, true);
+  assert.equal(state["30"].recoveredToBreakEven, false);
+});
+
+test("adaptive trail and volatility telemetry remain bounded and deterministic", () => {
+  assert.equal(adaptiveTrailingDrawdownPct(2), 12);
+  assert.equal(adaptiveTrailingDrawdownPct(8), 16);
+  assert.equal(adaptiveTrailingDrawdownPct(20), 30);
+  assert.deepEqual(lifecycleTelemetry(lifecycleTelemetry({}, 4), -7), {
+    maxFavorableExcursionPct: 4,
     maxAdverseExcursionPct: -7,
   });
-});
-
-test("first telemetry observation is not fabricated at break-even", () => {
-  assert.deepEqual(lifecycleTelemetry({}, 5), {
-    maxFavorableExcursionPct: 5,
-    maxAdverseExcursionPct: 5,
-  });
-  assert.throws(() => lifecycleTelemetry({ maxAdverseExcursionPct: "bad" }, 1),
-    /invalid-lifecycle-telemetry/);
-});
-
-test("estimates observed volatility from a bounded numeric price window", () => {
   assert.equal(estimateObservedVolatilityPct([1, 1.01, 0.99, 1.02]), null);
-  const volatility = estimateObservedVolatilityPct([1, 1.01, 0.99, 1.02, 1.03]);
-  assert.equal(typeof volatility, "number");
-  assert.ok(volatility > 0);
-  assert.equal(estimateObservedVolatilityPct([1, 1.01, "0.99", 1.02, 1.03]), null);
-  assert.equal(estimateObservedVolatilityPct([1, 1.01, 0, 1.02, 1.03]), null);
+  assert.ok(estimateObservedVolatilityPct([1, 1.01, 0.99, 1.02, 1.03]) > 0);
 });
 
-test("full lifecycle policy validation rejects missing and malformed controls", () => {
+test("absolute maximum hold remains a final fail-safe", () => {
+  assert.deepEqual(planPaperLifecycleExit({
+    returnPct: 100, peakReturnPct: 100,
+    openedAt: now - 24 * 60 * minute, ...standardBoundary,
+  }, now, PAPER_LIFECYCLE_CANDIDATE_STRATEGY, healthy), {
+    reason: "absolute-max-hold", closeFraction: 1,
+  });
+});
+
+test("policy validation rejects incomplete or contradictory controls", () => {
   assert.equal(validatePaperLifecyclePolicy(PAPER_LIFECYCLE_CANDIDATE_STRATEGY),
     PAPER_LIFECYCLE_CANDIDATE_STRATEGY);
   for (const [field, value] of [
-    ["partialCloseFraction", "oops"],
-    ["partialCloseFraction", 0],
-    ["catastropheStopPct", undefined],
-    ["liquidityCollapseImpactPct", undefined],
-    ["stagnationAfterMs", undefined],
-    ["maxHoldMs", undefined],
+    ["riskBudgetPct", 0],
+    ["partialCloseFraction", 1],
+    ["deepLiquidityAdverseBoundaryPct", 40],
+    ["absoluteMaxHoldMs", undefined],
   ]) {
-    assert.throws(() => planPaperLifecycleExit({
-      returnPct: -99, peakReturnPct: 0, openedAt: now,
-    }, now, { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, [field]: value }),
-    /invalid-lifecycle-policy/, field);
+    assert.throws(() => validatePaperLifecyclePolicy({
+      ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, [field]: value,
+    }), /invalid-lifecycle-policy/);
   }
-});
-
-test("post-partial positions retain every full-exit protection", () => {
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: -18, peakReturnPct: 25, openedAt: now, partialProfitTaken: true,
-  }, now), { reason: "catastrophe-stop", closeFraction: 1 });
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 10, peakReturnPct: 20, openedAt: now, partialProfitTaken: true,
-  }, now), { reason: "adaptive-trailing-stop", closeFraction: 1, trailWidthPct: 6 });
-  assert.deepEqual(planPaperLifecycleExit({
-    returnPct: 50, peakReturnPct: 50, openedAt: now, partialProfitTaken: true,
-  }, now), { reason: "final-take-profit", closeFraction: 1 });
-});
-
-test("invalid adaptive trail policy fails closed", () => {
-  assert.throws(() => adaptiveTrailingDrawdownPct(4, {
-    ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
-    maximumTrailingDrawdownPct: 2,
-  }), /invalid-adaptive-trail-policy/);
 });

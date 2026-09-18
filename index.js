@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { rankPools } from "./signals.js";
 import { decodeSwapEvent, isV2SellToQuote } from "./market-data.js";
 import { quoteFlowFromSwap } from "./adaptive-flow.js";
-import { DEFAULT_PAPER_POLICY, evaluateRiskGate } from "./risk-gate.js";
+import { evaluateRiskGate } from "./risk-gate.js";
 import { PaperPortfolio } from "./paper-portfolio.js";
 import {
   DEFAULT_PAPER_STRATEGY, planPaperEntry, paperEntryFailureDetails,
@@ -16,6 +16,10 @@ import {
   PAPER_FREQUENCY_CANDIDATE_STRATEGY,
   PAPER_FREQUENCY_CANDIDATE_VERSION,
 } from "./paper-frequency-candidate.js";
+import {
+  PAPER_CONTROL_RISK_POLICY,
+  PAPER_CONTROL_STRATEGY,
+} from "./paper-control-policy.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { ShadowEvaluator } from "./shadow-evaluator.js";
 import { auditSwapPrice } from "./price-audit.js";
@@ -153,21 +157,8 @@ let SELL_PROBE_STATUS = {
   failures: [...SELL_PROBE_CONFIG.failures],
 };
 const sellProbeByPool = new Map();
-const QUALIFYING_PAPER_STRATEGY = Object.freeze({
-  ...DEFAULT_PAPER_STRATEGY,
-  maxHoldMs: 30 * 60_000,
-});
-const QUALIFYING_PAPER_RISK_POLICY = Object.freeze({
-  ...DEFAULT_PAPER_POLICY,
-  maxPriceImpactPct: 1.5,
-  maxExecutionCostPct: 4,
-  requireGasEstimate: true,
-  requireSellProbe: true,
-  allowedSignals: ["active"],
-  minSwaps: 4,
-  minAcceleration: 0.75,
-  maxAcceleration: 1.5,
-});
+const QUALIFYING_PAPER_STRATEGY = PAPER_CONTROL_STRATEGY;
+const QUALIFYING_PAPER_RISK_POLICY = PAPER_CONTROL_RISK_POLICY;
 
 const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const POOL_CREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118";

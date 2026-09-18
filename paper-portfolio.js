@@ -1,3 +1,5 @@
+import { updateStopCounterfactuals } from "./paper-lifecycle-candidate.js";
+
 const finitePositive = (value, name) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be positive`);
@@ -48,6 +50,7 @@ export class PaperPortfolio {
   open({
     pool, token, price, quantity: filledQuantity, quantityUnits = null,
     notional, fee = 0, gasCost = 0, timestamp = Date.now(), audit = null,
+    entryAdverseBoundaryPct = null,
   }) {
     if (this.positions.has(pool)) throw new Error("position-already-open");
     if (this.positions.size >= this.maxPositions) throw new Error("position-limit-reached");
@@ -58,6 +61,12 @@ export class PaperPortfolio {
     if (!Number.isFinite(fee) || fee < 0 || fee >= notional) throw new Error("invalid-fee");
     if (!Number.isFinite(gasCost) || gasCost < 0) throw new Error("invalid-gas-cost");
     if (notional + gasCost > this.cash) throw new Error("insufficient-paper-cash");
+    if (entryAdverseBoundaryPct !== null) {
+      entryAdverseBoundaryPct = finitePositive(
+        entryAdverseBoundaryPct,
+        "entryAdverseBoundaryPct",
+      );
+    }
     const quantity = filledQuantity === undefined
       ? (notional - fee) / price
       : finitePositive(filledQuantity, "quantity");
@@ -72,9 +81,11 @@ export class PaperPortfolio {
     const position = { pool, token, quantity, quantityUnits, entryPrice: price, markPrice: price,
       costBasis: notional + gasCost, entryNotional: notional, entryFee: fee,
       entryGasCost: gasCost, openedAt: timestamp, peakPrice: price,
-      entryAudit: positionAudit };
+      entryAudit: positionAudit,
+      ...(entryAdverseBoundaryPct !== null ? { entryAdverseBoundaryPct } : {}) };
     const trade = { type: "open", pool, token, price, quantity, quantityUnits, notional,
-      gasCost, fee, timestamp, audit: auditRecord };
+      gasCost, fee, timestamp, audit: auditRecord,
+      ...(entryAdverseBoundaryPct !== null ? { entryAdverseBoundaryPct } : {}) };
     this.cash -= notional + gasCost;
     this.positions.set(pool, position);
     this.trades.push(trade);
@@ -89,15 +100,21 @@ export class PaperPortfolio {
     return this.positionSnapshot(position);
   }
 
-  recordLifecycleMark(pool, { returnPct, observedPrice, maxSamples = 12 } = {}) {
+  recordLifecycleMark(pool, {
+    returnPct, observedPrice, maxSamples = 12, timestamp = Date.now(),
+  } = {}) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
     returnPct = Number(returnPct);
     observedPrice = Number(observedPrice ?? position.markPrice);
     maxSamples = Number(maxSamples);
+    timestamp = Number(timestamp);
     if (!Number.isFinite(returnPct) || !Number.isFinite(observedPrice)
         || observedPrice <= 0 || !Number.isInteger(maxSamples)
-        || maxSamples < 2 || maxSamples > MAX_LIFECYCLE_PRICE_SAMPLES) {
+        || maxSamples < 2 || maxSamples > MAX_LIFECYCLE_PRICE_SAMPLES
+        || !Number.isFinite(timestamp) || timestamp < 0
+        || (position.lastLifecycleMarkAt !== undefined
+          && timestamp <= position.lastLifecycleMarkAt)) {
       throw new Error("invalid-lifecycle-mark");
     }
     position.maxFavorableExcursionPct = position.maxFavorableExcursionPct == null
@@ -105,6 +122,14 @@ export class PaperPortfolio {
     position.maxAdverseExcursionPct = position.maxAdverseExcursionPct == null
       ? returnPct : Math.min(position.maxAdverseExcursionPct, returnPct);
     position.observedPrices = [...(position.observedPrices || []), observedPrice].slice(-maxSamples);
+    if (position.lastLifecycleMarkAt !== undefined) {
+      position.observedMarkIntervalMs = timestamp - position.lastLifecycleMarkAt;
+    }
+    position.lastLifecycleMarkAt = timestamp;
+    position.stopCounterfactuals = updateStopCounterfactuals(
+      position.stopCounterfactuals,
+      returnPct,
+    );
     return this.positionSnapshot(position);
   }
 
@@ -165,6 +190,7 @@ export class PaperPortfolio {
     pool, price, proceeds: filledProceeds,
     fee = 0, gasCost = 0, timestamp = Date.now(), reason = "manual", audit = null,
     measurementFailure = false,
+    appliedBoundaryPct = null,
   }) {
     const position = this.positions.get(pool);
     if (!position) throw new Error("position-not-found");
@@ -175,6 +201,13 @@ export class PaperPortfolio {
     gasCost = Number(gasCost);
     if (!Number.isFinite(fee) || fee < 0) throw new Error("invalid-fee");
     if (!Number.isFinite(gasCost) || gasCost < 0) throw new Error("invalid-gas-cost");
+    if (appliedBoundaryPct !== null) {
+      appliedBoundaryPct = finitePositive(appliedBoundaryPct, "appliedBoundaryPct");
+      if (position.entryAdverseBoundaryPct !== undefined
+          && appliedBoundaryPct > position.entryAdverseBoundaryPct) {
+        throw new Error("applied-boundary-widens-entry-risk");
+      }
+    }
     const grossProceeds = filledProceeds === undefined
       ? position.quantity * price - fee
       : finiteNonNegative(filledProceeds, "proceeds");
@@ -187,6 +220,8 @@ export class PaperPortfolio {
       partialProfitTaken: position.partialProfitTaken === true,
       maxFavorableExcursionPct: position.maxFavorableExcursionPct ?? null,
       maxAdverseExcursionPct: position.maxAdverseExcursionPct ?? null,
+      entryAdverseBoundaryPct: position.entryAdverseBoundaryPct ?? null,
+      appliedBoundaryPct,
       audit: auditRecord };
     this.cash += proceeds;
     this.realizedPnl += pnl;
@@ -224,7 +259,7 @@ export class PaperPortfolio {
 
   restore(state) {
     if (state.mode !== "PAPER_ONLY" || !Array.isArray(state.openPositions) || !Array.isArray(state.trades)) throw new Error("invalid-paper-state");
-    if (state.openPositions.some((position) =>
+    const malformedLifecycleState = state.openPositions.some((position) => (
       (position.partialProfitTaken !== undefined
         && typeof position.partialProfitTaken !== "boolean")
       || (position.maxFavorableExcursionPct !== undefined
@@ -237,11 +272,31 @@ export class PaperPortfolio {
         && (typeof position.expectedExitGasCost !== "number"
           || !Number.isFinite(position.expectedExitGasCost)
           || position.expectedExitGasCost < 0))
+      || (position.entryAdverseBoundaryPct !== undefined
+        && (typeof position.entryAdverseBoundaryPct !== "number"
+          || !Number.isFinite(position.entryAdverseBoundaryPct)
+          || position.entryAdverseBoundaryPct <= 0))
+      || (position.lastLifecycleMarkAt !== undefined
+        && (typeof position.lastLifecycleMarkAt !== "number"
+          || !Number.isFinite(position.lastLifecycleMarkAt)
+          || position.lastLifecycleMarkAt < 0))
+      || (position.observedMarkIntervalMs !== undefined
+        && (typeof position.observedMarkIntervalMs !== "number"
+          || !Number.isFinite(position.observedMarkIntervalMs)
+          || position.observedMarkIntervalMs <= 0))
       || (position.observedPrices !== undefined
         && (!Array.isArray(position.observedPrices)
           || position.observedPrices.length > MAX_LIFECYCLE_PRICE_SAMPLES
           || position.observedPrices.some((price) => typeof price !== "number"
-            || !Number.isFinite(price) || price <= 0))))) throw new Error("invalid-paper-state");
+            || !Number.isFinite(price) || price <= 0)))
+      || (position.stopCounterfactuals !== undefined
+        && (!position.stopCounterfactuals || typeof position.stopCounterfactuals !== "object"
+          || Object.entries(position.stopCounterfactuals).some(([threshold, item]) =>
+            !["8", "15", "20", "30"].includes(threshold)
+            || typeof item?.breached !== "boolean"
+            || typeof item?.recoveredToBreakEven !== "boolean")))
+    ));
+    if (malformedLifecycleState) throw new Error("invalid-paper-state");
     this.cash = Number(state.cash);
     this.realizedPnl = Number(state.realizedPnl);
     this.trades = structuredClone(state.trades);
@@ -264,12 +319,23 @@ export class PaperPortfolio {
         ? { maxAdverseExcursionPct: position.maxAdverseExcursionPct } : {}),
       ...(position.observedPrices !== undefined
         ? { observedPrices: [...position.observedPrices] } : {}),
+      ...(position.stopCounterfactuals !== undefined
+        ? { stopCounterfactuals: structuredClone(position.stopCounterfactuals) } : {}),
       ...(position.expectedExitGasCost !== undefined
         ? { expectedExitGasCost: position.expectedExitGasCost } : {}),
+      ...(position.entryAdverseBoundaryPct !== undefined
+        ? { entryAdverseBoundaryPct: position.entryAdverseBoundaryPct } : {}),
+      ...(position.lastLifecycleMarkAt !== undefined
+        ? { lastLifecycleMarkAt: position.lastLifecycleMarkAt } : {}),
+      ...(position.observedMarkIntervalMs !== undefined
+        ? { observedMarkIntervalMs: position.observedMarkIntervalMs } : {}),
     }]));
     if (![this.cash, this.realizedPnl, ...[...this.positions.values()].flatMap((p) => [
       p.quantity, p.entryPrice, p.markPrice, p.costBasis, p.entryNotional, p.entryGasCost,
       ...(p.expectedExitGasCost !== undefined ? [p.expectedExitGasCost] : []),
+      ...(p.entryAdverseBoundaryPct !== undefined ? [p.entryAdverseBoundaryPct] : []),
+      ...(p.lastLifecycleMarkAt !== undefined ? [p.lastLifecycleMarkAt] : []),
+      ...(p.observedMarkIntervalMs !== undefined ? [p.observedMarkIntervalMs] : []),
     ])].every(Number.isFinite)) throw new Error("invalid-paper-state");
     if ([...this.positions.values()].some((position) =>
       (position.maxFavorableExcursionPct != null

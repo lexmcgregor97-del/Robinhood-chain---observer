@@ -1,55 +1,60 @@
 import {
-  PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
-  PAPER_FREQUENCY_CANDIDATE_STRATEGY,
-} from "./paper-frequency-candidate.js";
+  PAPER_CONTROL_RISK_POLICY,
+  PAPER_CONTROL_STRATEGY,
+} from "./paper-control-policy.js";
 
 export const PAPER_LIFECYCLE_CANDIDATE_VERSION
-  = "2026-09-17-paper-lifecycle-candidate-v1";
+  = "2026-09-18-paper-signal-conditioned-lifecycle-v2";
 
-// This candidate deliberately preserves the frequency candidate's entry gates.
-// It changes position management only, so a future paired cohort can attribute
-// outcome differences to the lifecycle rather than to opportunity selection.
+// Entry selection is identical to the v7 control. The candidate changes only
+// sizing and lifecycle behavior, and remains disconnected from index.js.
 export const PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY = Object.freeze({
-  ...PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
+  ...PAPER_CONTROL_RISK_POLICY,
 });
 
 export const PAPER_LIFECYCLE_CANDIDATE_STRATEGY = Object.freeze({
-  ...PAPER_FREQUENCY_CANDIDATE_STRATEGY,
-  catastropheStopPct: 18,
-  trailingActivationPct: 8,
-  trailingDrawdownPct: 6,
-  volatilityTrailMultiplier: 1.5,
-  maximumTrailingDrawdownPct: 12,
-  partialTakeProfitPct: 20,
+  ...PAPER_CONTROL_STRATEGY,
+  // The lifecycle planner below owns exits; disable inherited price-only
+  // controls so status output cannot imply that they remain active.
+  stopLossPct: null,
+  takeProfitPct: null,
+  maxHoldMs: null,
+  riskBudgetPct: 0.4,
+  maximumEntryCashPct: 5,
+  // Explicit candidate safety threshold. This must not be inherited from the
+  // control because lifecycle holding depends on continuously verified exits.
+  liquidityCollapseImpactPct: 5,
+  deepLiquidityImpactPct: 0.5,
+  deepLiquidityAdverseBoundaryPct: 20,
+  standardLiquidityAdverseBoundaryPct: 30,
+  trailingActivationPct: 20,
+  trailingDrawdownPct: 12,
+  volatilityTrailMultiplier: 2,
+  maximumTrailingDrawdownPct: 30,
+  weakeningPartialProfitPct: 20,
   partialCloseFraction: 0.5,
-  finalTakeProfitPct: 50,
-  stagnationAfterMs: 15 * 60_000,
-  stagnationMinimumPeakPct: 3,
-  stagnationMaximumReturnPct: 1,
-  maxHoldMs: 90 * 60_000,
+  absoluteMaxHoldMs: 24 * 60 * 60_000,
 });
 
-const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
-
 const strictFinite = (value) => typeof value === "number" && Number.isFinite(value);
+const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 
 export function validatePaperLifecyclePolicy(policy) {
   const positive = [
-    "liquidityCollapseImpactPct", "catastropheStopPct", "trailingActivationPct",
-    "trailingDrawdownPct", "volatilityTrailMultiplier", "maximumTrailingDrawdownPct",
-    "partialTakeProfitPct", "finalTakeProfitPct", "stagnationAfterMs",
-    "stagnationMinimumPeakPct", "maxHoldMs",
+    "liquidityCollapseImpactPct", "riskBudgetPct", "maximumEntryCashPct",
+    "deepLiquidityImpactPct", "deepLiquidityAdverseBoundaryPct",
+    "standardLiquidityAdverseBoundaryPct",
+    "trailingActivationPct", "trailingDrawdownPct", "volatilityTrailMultiplier",
+    "maximumTrailingDrawdownPct", "weakeningPartialProfitPct", "absoluteMaxHoldMs",
   ];
-  const finiteOnly = ["stagnationMaximumReturnPct"];
   if (!policy || positive.some((key) => !strictFinite(policy[key]) || policy[key] <= 0)
-      || finiteOnly.some((key) => !strictFinite(policy[key]))) {
-    throw new Error("invalid-lifecycle-policy");
-  }
-  if (!strictFinite(policy.partialCloseFraction)
+      || !strictFinite(policy.partialCloseFraction)
       || policy.partialCloseFraction <= 0 || policy.partialCloseFraction >= 1
       || policy.maximumTrailingDrawdownPct < policy.trailingDrawdownPct
-      || policy.finalTakeProfitPct <= policy.partialTakeProfitPct
-      || policy.maxHoldMs < policy.stagnationAfterMs) {
+      || policy.standardLiquidityAdverseBoundaryPct
+        < policy.deepLiquidityAdverseBoundaryPct
+      || policy.liquidityCollapseImpactPct <= policy.deepLiquidityImpactPct
+      || policy.maximumEntryCashPct > 100) {
     throw new Error("invalid-lifecycle-policy");
   }
   return policy;
@@ -105,10 +110,99 @@ export function adaptiveTrailingDrawdownPct(
   return clamp(volatilityPct * multiplier, base, maximum);
 }
 
+export function assessPositionSignal(
+  { signal = {}, marketSafety = {} } = {},
+  policy = PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+) {
+  validatePaperLifecyclePolicy(policy);
+  if (marketSafety.liquidityZero === true || marketSafety.activeLiquidityZero === true) {
+    return { state: "emergency", reasons: ["liquidity-zero"] };
+  }
+  if (marketSafety.liquidityKnown !== true || marketSafety.sellMathOk !== true) {
+    return { state: "emergency", reasons: ["sellability-unverified"] };
+  }
+  if (marketSafety.sellProbe && marketSafety.sellProbe.passed !== true) {
+    return { state: "emergency", reasons: ["sell-probe-failed"] };
+  }
+  const impact = Number(marketSafety.priceImpactPct);
+  if (!Number.isFinite(impact)) {
+    return { state: "emergency", reasons: ["exit-impact-unavailable"] };
+  }
+  if (impact >= policy.liquidityCollapseImpactPct) {
+    return { state: "emergency", reasons: ["liquidity-collapse"] };
+  }
+
+  const swaps = Number(signal.swapsCurrentWindow);
+  const acceleration = Number(signal.acceleration);
+  if (!Number.isFinite(swaps) || !Number.isFinite(acceleration)) {
+    return { state: "invalidated", reasons: ["signal-unavailable"] };
+  }
+  if (signal.state === "quiet" || swaps < 2 || acceleration < 0.35) {
+    return { state: "invalidated", reasons: ["activity-invalidated"] };
+  }
+
+  const flow = signal.adaptiveFlow || {};
+  const flowReady = flow.ready === true;
+  const buyShare = Number(flow.buyShare);
+  const volumeMultiple = Number(flow.volumeMultiple);
+  const reasons = [];
+  if (flowReady && Number.isFinite(buyShare) && buyShare < 0.45) {
+    reasons.push("sell-flow-dominant");
+  }
+  if (acceleration < 0.75) reasons.push("activity-weakening");
+  if (flowReady && Number.isFinite(volumeMultiple) && volumeMultiple < 0.75) {
+    reasons.push("volume-weakening");
+  }
+  if (reasons.length) return { state: "weakening", reasons };
+
+  const strengthening = signal.state === "breakout-watch"
+    || signal.state === "escape-velocity"
+    || (flowReady && Number.isFinite(volumeMultiple) && volumeMultiple >= 2
+      && Number.isFinite(buyShare) && buyShare >= 0.6);
+  return { state: strengthening ? "strengthening" : "healthy", reasons: [] };
+}
+
+export function adverseBoundaryPct(
+  exitPriceImpactPct,
+  policy = PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+) {
+  validatePaperLifecyclePolicy(policy);
+  if (!strictFinite(exitPriceImpactPct) || exitPriceImpactPct < 0) {
+    throw new Error("invalid-exit-price-impact");
+  }
+  return exitPriceImpactPct <= policy.deepLiquidityImpactPct
+    ? policy.deepLiquidityAdverseBoundaryPct
+    : policy.standardLiquidityAdverseBoundaryPct;
+}
+
+export function signalConditionedEntryPlan({
+  exitPriceImpactPct,
+  policy = PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+} = {}) {
+  validatePaperLifecyclePolicy(policy);
+  const entryAdverseBoundaryPct = adverseBoundaryPct(exitPriceImpactPct, policy);
+  return {
+    entryAdverseBoundaryPct,
+    entryCashPct: Math.min(
+      policy.maximumEntryCashPct,
+      policy.riskBudgetPct * 100 / entryAdverseBoundaryPct,
+    ),
+    riskBudgetPct: policy.riskBudgetPct,
+  };
+}
+
+export function signalConditionedEntryCashPct({
+  exitPriceImpactPct,
+  policy = PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+} = {}) {
+  return signalConditionedEntryPlan({ exitPriceImpactPct, policy }).entryCashPct;
+}
+
 export function planPaperLifecycleExit(
   position,
   now = Date.now(),
   policy = PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+  assessment = position?.signalAssessment,
 ) {
   validatePaperLifecyclePolicy(policy);
   const returnPct = Number(position?.returnPct);
@@ -116,61 +210,96 @@ export function planPaperLifecycleExit(
   const openedAt = Number(position?.openedAt);
   const heldMs = Number(now) - openedAt;
   if (![returnPct, peakReturnPct, openedAt, heldMs].every(Number.isFinite)) return null;
-
-  const exitPriceImpactPct = Number(position?.exitPriceImpactPct);
-  if (Number.isFinite(exitPriceImpactPct)
-      && exitPriceImpactPct >= Number(policy.liquidityCollapseImpactPct)) {
-    return { reason: "liquidity-collapse", closeFraction: 1 };
+  if (!assessment || !["strengthening", "healthy", "weakening", "invalidated", "emergency"]
+    .includes(assessment.state)) {
+    return { reason: "signal-assessment-unavailable", closeFraction: 1 };
   }
-  if (returnPct <= -Number(policy.catastropheStopPct)) {
-    return { reason: "catastrophe-stop", closeFraction: 1 };
+  if (assessment.state === "emergency") {
+    return { reason: assessment.reasons?.[0] || "market-safety-emergency", closeFraction: 1 };
   }
-  if (returnPct >= Number(policy.finalTakeProfitPct)) {
-    return { reason: "final-take-profit", closeFraction: 1 };
-  }
-  const trailWidthPct = adaptiveTrailingDrawdownPct(position?.observedVolatilityPct, policy);
-  if (peakReturnPct >= Number(policy.trailingActivationPct)
-      && peakReturnPct - returnPct >= trailWidthPct) {
-    return { reason: "adaptive-trailing-stop", closeFraction: 1, trailWidthPct };
+  if (assessment.state === "invalidated") {
+    return { reason: "signal-invalidated", closeFraction: 1 };
   }
 
-  if (returnPct >= Number(policy.partialTakeProfitPct)
-      && position?.partialProfitTaken !== true) {
+  const boundary = Number(position?.entryAdverseBoundaryPct);
+  const permittedBoundaries = [
+    policy.deepLiquidityAdverseBoundaryPct,
+    policy.standardLiquidityAdverseBoundaryPct,
+  ];
+  if (!Number.isFinite(boundary) || !permittedBoundaries.includes(boundary)) {
+    return { reason: "entry-risk-boundary-unavailable", closeFraction: 1 };
+  }
+  if (returnPct <= -boundary) {
     return {
-      reason: "partial-take-profit",
-      closeFraction: policy.partialCloseFraction,
+      reason: "volatility-risk-boundary",
+      closeFraction: 1,
+      entryBoundaryPct: boundary,
+      appliedBoundaryPct: boundary,
     };
   }
 
-  if (heldMs >= Number(policy.stagnationAfterMs)
-      && peakReturnPct < Number(policy.stagnationMinimumPeakPct)
-      && returnPct <= Number(policy.stagnationMaximumReturnPct)) {
-    return { reason: "stagnation-time-stop", closeFraction: 1 };
+  // Price alone never takes profit while the signal remains healthy.
+  if (assessment.state !== "weakening") {
+    if (heldMs >= policy.absoluteMaxHoldMs) {
+      return { reason: "absolute-max-hold", closeFraction: 1 };
+    }
+    return null;
   }
-  if (heldMs >= Number(policy.maxHoldMs)) {
-    return { reason: "max-hold", closeFraction: 1 };
+
+  if (returnPct >= policy.weakeningPartialProfitPct
+      && position?.partialProfitTaken !== true) {
+    return { reason: "signal-weakening-partial", closeFraction: policy.partialCloseFraction };
+  }
+  const trailWidthPct = adaptiveTrailingDrawdownPct(position?.observedVolatilityPct, policy);
+  if (peakReturnPct >= policy.trailingActivationPct
+      && peakReturnPct - returnPct >= trailWidthPct) {
+    return {
+      reason: "signal-weakening-trail",
+      closeFraction: 1,
+      trailWidthPct,
+      observedMarkIntervalMs: position?.observedMarkIntervalMs ?? null,
+    };
+  }
+  if (heldMs >= policy.absoluteMaxHoldMs) {
+    return { reason: "absolute-max-hold", closeFraction: 1 };
   }
   return null;
 }
 
+export function updateStopCounterfactuals(previous = {}, returnPct) {
+  const current = Number(returnPct);
+  if (!Number.isFinite(current)) throw new Error("invalid-counterfactual-return");
+  const next = structuredClone(previous);
+  for (const threshold of [8, 15, 20, 30]) {
+    const key = String(threshold);
+    const item = next[key] || { breached: false, recoveredToBreakEven: false };
+    if (current <= -threshold) item.breached = true;
+    if (item.breached && current >= 0) item.recoveredToBreakEven = true;
+    next[key] = item;
+  }
+  return next;
+}
+
 export const PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS = Object.freeze({
   changed: Object.freeze([
-    "eighteen-percent-catastrophe-stop",
-    "trail-activates-after-eight-percent-gain",
-    "volatility-adaptive-six-to-twelve-percent-trail",
-    "fifty-percent-profit-taken-at-twenty-percent-return",
-    "protective-trail-precedes-partial-profit",
-    "fifteen-minute-stagnation-exit",
-    "ninety-minute-maximum-hold",
+    "control-entry-signals-only",
+    "risk-budgeted-one-point-three-to-two-percent-sizing",
+    "entry-sizing-reduces-per-position-deployed-cash",
+    "entry-time-twenty-or-thirty-percent-adverse-boundary-never-widens",
+    "explicit-five-percent-liquidity-collapse-emergency",
+    "no-price-only-profit-taking-while-signal-is-healthy",
+    "partial-profit-only-after-signal-weakening",
+    "twelve-to-thirty-percent-volatility-trail-only-after-signal-weakening",
+    "volatility-trail-assumes-two-times-per-mark-sigma-and-records-mark-cadence",
+    "eight-fifteen-twenty-thirty-percent-stop-counterfactuals",
     "mfe-and-mae-telemetry",
   ]),
   preserved: Object.freeze([
     "paper-only",
-    "same-entry-signals-as-frequency-candidate",
-    "same-entry-cadence-as-frequency-candidate",
+    "same-entry-signals-as-v7-control",
+    "same-entry-safety-as-v7-control",
     "exact-sell-proof",
     "gas-estimate",
-    "five-percent-sizing",
     "three-concurrent-positions",
     "ten-percent-portfolio-drawdown-circuit",
   ]),
@@ -178,5 +307,6 @@ export const PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS = Object.freeze({
     runtimeEnabled: false,
     currentCohortUnchanged: true,
     promotionAutomatic: false,
+    requiresFreshIsolatedCohort: true,
   }),
 });

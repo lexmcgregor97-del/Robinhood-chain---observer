@@ -3,6 +3,11 @@ export const ROBINHOOD = Object.freeze({
   rpcUrl: "https://rpc.mainnet.chain.robinhood.com",
   weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
   usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  uniswapV4: Object.freeze({
+    // Read-only observation boundary. V4 quoting and execution are unsupported.
+    poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+  }),
   quoteTokens: Object.freeze([
     Object.freeze({
       symbol: "WETH", decimals: 18,

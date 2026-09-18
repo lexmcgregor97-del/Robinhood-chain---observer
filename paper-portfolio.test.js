@@ -218,9 +218,14 @@ test("partial close refuses missing, zero, or full exact quantities", () => {
 test("lifecycle telemetry and partial state survive restart without changing decisions", () => {
   const book = new PaperPortfolio({ initialCash: 100 });
   book.open({ pool: "restart", token: "TOK", price: 1, quantity: 10,
-    quantityUnits: "100", notional: 10, timestamp: 1 });
-  book.recordLifecycleMark("restart", { returnPct: 7, observedPrice: 1.07 });
-  book.recordLifecycleMark("restart", { returnPct: -2, observedPrice: 0.98 });
+    quantityUnits: "100", notional: 10, timestamp: 1,
+    entryAdverseBoundaryPct: 20 });
+  book.recordLifecycleMark("restart", {
+    returnPct: 7, observedPrice: 1.07, timestamp: 13_001,
+  });
+  book.recordLifecycleMark("restart", {
+    returnPct: -2, observedPrice: 0.98, timestamp: 26_001,
+  });
   book.partialClose({ pool: "restart", quantityUnits: "50", price: 1.2,
     proceeds: 6, reason: "partial-take-profit", timestamp: 2 });
   const before = book.snapshot().openPositions[0];
@@ -230,17 +235,44 @@ test("lifecycle telemetry and partial state survive restart without changing dec
   assert.equal(after.maxFavorableExcursionPct, 7);
   assert.equal(after.maxAdverseExcursionPct, -2);
   assert.deepEqual(after.observedPrices, [1.07, 0.98]);
+  assert.equal(after.entryAdverseBoundaryPct, 20);
+  assert.equal(after.lastLifecycleMarkAt, 26_001);
+  assert.equal(after.observedMarkIntervalMs, 13_000);
+  assert.deepEqual(after.stopCounterfactuals, {
+    8: { breached: false, recoveredToBreakEven: false },
+    15: { breached: false, recoveredToBreakEven: false },
+    20: { breached: false, recoveredToBreakEven: false },
+    30: { breached: false, recoveredToBreakEven: false },
+  });
   const decisionInput = (position) => ({ ...position, returnPct: 22,
     peakReturnPct: 22, openedAt: 1 });
-  assert.deepEqual(planPaperLifecycleExit(decisionInput(after), 2),
-    planPaperLifecycleExit(decisionInput(before), 2));
-  assert.equal(planPaperLifecycleExit(decisionInput(after), 2), null);
+  const healthySignal = { state: "healthy", reasons: [] };
+  assert.deepEqual(planPaperLifecycleExit(decisionInput(after), 2, undefined, healthySignal),
+    planPaperLifecycleExit(decisionInput(before), 2, undefined, healthySignal));
+  assert.equal(planPaperLifecycleExit(
+    decisionInput(after), 2, undefined, healthySignal,
+  ), null);
   const final = restored.close({ pool: "restart", price: 1.1, proceeds: 5.5,
     reason: "adaptive-trailing-stop", timestamp: 3 });
   assert.equal(final.partialProfitTaken, true);
   const afterFinalRestart = new PaperPortfolio({ initialCash: 100,
     state: restored.serialize() });
   assert.equal(afterFinalRestart.snapshot().openPositions.length, 0);
+});
+
+test("close records frozen and applied lifecycle boundaries", () => {
+  const book = new PaperPortfolio({ initialCash: 100 });
+  book.open({ pool: "bounded", token: "TOK", price: 1, quantity: 10,
+    notional: 10, entryAdverseBoundaryPct: 20 });
+  const trade = book.close({ pool: "bounded", price: 0.8,
+    reason: "volatility-risk-boundary", appliedBoundaryPct: 20 });
+  assert.equal(trade.entryAdverseBoundaryPct, 20);
+  assert.equal(trade.appliedBoundaryPct, 20);
+  const second = new PaperPortfolio({ initialCash: 100 });
+  second.open({ pool: "no-widen", token: "TOK", price: 1, quantity: 10,
+    notional: 10, entryAdverseBoundaryPct: 20 });
+  assert.throws(() => second.close({ pool: "no-widen", price: 0.8,
+    appliedBoundaryPct: 30 }), /applied-boundary-widens-entry-risk/);
 });
 
 test("legacy exact-unit positions can restore, mark, and partially close", () => {
