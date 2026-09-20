@@ -33,6 +33,7 @@ test("simulates a bounded same-tick round trip", () => {
   assert.ok(result.buyAmountOut > 0n);
   assert.ok(result.sellAmountOut > 0n);
   assert.ok(result.priceImpactBps >= 0);
+  assert.ok(result.sellPriceImpactBps >= 0);
   assert.ok(result.roundTripLossBps >= 0);
 });
 

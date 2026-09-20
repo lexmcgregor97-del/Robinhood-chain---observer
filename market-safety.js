@@ -29,6 +29,7 @@ export function evaluateV2MarketSafety(pool, options) {
     sellMathOk: false,
     poolAgeBlocks: Number.isFinite(latestBlock) ? latestBlock - Number(pool.discoveryBlock) : null,
     priceImpactPct: null,
+    exitPriceImpactPct: null,
     roundTripLossPct: null,
   };
   if (pool.version !== "v2" || !quoteTokenKnown) return base;
@@ -65,6 +66,7 @@ export function evaluateV2MarketSafety(pool, options) {
       buyMathOk: simulation.buyAmountOut > 0n,
       sellMathOk: simulation.sellAmountOut > 0n,
       priceImpactPct: simulation.buyPriceImpactBps / 100,
+      exitPriceImpactPct: simulation.sellPriceImpactBps / 100,
       executionCostPct: (simulation.buyPriceImpactBps * 2) / 100,
       roundTripLossPct: simulation.roundTripLossBps / 100,
     };
@@ -91,6 +93,7 @@ export function evaluateV3MarketSafety(pool, options) {
     simulationScope: "same-tick-only",
     poolAgeBlocks: Number(options.latestBlock) - Number(pool.discoveryBlock),
     priceImpactPct: null,
+    exitPriceImpactPct: null,
     roundTripLossPct: null,
   };
   if (pool.version !== "v3" || !quoteTokenKnown) return base;
@@ -134,6 +137,7 @@ export function evaluateV3MarketSafety(pool, options) {
       buyMathOk: simulation.buyAmountOut > 0n && staysWithinActiveTick,
       sellMathOk: simulation.sellAmountOut > 0n,
       priceImpactPct: simulation.priceImpactBps / 100,
+      exitPriceImpactPct: simulation.sellPriceImpactBps / 100,
       executionCostPct: (simulation.priceImpactBps * 2) / 100,
       roundTripLossPct: simulation.roundTripLossBps / 100,
     };

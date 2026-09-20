@@ -26,6 +26,7 @@ test("measures a quote-token V2 round trip", () => {
   assert.equal(safety.baseTokenDecimals, 3);
   assert.ok(BigInt(safety.buyAmountOut) > 0n);
   assert.ok(safety.priceImpactPct >= 0);
+  assert.ok(safety.exitPriceImpactPct >= 0);
   assert.equal(safety.executionCostPct, safety.priceImpactPct * 2);
 });
 

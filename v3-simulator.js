@@ -70,11 +70,16 @@ export function simulateV3RoundTrip({
   const end = Number(buy.nextSqrtPriceX96);
   const priceRatio = (end / start) ** 2;
   const priceImpactBps = Math.round(Math.abs(1 - priceRatio) * 10_000);
+  const sellStart = Number(buy.nextSqrtPriceX96);
+  const sellEnd = Number(sell.nextSqrtPriceX96);
+  const sellPriceRatio = (sellEnd / sellStart) ** 2;
+  const sellPriceImpactBps = Math.round(Math.abs(1 - sellPriceRatio) * 10_000);
   return {
     buyAmountOut: buy.amountOut,
     sellAmountOut: sell.amountOut,
     nextSqrtPriceX96: buy.nextSqrtPriceX96,
     priceImpactBps,
+    sellPriceImpactBps,
     roundTripLossBps,
   };
 }

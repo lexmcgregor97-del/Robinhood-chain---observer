@@ -12,7 +12,17 @@ test("simulates reserve changes across a round trip", () => {
   const result = simulateV2RoundTrip({ reserveQuote: 1_000_000n, reserveToken: 2_000_000n,
     quoteAmountIn: 10_000n, feeBps: 25 });
   assert.ok(result.sellAmountOut < 10_000n);
+  assert.ok(result.sellPriceImpactBps >= 0);
   assert.ok(result.roundTripLossBps > 0);
+});
+
+test("reports sell-leg impact independently when shallow rounding is asymmetric", () => {
+  const result = simulateV2RoundTrip({
+    reserveQuote: 100_000n, reserveToken: 100_000n,
+    quoteAmountIn: 197n, feeBps: 30,
+  });
+  assert.equal(result.buyPriceImpactBps, 50);
+  assert.equal(result.sellPriceImpactBps, 90);
 });
 
 test("larger trades incur more impact", () => {

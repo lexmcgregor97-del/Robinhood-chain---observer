@@ -34,6 +34,7 @@ export function simulateV2RoundTrip({ reserveQuote, reserveToken, quoteAmountIn,
     buyAmountOut: buy.amountOut,
     sellAmountOut: sell.amountOut,
     buyPriceImpactBps: buy.priceImpactBps,
+    sellPriceImpactBps: sell.priceImpactBps,
     roundTripLossBps,
   };
 }
