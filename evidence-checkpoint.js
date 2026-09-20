@@ -21,6 +21,19 @@ export function frequencyCandidateJournalRecordCount(typeCounts = {}, version = 
     + Number(typeCounts?.[`${version}-close`] || 0);
 }
 
+export function validateResearchCohortCheckpoints(cohorts = {}, typeCounts = {}) {
+  for (const [name, cohort] of Object.entries(cohorts || {})) {
+    if (!cohort?.version || !cohort?.books) {
+      throw new Error(`research-cohort-checkpoint-invalid:${name}`);
+    }
+    if (paperLedgerTradeCount(cohort.books)
+        !== frequencyCandidateJournalRecordCount(typeCounts, cohort.version)) {
+      throw new Error(`research-cohort-evidence-ledger-divergence:${name}`);
+    }
+  }
+  return true;
+}
+
 export function validateEvidenceCheckpoint({ state, journal }) {
   const stateSequence = Number(state?.evidenceSequence || 0);
   const journalSequence = Number(journal?.sequence || 0);
@@ -40,6 +53,7 @@ export function validateEvidenceCheckpoint({ state, journal }) {
       )) {
     throw new Error("frequency-candidate-evidence-ledger-divergence");
   }
+  validateResearchCohortCheckpoints(state?.paperResearchCohorts, journal?.typeCounts);
   validateExecutionCheckpoint({ execution: state?.execution,
     typeCounts: journal?.typeCounts });
   return true;

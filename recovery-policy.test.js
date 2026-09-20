@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
+import {
+  paperOpenPositionCount,
+  paperCycleDuringRecovery,
+  planLosslessRecovery,
+  recoveryPaperCycleMode,
+} from "./recovery-policy.js";
 
 test("a 308-block runtime lag scans all blocks without an eight-block jump", () => {
   const plan = planLosslessRecovery({ cursor: 1_000, latest: 1_308, maxBlocksPerPoll: 20_000 });
@@ -45,6 +50,26 @@ test("recovery permits only exit management for an open paper position", () => {
   assert.equal(recoveryPaperCycleMode({ synchronized: false, openPositions: 2 }), "exits-only");
   assert.equal(recoveryPaperCycleMode({ synchronized: false, openPositions: 0 }), "paused");
   assert.equal(recoveryPaperCycleMode({ synchronized: true, openPositions: 2 }), "full");
+});
+
+test("recovery sees positions held only by the lifecycle cohorts", () => {
+  const openPositions = paperOpenPositionCount([
+    { openPositions: [] },
+    { openPositions: [] },
+    { openPositions: [{ pool: "lifecycle-control" }] },
+    { openPositions: [] },
+  ]);
+  assert.equal(openPositions, 1);
+  assert.equal(recoveryPaperCycleMode({
+    synchronized: false, openPositions,
+  }), "exits-only");
+});
+
+test("exit audit provenance follows synchronization rather than cycle mode", () => {
+  assert.equal(paperCycleDuringRecovery(true), false);
+  assert.equal(paperCycleDuringRecovery(false), true);
+  assert.throws(() => paperCycleDuringRecovery(undefined),
+    /recovery-synchronization-state-invalid/);
 });
 
 test("invalid open-position counts fail closed", () => {

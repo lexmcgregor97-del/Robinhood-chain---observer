@@ -64,8 +64,8 @@ test("caller contract rejects non-monotonic clocks before mutation", () => {
   }), /invalid-lifecycle-mark-clock/);
 });
 
-test("wiring remains dormant and cannot reach live execution", () => {
+test("wiring reaches only the registered paper cohort, never live execution", () => {
   assert.deepEqual(PAPER_LIFECYCLE_WIRING_BOUNDARY, {
-    runtimeEnabled: false, cohortRegistered: false, liveExecutionSupported: false,
+    runtimeEnabled: true, cohortRegistered: true, liveExecutionSupported: false,
   });
 });

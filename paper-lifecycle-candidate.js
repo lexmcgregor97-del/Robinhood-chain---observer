@@ -4,10 +4,11 @@ import {
 } from "./paper-control-policy.js";
 
 export const PAPER_LIFECYCLE_CANDIDATE_VERSION
-  = "2026-09-18-paper-signal-conditioned-lifecycle-v2";
+  = "2026-09-20-paper-signal-conditioned-lifecycle-v3";
 
 // Entry selection is identical to the v7 control. The candidate changes only
-// sizing and lifecycle behavior, and remains disconnected from index.js.
+// sizing and lifecycle behavior. It is registered only in the isolated paper
+// cohort; the live worker does not import or execute this policy.
 export const PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY = Object.freeze({
   ...PAPER_CONTROL_RISK_POLICY,
 });
@@ -304,9 +305,11 @@ export const PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS = Object.freeze({
     "ten-percent-portfolio-drawdown-circuit",
   ]),
   activation: Object.freeze({
-    runtimeEnabled: false,
+    runtimeEnabled: true,
+    cohortRegistered: true,
     currentCohortUnchanged: true,
     promotionAutomatic: false,
     requiresFreshIsolatedCohort: true,
+    liveExecutionSupported: false,
   }),
 });

@@ -38,3 +38,17 @@ export function recoveryPaperCycleMode({ synchronized, openPositions }) {
   if (synchronized === true) return "full";
   return count > 0 ? "exits-only" : "paused";
 }
+
+export function paperOpenPositionCount(states = []) {
+  if (!Array.isArray(states) || states.some((state) => (
+    !state || !Array.isArray(state.openPositions)
+  ))) throw new Error("recovery-paper-state-invalid");
+  return states.reduce((total, state) => total + state.openPositions.length, 0);
+}
+
+export function paperCycleDuringRecovery(synchronized) {
+  if (typeof synchronized !== "boolean") {
+    throw new Error("recovery-synchronization-state-invalid");
+  }
+  return !synchronized;
+}

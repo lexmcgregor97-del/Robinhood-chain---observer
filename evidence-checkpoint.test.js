@@ -83,3 +83,64 @@ test("reconciles partial-close records in control and candidate journals", () =>
   assert.throws(() => validateEvidenceCheckpoint({ state: checkpointState,
     journal: checkpointJournal }), /frequency-candidate-evidence-ledger-divergence/);
 });
+
+test("reconciles every named research cohort independently", () => {
+  const checkpointState = {
+    evidenceSequence: 4,
+    evidenceLastHash: hash,
+    paperBooks: {},
+    paperResearchCohorts: {
+      control: { version: "lifecycle-control-v1", books: {
+        weth: { state: { trades: [{ type: "open" }, { type: "close" }] } },
+      } },
+      candidate: { version: "lifecycle-candidate-v1", books: {
+        weth: { state: { trades: [{ type: "open" }, { type: "partial-close" }] } },
+      } },
+    },
+  };
+  const checkpointJournal = {
+    sequence: 4,
+    lastHash: hash,
+    typeCounts: {
+      "lifecycle-control-v1-open": 1,
+      "lifecycle-control-v1-close": 1,
+      "lifecycle-candidate-v1-open": 1,
+      "lifecycle-candidate-v1-partial-close": 1,
+    },
+  };
+  assert.equal(validateEvidenceCheckpoint({
+    state: checkpointState, journal: checkpointJournal,
+  }), true);
+  checkpointJournal.typeCounts["lifecycle-candidate-v1-partial-close"] = 0;
+  assert.throws(() => validateEvidenceCheckpoint({
+    state: checkpointState, journal: checkpointJournal,
+  }), /research-cohort-evidence-ledger-divergence:candidate/);
+});
+
+test("reconciles a complete lifecycle open, partial, and final close", () => {
+  const state = {
+    evidenceSequence: 3,
+    evidenceLastHash: hash,
+    paperBooks: {},
+    paperResearchCohorts: {
+      candidate: { version: "lifecycle-v3", books: {
+        weth: { state: { trades: [
+          { type: "open" }, { type: "partial-close" }, { type: "close" },
+        ] } },
+      } },
+    },
+  };
+  const journal = {
+    sequence: 3,
+    lastHash: hash,
+    typeCounts: {
+      "lifecycle-v3-open": 1,
+      "lifecycle-v3-partial-close": 1,
+      "lifecycle-v3-close": 1,
+    },
+  };
+  assert.equal(validateEvidenceCheckpoint({ state, journal }), true);
+  delete journal.typeCounts["lifecycle-v3-partial-close"];
+  assert.throws(() => validateEvidenceCheckpoint({ state, journal }),
+    /research-cohort-evidence-ledger-divergence:candidate/);
+});

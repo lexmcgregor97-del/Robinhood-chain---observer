@@ -20,6 +20,23 @@ import {
   PAPER_CONTROL_RISK_POLICY,
   PAPER_CONTROL_STRATEGY,
 } from "./paper-control-policy.js";
+import {
+  PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS,
+  PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+  PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+  PAPER_LIFECYCLE_CANDIDATE_VERSION,
+} from "./paper-lifecycle-candidate.js";
+import { prepareLifecyclePaperEntry } from "./paper-lifecycle-wiring.js";
+import {
+  PAPER_LIFECYCLE_COHORT_BOUNDARY,
+  PAPER_LIFECYCLE_CONTROL_VERSION,
+  applyLifecyclePaperMark,
+  applyCompletedEpochBlock,
+  completedEpochCycleDisposition,
+  lifecycleSizingCashPcts,
+  researchCohortRestoreStatus,
+  selectExactLifecycleMeasurement,
+} from "./paper-lifecycle-cohort.js";
 import { analyzePaperTrades } from "./paper-analytics.js";
 import { ShadowEvaluator } from "./shadow-evaluator.js";
 import { auditSwapPrice } from "./price-audit.js";
@@ -51,7 +68,10 @@ import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.j
 import {
   isSellProbeReady, probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
-import { planLosslessRecovery, recoveryPaperCycleMode } from "./recovery-policy.js";
+import {
+  paperCycleDuringRecovery, paperOpenPositionCount, planLosslessRecovery,
+  recoveryPaperCycleMode,
+} from "./recovery-policy.js";
 import {
   assessMicroMainnetActivation, forbiddenRuntimeSecretFailures,
   microMainnetConfigFromEnv, publicMicroMainnetConfig,
@@ -184,6 +204,16 @@ function createPaperBooks() {
 }
 const paperBooks = createPaperBooks();
 const frequencyCandidateBooks = createPaperBooks();
+// Fresh paired books begin together and never inherit the completed v7 or
+// frequency-candidate ledgers. This keeps market-time comparison attributable.
+const lifecycleControlBooks = createPaperBooks();
+const lifecycleCandidateBooks = createPaperBooks();
+let lifecycleControlCheckpoint = researchCohortRestoreStatus(
+  undefined, PAPER_LIFECYCLE_CONTROL_VERSION,
+);
+let lifecycleCandidateCheckpoint = researchCohortRestoreStatus(
+  undefined, PAPER_LIFECYCLE_CANDIDATE_VERSION,
+);
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 const rpcTransport = new RpcTransport({ urls: RPC_URLS });
 const sellProbeRpcScheduler = new RpcScheduler({
@@ -198,9 +228,13 @@ let candidateCache = null;
 let candidatePromise = null;
 let frequencyCandidateCache = null;
 let frequencyCandidatePromise = null;
+let lifecycleControlCache = null;
+let lifecycleControlPromise = null;
+let lifecycleCandidateCache = null;
+let lifecycleCandidatePromise = null;
 function createPaperAutomation() {
   return {
-  cycles: 0, entries: 0, exits: 0, recoverySkippedBlocks: 0,
+  cycles: 0, entries: 0, exits: 0, partialExits: 0, recoverySkippedBlocks: 0,
   recoveryExitCycles: 0, recoveryExits: 0, lastRecoveryExitCycleAt: null,
   maxMarkedDrawdownPctByQuote: {},
   measurementCycles: 0, candidatesMeasured: 0,
@@ -212,6 +246,8 @@ function createPaperAutomation() {
 }
 const paperAutomation = createPaperAutomation();
 const frequencyCandidateAutomation = createPaperAutomation();
+const lifecycleControlAutomation = createPaperAutomation();
+const lifecycleCandidateAutomation = createPaperAutomation();
 const shadowEvaluator = new ShadowEvaluator();
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
 // These three components must always share one serializer. The persistence
@@ -445,6 +481,22 @@ function persistedState() {
     ),
     frequencyCandidateVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
     frequencyCandidateAutomation,
+    paperResearchCohorts: {
+      lifecycleControl: {
+        version: PAPER_LIFECYCLE_CONTROL_VERSION,
+        books: Object.fromEntries([...lifecycleControlBooks].map(([quoteToken, book]) => [
+          quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
+        ])),
+        automation: lifecycleControlAutomation,
+      },
+      lifecycleCandidate: {
+        version: PAPER_LIFECYCLE_CANDIDATE_VERSION,
+        books: Object.fromEntries([...lifecycleCandidateBooks].map(([quoteToken, book]) => [
+          quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
+        ])),
+        automation: lifecycleCandidateAutomation,
+      },
+    },
     paperArchives,
     paperAutomation,
     shadow: shadowEvaluator.serialize(),
@@ -548,6 +600,28 @@ async function restoreState() {
         Object.assign(frequencyCandidateAutomation, state.frequencyCandidateAutomation);
       }
     }
+    const restoreResearchCohort = (saved, expectedVersion, books, automation) => {
+      const checkpoint = researchCohortRestoreStatus(saved, expectedVersion);
+      if (!checkpoint.restoredFromCheckpoint) return checkpoint;
+      for (const [quoteToken, savedBook] of Object.entries(saved.books)) {
+        const book = books.get(quoteToken.toLowerCase());
+        if (book && savedBook?.state) book.portfolio.restore(savedBook.state);
+      }
+      if (saved.automation) Object.assign(automation, saved.automation);
+      return checkpoint;
+    };
+    lifecycleControlCheckpoint = restoreResearchCohort(
+      state.paperResearchCohorts?.lifecycleControl,
+      PAPER_LIFECYCLE_CONTROL_VERSION,
+      lifecycleControlBooks,
+      lifecycleControlAutomation,
+    );
+    lifecycleCandidateCheckpoint = restoreResearchCohort(
+      state.paperResearchCohorts?.lifecycleCandidate,
+      PAPER_LIFECYCLE_CANDIDATE_VERSION,
+      lifecycleCandidateBooks,
+      lifecycleCandidateAutomation,
+    );
     if (state.shadow) shadowEvaluator.restore(state.shadow);
     logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
     positionLiveness = new PositionLiveness({
@@ -830,14 +904,17 @@ async function poll() {
       latestBlock: metrics.latestBlock, cursor: metrics.cursor,
       backfillActive: metrics.backfill.active, lastError: metrics.lastError,
     });
-    if (!persistence.automationBlockedReason
+    const completedEpochBlocked = persistence.automationBlockedReason
+      === "completed-paper-epoch-not-flat";
+    if ((!persistence.automationBlockedReason || completedEpochBlocked)
         && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
-      const openPositions = [...paperBooks.values()].reduce(
-        (total, book) => total + book.portfolio.snapshot().openPositions.length, 0,
-      ) + [...frequencyCandidateBooks.values()].reduce(
-        (total, book) => total + book.portfolio.snapshot().openPositions.length, 0,
-      );
-      const cycleMode = recoveryPaperCycleMode({
+      const openPositions = paperOpenPositionCount([
+        ...[...paperBooks.values()].map((book) => book.portfolio.snapshot()),
+        ...[...frequencyCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+        ...[...lifecycleControlBooks.values()].map((book) => book.portfolio.snapshot()),
+        ...[...lifecycleCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+      ]);
+      const cycleMode = completedEpochBlocked ? "exits-only" : recoveryPaperCycleMode({
         synchronized: ready.readyForPaper,
         openPositions,
       });
@@ -845,7 +922,10 @@ async function poll() {
         await runPaperCycle();
         scheduleSellProbe(latestSellProbeCandidates);
       } else if (cycleMode === "exits-only") {
-        await runPaperCycle({ exitsOnly: true, duringRecovery: true });
+        await runPaperCycle({
+          exitsOnly: true,
+          duringRecovery: paperCycleDuringRecovery(ready.readyForPaper),
+        });
       }
     }
     await persistState();
@@ -923,6 +1003,15 @@ function signals(limit = 25) {
     baselineMs: SIGNAL_BASELINE_MS,
     minSwaps: SIGNAL_MIN_SWAPS,
   }).slice(0, limit);
+}
+
+function signalForPool(poolAddress) {
+  const nowMs = (metrics.blockTimestamp * 1_000) || Date.now();
+  return rankPools([...pools.values()], nowMs, {
+    windowMs: SIGNAL_WINDOW_MS,
+    baselineMs: SIGNAL_BASELINE_MS,
+    minSwaps: SIGNAL_MIN_SWAPS,
+  }).find((item) => item.address === poolAddress)?.signal || null;
 }
 
 async function resolveV3Boundary(pool, currentTick, tickSpacing, zeroForOne) {
@@ -1147,6 +1236,28 @@ function paperEntryEligibleForCohort(candidate, {
   ).approved;
 }
 
+function lifecycleEntryEligible(candidate, now) {
+  if (candidate?.paperCohort !== "lifecycle-candidate") return false;
+  const book = lifecycleCandidateBooks.get(candidate.marketSafety?.quoteToken);
+  if (!book) return false;
+  const policy = book.symbol === "WETH"
+    ? { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+    : { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
+  const withPassingProbe = {
+    ...candidate,
+    marketSafety: {
+      ...candidate.marketSafety,
+      sellProbe: { passed: true, checkedAt: new Date(now).toISOString() },
+    },
+  };
+  withPassingProbe.riskGate = evaluateRiskGate(
+    withPassingProbe, PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+  );
+  return prepareLifecyclePaperEntry(
+    withPassingProbe, book.portfolio.serialize(), now, policy,
+  ).approved;
+}
+
 async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!SELL_PROBE_CONFIG.configured) return;
   if (SELL_PROBE_OVERRIDE_STATUS.supported !== true) return;
@@ -1171,7 +1282,11 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       books: frequencyCandidateBooks,
       strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
       riskPolicy: PAPER_FREQUENCY_CANDIDATE_RISK_POLICY,
-    }, now),
+    }, now) || paperEntryEligibleForCohort(candidate, {
+      books: lifecycleControlBooks,
+      strategy: PAPER_CONTROL_STRATEGY,
+      riskPolicy: PAPER_CONTROL_RISK_POLICY,
+    }, now) || lifecycleEntryEligible(candidate, now),
     limit: 3,
   });
   if (!eligible.length) {
@@ -1226,7 +1341,10 @@ function scheduleSellProbe(measured) {
     .finally(() => { sellProbePromise = null; });
 }
 
-async function paperExitQuote(pool, position) {
+async function paperExitQuote(pool, position, {
+  quantityUnits = position.quantityUnits,
+  quantity,
+} = {}) {
   const quoteTokens = [ROBINHOOD.weth, ROBINHOOD.usdg].map((address) => address.toLowerCase());
   const quoteIsToken0 = quoteTokens.includes(pool.token0);
   const quoteIsToken1 = quoteTokens.includes(pool.token1);
@@ -1239,9 +1357,16 @@ async function paperExitQuote(pool, position) {
   const baseDecimals = quoteIsToken0 ? token1Meta.decimals : token0Meta.decimals;
   // Prefer the exact filled base units recorded at entry. The Number path throws
   // for quantities above ~9e3 tokens at >=12 decimals (Number.isSafeInteger).
-  const baseAmountIn = typeof position.quantityUnits === "string"
-    ? BigInt(position.quantityUnits)
-    : humanToUnits(position.quantity, baseDecimals);
+  const baseAmountIn = typeof quantityUnits === "string"
+    ? BigInt(quantityUnits)
+    : humanToUnits(quantity ?? position.quantity, baseDecimals);
+  // Exact base units and quoted proceeds are authoritative. Human quantity and
+  // execution price are derived display values and may carry decimal rounding.
+  const humanQuantity = quantity === undefined
+    ? unitsToHuman(baseAmountIn, baseDecimals) : Number(quantity);
+  if (!Number.isFinite(humanQuantity) || humanQuantity <= 0) {
+    throw new Error("invalid-paper-exit-quantity");
+  }
   let amountOut;
   let priceImpactPct = null;
   let exitReserves = null;
@@ -1301,7 +1426,7 @@ async function paperExitQuote(pool, position) {
   return {
     quoteToken,
     proceeds,
-    executionPrice: proceeds / Number(position.quantity),
+    executionPrice: proceeds / humanQuantity,
     priceImpactPct,
     baseAmountIn: baseAmountIn.toString(),
     quoteAmountOut: amountOut.toString(),
@@ -1380,6 +1505,83 @@ async function frequencyCandidates(limit = 10) {
       .finally(() => { frequencyCandidatePromise = null; });
   }
   return (await frequencyCandidatePromise).slice(0, boundedLimit);
+}
+
+async function lifecycleControlCandidates(limit = 10) {
+  const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+  if (lifecycleControlCache && lifecycleControlCache.expiresAt > Date.now()
+      && lifecycleControlCache.limit >= boundedLimit) {
+    return lifecycleControlCache.value.slice(0, boundedLimit);
+  }
+  if (!lifecycleControlPromise) {
+    lifecycleControlPromise = measureCandidates(Math.max(10, boundedLimit), {
+      books: lifecycleControlBooks,
+      strategy: PAPER_CONTROL_STRATEGY,
+      riskPolicy: PAPER_CONTROL_RISK_POLICY,
+      cohort: "lifecycle-control",
+    }).then((value) => {
+      lifecycleControlCache = {
+        value, limit: Math.max(10, boundedLimit),
+        expiresAt: Date.now() + CANDIDATE_CACHE_MS,
+      };
+      return value;
+    }).finally(() => { lifecycleControlPromise = null; });
+  }
+  return (await lifecycleControlPromise).slice(0, boundedLimit);
+}
+
+async function lifecycleCandidates(limit = 10) {
+  const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+  if (lifecycleCandidateCache && lifecycleCandidateCache.expiresAt > Date.now()
+      && lifecycleCandidateCache.limit >= boundedLimit) {
+    return lifecycleCandidateCache.value.slice(0, boundedLimit);
+  }
+  if (!lifecycleCandidatePromise) {
+    const measuredLimit = Math.max(10, boundedLimit);
+    const cashPcts = lifecycleSizingCashPcts(PAPER_LIFECYCLE_CANDIDATE_STRATEGY);
+    lifecycleCandidatePromise = Promise.all([
+      measureCandidates(measuredLimit, {
+        books: lifecycleCandidateBooks,
+        strategy: { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, entryCashPct: cashPcts.deep },
+        riskPolicy: PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+        cohort: "lifecycle-candidate-deep",
+      }),
+      measureCandidates(measuredLimit, {
+        books: lifecycleCandidateBooks,
+        strategy: { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, entryCashPct: cashPcts.standard },
+        riskPolicy: PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+        cohort: "lifecycle-candidate-standard",
+      }),
+    ]).then(([deep, standard]) => {
+      const standardByAddress = new Map(standard.map((item) => [item.address, item]));
+      return deep.map((deepCandidate) => {
+        const selected = selectExactLifecycleMeasurement({
+          deep: deepCandidate,
+          standard: standardByAddress.get(deepCandidate.address),
+        }, PAPER_LIFECYCLE_CANDIDATE_STRATEGY);
+        if (selected.eligible) return {
+          ...selected.candidate,
+          paperCohort: "lifecycle-candidate",
+          lifecycleMeasurementBoundary: selected.boundary,
+        };
+        return {
+          ...deepCandidate,
+          paperCohort: "lifecycle-candidate",
+          lifecycleMeasurementBoundary: null,
+          riskGate: {
+            eligibleForPaperEntry: false,
+            failures: [selected.reason],
+          },
+        };
+      });
+    }).then((value) => {
+      lifecycleCandidateCache = {
+        value, limit: measuredLimit, expiresAt: Date.now() + CANDIDATE_CACHE_MS,
+      };
+      return value;
+    }).finally(() => { lifecycleCandidatePromise = null; });
+  }
+  return (await lifecycleCandidatePromise).slice(0, boundedLimit);
 }
 
 function poolFeeRate(pool) {
@@ -1462,10 +1664,19 @@ function updateMarkedDrawdownHistory() {
     frequencyCandidateBooks, frequencyCandidateAutomation,
     PAPER_FREQUENCY_CANDIDATE_VERSION,
   );
+  updateCohortMarkedDrawdownHistory(
+    lifecycleControlBooks, lifecycleControlAutomation,
+    PAPER_LIFECYCLE_CONTROL_VERSION,
+  );
+  updateCohortMarkedDrawdownHistory(
+    lifecycleCandidateBooks, lifecycleCandidateAutomation,
+    PAPER_LIFECYCLE_CANDIDATE_VERSION,
+  );
 }
 
 async function runCohortEntries({
   measured, books, automation, strategy, strategyVersion, evidencePrefix,
+  entryPlanner = planPaperEntry,
 }) {
   for (const candidate of measured) {
     const book = books.get(candidate.marketSafety.quoteToken);
@@ -1492,7 +1703,7 @@ async function runCohortEntries({
         pool: candidate.address, reasons: circuitFailures }, automation);
       continue;
     }
-    const plan = planPaperEntry(candidate, paperState, policy, Date.now());
+    const plan = entryPlanner(candidate, paperState, policy, Date.now());
     if (!plan.approved) {
       const reasons = paperEntryFailureDetails(candidate, plan.failures);
       recordCohortRejection(automation, reasons);
@@ -1504,7 +1715,12 @@ async function runCohortEntries({
     const fee = plan.order.notional * feeRate;
     book.portfolio.open({
       ...plan.order, fee,
-      audit: paperEntryAudit(candidate, feeRate, strategyVersion),
+      audit: {
+        ...paperEntryAudit(candidate, feeRate, strategyVersion),
+        exitPriceImpactPct: candidate.marketSafety?.exitPriceImpactPct ?? null,
+        lifecycleMeasurementBoundary: candidate.lifecycleMeasurementBoundary ?? null,
+        lifecycleRisk: plan.lifecycleRisk ? { ...plan.lifecycleRisk } : null,
+      },
     });
     automation.entries += 1;
     recordCohortApproval(automation, candidate.address);
@@ -1520,20 +1736,28 @@ async function runCohortEntries({
 async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {}) {
   const cycleStartedAt = Date.now();
   lastPaperCycleAt = Date.now();
+  // The v7 and frequency ledgers are completed evidence and remain immutable.
+  // Only the fresh paired lifecycle experiment participates in new cycles.
   const cohorts = [
     {
-      books: paperBooks,
-      automation: paperAutomation,
-      strategy: QUALIFYING_PAPER_STRATEGY,
-      strategyVersion: PAPER_STRATEGY_VERSION,
-      evidencePrefix: "paper",
+      books: lifecycleControlBooks,
+      automation: lifecycleControlAutomation,
+      strategy: PAPER_CONTROL_STRATEGY,
+      strategyVersion: PAPER_LIFECYCLE_CONTROL_VERSION,
+      evidencePrefix: PAPER_LIFECYCLE_CONTROL_VERSION,
+      measure: lifecycleControlCandidates,
     },
     {
-      books: frequencyCandidateBooks,
-      automation: frequencyCandidateAutomation,
-      strategy: PAPER_FREQUENCY_CANDIDATE_STRATEGY,
-      strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
-      evidencePrefix: PAPER_FREQUENCY_CANDIDATE_VERSION,
+      books: lifecycleCandidateBooks,
+      automation: lifecycleCandidateAutomation,
+      strategy: PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+      strategyVersion: PAPER_LIFECYCLE_CANDIDATE_VERSION,
+      evidencePrefix: PAPER_LIFECYCLE_CANDIDATE_VERSION,
+      measure: lifecycleCandidates,
+      lifecycle: true,
+      entryPlanner: (candidate, portfolio, policy, now) => (
+        prepareLifecyclePaperEntry(candidate, portfolio, now, policy)
+      ),
     },
   ];
   for (const { automation } of cohorts) {
@@ -1550,7 +1774,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
   try {
     const exitResults = await runIsolatedCohortStage(cohorts, async (cohort) => {
       const {
-        books, automation, strategy, strategyVersion, evidencePrefix,
+        books, automation, strategy, strategyVersion, evidencePrefix, lifecycle,
       } = cohort;
       for (const [quoteToken, book] of books) {
       for (const position of book.portfolio.snapshot().openPositions) {
@@ -1605,8 +1829,69 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
         // Preserve the pre-candidate circuit-breaker sensitivity after each
         // changed mark, but recompute only the affected cohort book.
         updateBookMarkedDrawdownHistory(book, automation, strategyVersion);
+        const markTimestamp = Date.now();
+        if (lifecycle) {
+          const feeRate = poolFeeRate(pool);
+          const gasCost = gasCostQuotePerSide(quoteToken);
+          const signal = signalForPool(position.pool) || {};
+          const currentProbe = freshSellProbe(position.pool, markTimestamp);
+          const result = await applyLifecyclePaperMark({
+            portfolio: book.portfolio,
+            position,
+            marked,
+            signal,
+            marketSafety: {
+              liquidityKnown: true,
+              sellMathOk: true,
+              priceImpactPct: exit.priceImpactPct,
+              ...(currentProbe ? { sellProbe: currentProbe } : {}),
+            },
+            timestamp: markTimestamp,
+            fullExit: exit,
+            quotePartial: async (quantityUnits) => (
+              paperExitQuote(pool, position, { quantityUnits })
+            ),
+            feeRate,
+            gasCost,
+            audit: {
+              block: metrics.latestBlock,
+              duringRecovery,
+              feeRate,
+              gasCostQuote: gasCost,
+              returnPct: marked.returnPct,
+              peakReturnPct: marked.peakReturnPct,
+              priceImpactPct: exit.priceImpactPct,
+              quoteAmountOut: exit.quoteAmountOut,
+              baseAmountIn: exit.baseAmountIn,
+              exitReserves: exit.exitReserves,
+            },
+          });
+          if (result.trade) {
+            if (result.evidenceType === "partial-close") automation.partialExits += 1;
+            else automation.exits += 1;
+            if (duringRecovery && result.evidenceType === "close") {
+              automation.recoveryExits += 1;
+            }
+            await appendEvidence({
+              type: `${evidencePrefix}-${result.evidenceType}`,
+              epoch: strategyVersion,
+              cohort: strategyVersion,
+              quote: book.symbol,
+              trade: result.trade,
+            });
+            rememberPaperDecision({
+              type: result.evidenceType === "partial-close" ? "partial-exit" : "exit",
+              quote: book.symbol,
+              pool: position.pool,
+              reason: result.trade.reason,
+              price: result.trade.price,
+              proceeds: result.trade.proceeds,
+            }, automation);
+          }
+          continue;
+        }
         const reason = paperExitReason({ ...marked,
-          exitPriceImpactPct: exit.priceImpactPct }, Date.now(), strategy);
+          exitPriceImpactPct: exit.priceImpactPct }, markTimestamp, strategy);
         if (reason) {
           const feeRate = poolFeeRate(pool);
           const fee = exit.proceeds * feeRate;
@@ -1645,11 +1930,25 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     }
     }, { stage: "exits", globallyBlocked: () => persistence.writeBlocked });
 
+    const completedEpoch = completedEpochCycleDisposition([
+      ...[...paperBooks.values()].map((book) => book.portfolio.snapshot()),
+      ...[...frequencyCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+    ]);
+    if (!completedEpoch.allowEntries) {
+      applyCompletedEpochBlock(persistence, completedEpoch);
+      lifecycleControlAutomation.lastError = completedEpoch.detail;
+      lifecycleCandidateAutomation.lastError = completedEpoch.detail;
+    }
+
     updateMarkedDrawdownHistory();
 
     if (exitsOnly) {
       return;
     }
+
+    // A legacy freeze violation blocks measurement and entries, but it is
+    // checked only after current lifecycle positions receive exit management.
+    if (!completedEpoch.allowEntries) return;
 
     if (SHADOW_RECORDING_PAUSED && PAPER_ENTRIES_PAUSED) {
       return;
@@ -1657,18 +1956,28 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
 
     const measurementResults = await runIsolatedCohortStage(
       cohorts, async (cohort) => {
-        const measured = cohort.strategyVersion === PAPER_STRATEGY_VERSION
-          ? await candidates(10) : await frequencyCandidates(10);
+        const measured = await cohort.measure(10);
         recordCohortMeasurement(cohort.automation, measured);
         return measured;
       }, { stage: "measurement", globallyBlocked: () => persistence.writeBlocked },
     );
-    const controlMeasurement = measurementResults.get(PAPER_STRATEGY_VERSION);
-    const frequencyMeasurement = measurementResults.get(PAPER_FREQUENCY_CANDIDATE_VERSION);
-    const measured = controlMeasurement?.ok ? controlMeasurement.value : [];
-    const frequencyMeasured = frequencyMeasurement?.ok ? frequencyMeasurement.value : [];
-    latestSellProbeCandidates = [...measured, ...frequencyMeasured];
-    const rankedAddresses = new Set(measured.map((candidate) => candidate.address));
+    const lifecycleControlMeasurement = measurementResults.get(
+      PAPER_LIFECYCLE_CONTROL_VERSION,
+    );
+    const lifecycleCandidateMeasurement = measurementResults.get(
+      PAPER_LIFECYCLE_CANDIDATE_VERSION,
+    );
+    const lifecycleControlMeasured = lifecycleControlMeasurement?.ok
+      ? lifecycleControlMeasurement.value : [];
+    const lifecycleCandidateMeasured = lifecycleCandidateMeasurement?.ok
+      ? lifecycleCandidateMeasurement.value : [];
+    latestSellProbeCandidates = [
+      ...lifecycleControlMeasured,
+      ...lifecycleCandidateMeasured,
+    ];
+    const rankedAddresses = new Set(
+      lifecycleControlMeasured.map((candidate) => candidate.address),
+    );
     const pendingPools = shadowEvaluator.pendingPoolAddresses()
       .filter((address) => !rankedAddresses.has(address))
       .map((address) => pools.get(address))
@@ -1677,20 +1986,25 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       [cohorts[0]],
       async () => Promise.all(pendingPools.map(async (pool) => ({
         address: pool.address,
-        marketSafety: await marketSafety(pool),
+        marketSafety: await marketSafety(pool, {
+          books: lifecycleControlBooks,
+          strategy: PAPER_CONTROL_STRATEGY,
+        }),
       }))),
       { stage: "shadow-measurement", globallyBlocked: () => persistence.writeBlocked },
     );
     const pendingMeasurements = shadowMeasurementResults
-      .get(PAPER_STRATEGY_VERSION)?.value || [];
-    if (!SHADOW_RECORDING_PAUSED && controlMeasurement?.ok) {
+      .get(PAPER_LIFECYCLE_CONTROL_VERSION)?.value || [];
+    if (!SHADOW_RECORDING_PAUSED && lifecycleControlMeasurement?.ok) {
       const previousCount = shadowEvaluator.samples.length;
       const previousState = new Map(shadowEvaluator.samples.map((sample) => [
         sample.episodeId, { closedAt: sample.closedAt, censoredAt: sample.censoredAt },
       ]));
       const block = metrics.latestBlock;
-      shadowEvaluator.resolve([...measured, ...pendingMeasurements], Date.now(), { block });
-      shadowEvaluator.record(measured, Date.now(), { block });
+      shadowEvaluator.resolve(
+        [...lifecycleControlMeasured, ...pendingMeasurements], Date.now(), { block },
+      );
+      shadowEvaluator.record(lifecycleControlMeasured, Date.now(), { block });
       const currentShadowRuleVersion = shadowEvaluator.snapshot().ruleVersion;
       const evidenceEvents = [];
       for (let index = 0; index < shadowEvaluator.samples.length; index += 1) {
@@ -1721,8 +2035,8 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     updateMarkedDrawdownHistory();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    paperAutomation.lastError ||= message;
-    frequencyCandidateAutomation.lastError ||= message;
+    lifecycleControlAutomation.lastError ||= message;
+    lifecycleCandidateAutomation.lastError ||= message;
   } finally {
     const durationMs = Date.now() - cycleStartedAt;
     for (const { automation } of cohorts) {
@@ -1838,6 +2152,24 @@ function paperStatus() {
       }),
     ]),
   );
+  const lifecycleControlBookStatus = Object.fromEntries(
+    [...lifecycleControlBooks.values()].map((book) => [
+      book.symbol,
+      paperBookStatus(book, {
+        strategyVersion: PAPER_LIFECYCLE_CONTROL_VERSION,
+        automation: lifecycleControlAutomation,
+      }),
+    ]),
+  );
+  const lifecycleCandidateBookStatus = Object.fromEntries(
+    [...lifecycleCandidateBooks.values()].map((book) => [
+      book.symbol,
+      paperBookStatus(book, {
+        strategyVersion: PAPER_LIFECYCLE_CANDIDATE_VERSION,
+        automation: lifecycleCandidateAutomation,
+      }),
+    ]),
+  );
   const shadow = shadowEvaluator.snapshot();
   const operational = snapshot().readiness;
   const liveReadiness = currentLiveReadiness(operational.readyForPaper, books, shadow);
@@ -1861,7 +2193,7 @@ function paperStatus() {
       observedCycleAverageMs: paperAutomation.cycles > 1
         ? (Number(paperAutomation.lastCycleAt) - Number(paperAutomation.firstCycleAt))
           / (paperAutomation.cycles - 1) : null,
-      lastCycleAt: lastPaperCycleAt || null },
+      lastCycleAt: paperAutomation.lastCycleAt || null },
     frequencyCandidate: {
       mode: "PAPER_ONLY_ISOLATED_COHORT",
       strategyVersion: PAPER_FREQUENCY_CANDIDATE_VERSION,
@@ -1879,6 +2211,41 @@ function paperStatus() {
             - Number(frequencyCandidateAutomation.firstCycleAt))
             / (frequencyCandidateAutomation.cycles - 1) : null,
         lastCycleAt: frequencyCandidateAutomation.lastCycleAt || null,
+      },
+    },
+    lifecycleExperiment: {
+      mode: "PAPER_ONLY_PAIRED_COHORT",
+      boundary: PAPER_LIFECYCLE_COHORT_BOUNDARY,
+      controlVersion: PAPER_LIFECYCLE_CONTROL_VERSION,
+      candidateVersion: PAPER_LIFECYCLE_CANDIDATE_VERSION,
+      checkpointRestore: {
+        control: lifecycleControlCheckpoint,
+        candidate: lifecycleCandidateCheckpoint,
+      },
+      hypothesis: PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS,
+      controlStrategy: PAPER_CONTROL_STRATEGY,
+      candidateStrategy: PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+      candidateRiskPolicy: PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+      comparison: cohortComparison(
+        lifecycleControlAutomation, lifecycleCandidateAutomation,
+      ),
+      controlBooks: lifecycleControlBookStatus,
+      candidateBooks: lifecycleCandidateBookStatus,
+      controlAutomation: {
+        ...lifecycleControlAutomation,
+        cycleIntervalMs: PAPER_CYCLE_MS,
+        observedCycleAverageMs: lifecycleControlAutomation.cycles > 1
+          ? (Number(lifecycleControlAutomation.lastCycleAt)
+            - Number(lifecycleControlAutomation.firstCycleAt))
+            / (lifecycleControlAutomation.cycles - 1) : null,
+      },
+      candidateAutomation: {
+        ...lifecycleCandidateAutomation,
+        cycleIntervalMs: PAPER_CYCLE_MS,
+        observedCycleAverageMs: lifecycleCandidateAutomation.cycles > 1
+          ? (Number(lifecycleCandidateAutomation.lastCycleAt)
+            - Number(lifecycleCandidateAutomation.firstCycleAt))
+            / (lifecycleCandidateAutomation.cycles - 1) : null,
       },
     },
     evidence: evidenceJournal.snapshot(),

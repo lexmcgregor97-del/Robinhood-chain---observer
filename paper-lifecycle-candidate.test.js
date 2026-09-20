@@ -27,7 +27,7 @@ const weakening = { state: "weakening", reasons: ["activity-weakening"] };
 const deepBoundary = { entryAdverseBoundaryPct: 20 };
 const standardBoundary = { entryAdverseBoundaryPct: 30 };
 
-test("lifecycle candidate preserves the v7 control entry policy and stays dormant", () => {
+test("lifecycle candidate preserves control entry policy in an isolated paper cohort", () => {
   assert.deepEqual(PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY, PAPER_CONTROL_RISK_POLICY);
   for (const field of [
     "maxEntryNotional", "maxEntriesPerPool", "reentryCooldownMs",
@@ -35,9 +35,11 @@ test("lifecycle candidate preserves the v7 control entry policy and stays dorman
     assert.equal(PAPER_LIFECYCLE_CANDIDATE_STRATEGY[field],
       PAPER_CONTROL_STRATEGY[field], field);
   }
-  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.runtimeEnabled, false);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.runtimeEnabled, true);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.cohortRegistered, true);
   assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.currentCohortUnchanged, true);
   assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.requiresFreshIsolatedCohort, true);
+  assert.equal(PAPER_LIFECYCLE_CANDIDATE_HYPOTHESIS.activation.liveExecutionSupported, false);
 });
 
 test("signal assessment distinguishes strengthening, healthy, weakening, and invalidated", () => {

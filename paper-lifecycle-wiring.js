@@ -7,14 +7,14 @@ import {
 } from "./paper-lifecycle-candidate.js";
 import { planPaperEntry } from "./paper-strategy.js";
 
-// Caller ordering contract for any future cohort:
+// Caller ordering contract for the paired paper cohort:
 // 1. prepareLifecycleMark; 2. portfolio.recordLifecycleMark(result.record);
 // 3. only then apply result.close. Skipping or reordering step 2 invalidates
 // monotonic-clock evidence and must fail the cohort stage.
 
 export const PAPER_LIFECYCLE_WIRING_BOUNDARY = Object.freeze({
-  runtimeEnabled: false,
-  cohortRegistered: false,
+  runtimeEnabled: true,
+  cohortRegistered: true,
   liveExecutionSupported: false,
 });
 
