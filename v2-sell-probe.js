@@ -63,7 +63,11 @@ export function sellProbeConfigFromEnv(env = process.env) {
   if (!allowedRouters.length || allowedRouters.some((address) => !isAddress(address))) {
     failures.push("sell-probe-router-allowlist-required");
   }
-  const intervalMs = positiveInteger(env.SELL_PROBE_INTERVAL_MS, 5 * 60_000);
+  // Momentum qualification is measured over one minute. A five-minute probe
+  // interval lets one incompatible token suppress several complete signal
+  // windows, so default to one opportunity window while preserving the
+  // explicit environment override and per-attempt RPC serialization.
+  const intervalMs = positiveInteger(env.SELL_PROBE_INTERVAL_MS, 60_000);
   const maxAgeMs = positiveInteger(env.SELL_PROBE_MAX_AGE_MS, 15 * 60_000);
   const maxSwapAgeBlocks = positiveInteger(env.SELL_PROBE_MAX_SWAP_AGE_BLOCKS, 1_200);
   const maxSlippageBps = positiveInteger(env.SELL_PROBE_MAX_SLIPPAGE_BPS, 500);

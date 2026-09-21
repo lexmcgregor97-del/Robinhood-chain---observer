@@ -54,6 +54,15 @@ test("configuration reuses the verified V2 router allowlist", () => {
   assert.equal(sellProbeConfigFromEnv({}).configured, false);
 });
 
+test("default probe cadence matches the one-minute momentum window", () => {
+  const config = sellProbeConfigFromEnv({
+    PAPER_V2_ROUTER_ADDRESSES: router,
+  });
+  assert.equal(config.configured, true);
+  assert.equal(config.intervalMs, 60_000);
+  assert.equal(config.maxAgeMs, 15 * 60_000);
+});
+
 test("readiness survives candidate absence but not failure or expiry", () => {
   const now = 1_000_000;
   const config = { configured: true, maxAgeMs: 15 * 60_000 };
