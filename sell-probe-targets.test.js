@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectSellProbeTargets } from "./sell-probe-targets.js";
+import {
+  selectSellProbeTargets, sellProbeAttemptDisposition,
+} from "./sell-probe-targets.js";
 
 function candidate(address, overrides = {}) {
   return {
@@ -65,4 +67,19 @@ test("an ineligible control copy cannot hide an eligible candidate copy", () => 
   });
   assert.equal(targets.length, 1);
   assert.equal(targets[0].candidate.paperCohort, "frequency-candidate");
+});
+
+test("an empty scan never consumes the probe cooldown", () => {
+  assert.deepEqual(sellProbeAttemptDisposition({
+    targetCount: 0, now: 10_000, lastAttemptAt: 0, intervalMs: 300_000,
+  }), { start: false, reason: "sell-probe-candidate-unavailable" });
+  assert.deepEqual(sellProbeAttemptDisposition({
+    targetCount: 1, now: 10_001, lastAttemptAt: 0, intervalMs: 300_000,
+  }), { start: false, reason: "sell-probe-cooldown" });
+});
+
+test("the first transient eligible target can start an actual probe", () => {
+  assert.deepEqual(sellProbeAttemptDisposition({
+    targetCount: 1, now: 300_000, lastAttemptAt: 0, intervalMs: 300_000,
+  }), { start: true, reason: null });
 });

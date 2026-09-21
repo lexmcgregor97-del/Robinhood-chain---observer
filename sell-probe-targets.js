@@ -26,3 +26,24 @@ export function selectSellProbeTargets(candidates, {
   }
   return targets;
 }
+
+export function sellProbeAttemptDisposition({
+  targetCount,
+  now,
+  lastAttemptAt,
+  intervalMs,
+} = {}) {
+  if (!Number.isInteger(targetCount) || targetCount < 0
+      || !Number.isFinite(Number(now))
+      || !Number.isFinite(Number(lastAttemptAt))
+      || !Number.isFinite(Number(intervalMs)) || Number(intervalMs) <= 0) {
+    return Object.freeze({ start: false, reason: "invalid-probe-attempt-state" });
+  }
+  if (targetCount === 0) {
+    return Object.freeze({ start: false, reason: "sell-probe-candidate-unavailable" });
+  }
+  if (Number(now) - Number(lastAttemptAt) < Number(intervalMs)) {
+    return Object.freeze({ start: false, reason: "sell-probe-cooldown" });
+  }
+  return Object.freeze({ start: true, reason: null });
+}

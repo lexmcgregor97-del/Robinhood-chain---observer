@@ -94,7 +94,9 @@ import { createExecutionMutationSerializer } from "./execution-mutation-queue.js
 import { executionRecoveryLockPresent } from "./execution-recovery-lock.js";
 import { finalizeExecutionNonceResidue } from "./execution-recovery.js";
 import { workerObserverAuthorized } from "./worker-observer-auth.js";
-import { selectSellProbeTargets } from "./sell-probe-targets.js";
+import {
+  selectSellProbeTargets, sellProbeAttemptDisposition,
+} from "./sell-probe-targets.js";
 import {
   cohortComparison, createAsyncReadCache, entryReadyCohorts, recordCohortApproval,
   recordCohortMeasurement, recordCohortRejection, recordFirstMark,
@@ -1290,8 +1292,6 @@ function signalConditionedEntryEligible(candidate, {
 async function maybeRunSellProbe(measured, now = Date.now()) {
   if (!SELL_PROBE_CONFIG.configured) return;
   if (SELL_PROBE_OVERRIDE_STATUS.supported !== true) return;
-  if (now - sellProbeLastAttemptAt < SELL_PROBE_CONFIG.intervalMs) return;
-  sellProbeLastAttemptAt = now;
   for (const [poolAddress, result] of sellProbeByPool) {
     const checkedAt = Date.parse(result?.checkedAt || "");
     if (!Number.isFinite(checkedAt) || now - checkedAt > SELL_PROBE_CONFIG.maxAgeMs) {
@@ -1328,13 +1328,24 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
     }, now),
     limit: 3,
   });
-  if (!eligible.length) {
+  const disposition = sellProbeAttemptDisposition({
+    targetCount: eligible.length,
+    now,
+    lastAttemptAt: sellProbeLastAttemptAt,
+    intervalMs: SELL_PROBE_CONFIG.intervalMs,
+  });
+  if (!disposition.start) {
+    if (disposition.reason === "sell-probe-cooldown") return;
     SELL_PROBE_STATUS = { ...SELL_PROBE_STATUS, passed: false,
-      lastAttemptAt: new Date(now).toISOString(), checkedPool: null,
+      checkedPool: null,
       observedSellPassed: false, selfSimulationPassed: false,
-      failures: ["sell-probe-candidate-unavailable"] };
+      failures: [disposition.reason] };
     return;
   }
+  // Empty scans must never consume the attempt interval. Momentum eligibility
+  // can appear and disappear inside one interval, so the cooldown begins only
+  // when Atlas has a concrete pool to probe.
+  sellProbeLastAttemptAt = now;
   let lastResult = null;
   for (const { candidate, observedSell } of eligible) {
     const result = await probeV2Sell({
