@@ -28,6 +28,12 @@ import {
 } from "./paper-lifecycle-candidate.js";
 import { prepareLifecyclePaperEntry } from "./paper-lifecycle-wiring.js";
 import {
+  PAPER_OPPORTUNITY_CANDIDATE_HYPOTHESIS,
+  PAPER_OPPORTUNITY_CANDIDATE_RISK_POLICY,
+  PAPER_OPPORTUNITY_CANDIDATE_STRATEGY,
+  PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+} from "./paper-opportunity-candidate.js";
+import {
   PAPER_LIFECYCLE_COHORT_BOUNDARY,
   PAPER_LIFECYCLE_CONTROL_VERSION,
   applyLifecyclePaperMark,
@@ -208,11 +214,15 @@ const frequencyCandidateBooks = createPaperBooks();
 // frequency-candidate ledgers. This keeps market-time comparison attributable.
 const lifecycleControlBooks = createPaperBooks();
 const lifecycleCandidateBooks = createPaperBooks();
+const opportunityCandidateBooks = createPaperBooks();
 let lifecycleControlCheckpoint = researchCohortRestoreStatus(
   undefined, PAPER_LIFECYCLE_CONTROL_VERSION,
 );
 let lifecycleCandidateCheckpoint = researchCohortRestoreStatus(
   undefined, PAPER_LIFECYCLE_CANDIDATE_VERSION,
+);
+let opportunityCandidateCheckpoint = researchCohortRestoreStatus(
+  undefined, PAPER_OPPORTUNITY_CANDIDATE_VERSION,
 );
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
 const rpcTransport = new RpcTransport({ urls: RPC_URLS });
@@ -232,6 +242,8 @@ let lifecycleControlCache = null;
 let lifecycleControlPromise = null;
 let lifecycleCandidateCache = null;
 let lifecycleCandidatePromise = null;
+let opportunityCandidateCache = null;
+let opportunityCandidatePromise = null;
 function createPaperAutomation() {
   return {
   cycles: 0, entries: 0, exits: 0, partialExits: 0, recoverySkippedBlocks: 0,
@@ -248,6 +260,7 @@ const paperAutomation = createPaperAutomation();
 const frequencyCandidateAutomation = createPaperAutomation();
 const lifecycleControlAutomation = createPaperAutomation();
 const lifecycleCandidateAutomation = createPaperAutomation();
+const opportunityCandidateAutomation = createPaperAutomation();
 const shadowEvaluator = new ShadowEvaluator();
 const evidenceJournal = new EvidenceJournal(EVIDENCE_FILE);
 // These three components must always share one serializer. The persistence
@@ -496,6 +509,13 @@ function persistedState() {
         ])),
         automation: lifecycleCandidateAutomation,
       },
+      opportunityCandidate: {
+        version: PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+        books: Object.fromEntries([...opportunityCandidateBooks].map(([quoteToken, book]) => [
+          quoteToken, { symbol: book.symbol, state: book.portfolio.serialize() },
+        ])),
+        automation: opportunityCandidateAutomation,
+      },
     },
     paperArchives,
     paperAutomation,
@@ -621,6 +641,12 @@ async function restoreState() {
       PAPER_LIFECYCLE_CANDIDATE_VERSION,
       lifecycleCandidateBooks,
       lifecycleCandidateAutomation,
+    );
+    opportunityCandidateCheckpoint = restoreResearchCohort(
+      state.paperResearchCohorts?.opportunityCandidate,
+      PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+      opportunityCandidateBooks,
+      opportunityCandidateAutomation,
     );
     if (state.shadow) shadowEvaluator.restore(state.shadow);
     logDeduplicator = new LogDeduplicator({ entries: state.processedLogs || [] });
@@ -913,6 +939,7 @@ async function poll() {
         ...[...frequencyCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
         ...[...lifecycleControlBooks.values()].map((book) => book.portfolio.snapshot()),
         ...[...lifecycleCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+        ...[...opportunityCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
       ]);
       const cycleMode = completedEpochBlocked ? "exits-only" : recoveryPaperCycleMode({
         synchronized: ready.readyForPaper,
@@ -1236,13 +1263,15 @@ function paperEntryEligibleForCohort(candidate, {
   ).approved;
 }
 
-function lifecycleEntryEligible(candidate, now) {
-  if (candidate?.paperCohort !== "lifecycle-candidate") return false;
-  const book = lifecycleCandidateBooks.get(candidate.marketSafety?.quoteToken);
+function signalConditionedEntryEligible(candidate, {
+  cohort, books, strategy, riskPolicy,
+}, now) {
+  if (candidate?.paperCohort !== cohort) return false;
+  const book = books.get(candidate.marketSafety?.quoteToken);
   if (!book) return false;
   const policy = book.symbol === "WETH"
-    ? { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
-    : { ...PAPER_LIFECYCLE_CANDIDATE_STRATEGY, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
+    ? { ...strategy, maxEntryNotional: PAPER_WETH_MAX_ENTRY }
+    : { ...strategy, maxEntryNotional: PAPER_USDG_MAX_ENTRY };
   const withPassingProbe = {
     ...candidate,
     marketSafety: {
@@ -1251,7 +1280,7 @@ function lifecycleEntryEligible(candidate, now) {
     },
   };
   withPassingProbe.riskGate = evaluateRiskGate(
-    withPassingProbe, PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+    withPassingProbe, riskPolicy,
   );
   return prepareLifecyclePaperEntry(
     withPassingProbe, book.portfolio.serialize(), now, policy,
@@ -1286,7 +1315,17 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       books: lifecycleControlBooks,
       strategy: PAPER_CONTROL_STRATEGY,
       riskPolicy: PAPER_CONTROL_RISK_POLICY,
-    }, now) || lifecycleEntryEligible(candidate, now),
+    }, now) || signalConditionedEntryEligible(candidate, {
+      cohort: "lifecycle-candidate",
+      books: lifecycleCandidateBooks,
+      strategy: PAPER_LIFECYCLE_CANDIDATE_STRATEGY,
+      riskPolicy: PAPER_LIFECYCLE_CANDIDATE_RISK_POLICY,
+    }, now) || signalConditionedEntryEligible(candidate, {
+      cohort: "opportunity-candidate",
+      books: opportunityCandidateBooks,
+      strategy: PAPER_OPPORTUNITY_CANDIDATE_STRATEGY,
+      riskPolicy: PAPER_OPPORTUNITY_CANDIDATE_RISK_POLICY,
+    }, now),
     limit: 3,
   });
   if (!eligible.length) {
@@ -1584,6 +1623,56 @@ async function lifecycleCandidates(limit = 10) {
   return (await lifecycleCandidatePromise).slice(0, boundedLimit);
 }
 
+async function opportunityCandidates(limit = 25) {
+  const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 25));
+  if (opportunityCandidateCache && opportunityCandidateCache.expiresAt > Date.now()
+      && opportunityCandidateCache.limit >= boundedLimit) {
+    return opportunityCandidateCache.value.slice(0, boundedLimit);
+  }
+  if (!opportunityCandidatePromise) {
+    const cashPcts = lifecycleSizingCashPcts(PAPER_OPPORTUNITY_CANDIDATE_STRATEGY);
+    opportunityCandidatePromise = Promise.all([
+      measureCandidates(25, {
+        books: opportunityCandidateBooks,
+        strategy: { ...PAPER_OPPORTUNITY_CANDIDATE_STRATEGY, entryCashPct: cashPcts.deep },
+        riskPolicy: PAPER_OPPORTUNITY_CANDIDATE_RISK_POLICY,
+        cohort: "opportunity-candidate-deep",
+      }),
+      measureCandidates(25, {
+        books: opportunityCandidateBooks,
+        strategy: { ...PAPER_OPPORTUNITY_CANDIDATE_STRATEGY, entryCashPct: cashPcts.standard },
+        riskPolicy: PAPER_OPPORTUNITY_CANDIDATE_RISK_POLICY,
+        cohort: "opportunity-candidate-standard",
+      }),
+    ]).then(([deep, standard]) => {
+      const standardByAddress = new Map(standard.map((item) => [item.address, item]));
+      return deep.map((deepCandidate) => {
+        const selected = selectExactLifecycleMeasurement({
+          deep: deepCandidate,
+          standard: standardByAddress.get(deepCandidate.address),
+        }, PAPER_OPPORTUNITY_CANDIDATE_STRATEGY);
+        if (selected.eligible) return {
+          ...selected.candidate,
+          paperCohort: "opportunity-candidate",
+          lifecycleMeasurementBoundary: selected.boundary,
+        };
+        return {
+          ...deepCandidate,
+          paperCohort: "opportunity-candidate",
+          lifecycleMeasurementBoundary: null,
+          riskGate: { eligibleForPaperEntry: false, failures: [selected.reason] },
+        };
+      });
+    }).then((value) => {
+      opportunityCandidateCache = {
+        value, limit: 25, expiresAt: Date.now() + CANDIDATE_CACHE_MS,
+      };
+      return value;
+    }).finally(() => { opportunityCandidatePromise = null; });
+  }
+  return (await opportunityCandidatePromise).slice(0, boundedLimit);
+}
+
 function poolFeeRate(pool) {
   if (pool.version === "v3") return Number(pool.fee || 3000) / 1_000_000;
   return pool.dex === "pancakeswap" ? 0.0025 : 0.003;
@@ -1672,6 +1761,10 @@ function updateMarkedDrawdownHistory() {
     lifecycleCandidateBooks, lifecycleCandidateAutomation,
     PAPER_LIFECYCLE_CANDIDATE_VERSION,
   );
+  updateCohortMarkedDrawdownHistory(
+    opportunityCandidateBooks, opportunityCandidateAutomation,
+    PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+  );
 }
 
 async function runCohortEntries({
@@ -1754,6 +1847,18 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       strategyVersion: PAPER_LIFECYCLE_CANDIDATE_VERSION,
       evidencePrefix: PAPER_LIFECYCLE_CANDIDATE_VERSION,
       measure: lifecycleCandidates,
+      lifecycle: true,
+      entryPlanner: (candidate, portfolio, policy, now) => (
+        prepareLifecyclePaperEntry(candidate, portfolio, now, policy)
+      ),
+    },
+    {
+      books: opportunityCandidateBooks,
+      automation: opportunityCandidateAutomation,
+      strategy: PAPER_OPPORTUNITY_CANDIDATE_STRATEGY,
+      strategyVersion: PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+      evidencePrefix: PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+      measure: opportunityCandidates,
       lifecycle: true,
       entryPlanner: (candidate, portfolio, policy, now) => (
         prepareLifecyclePaperEntry(candidate, portfolio, now, policy)
@@ -1938,6 +2043,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
       applyCompletedEpochBlock(persistence, completedEpoch);
       lifecycleControlAutomation.lastError = completedEpoch.detail;
       lifecycleCandidateAutomation.lastError = completedEpoch.detail;
+      opportunityCandidateAutomation.lastError = completedEpoch.detail;
     }
 
     updateMarkedDrawdownHistory();
@@ -1967,13 +2073,19 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     const lifecycleCandidateMeasurement = measurementResults.get(
       PAPER_LIFECYCLE_CANDIDATE_VERSION,
     );
+    const opportunityCandidateMeasurement = measurementResults.get(
+      PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+    );
     const lifecycleControlMeasured = lifecycleControlMeasurement?.ok
       ? lifecycleControlMeasurement.value : [];
     const lifecycleCandidateMeasured = lifecycleCandidateMeasurement?.ok
       ? lifecycleCandidateMeasurement.value : [];
+    const opportunityCandidateMeasured = opportunityCandidateMeasurement?.ok
+      ? opportunityCandidateMeasurement.value : [];
     latestSellProbeCandidates = [
       ...lifecycleControlMeasured,
       ...lifecycleCandidateMeasured,
+      ...opportunityCandidateMeasured,
     ];
     const rankedAddresses = new Set(
       lifecycleControlMeasured.map((candidate) => candidate.address),
@@ -2037,6 +2149,7 @@ async function runPaperCycle({ exitsOnly = false, duringRecovery = false } = {})
     const message = error instanceof Error ? error.message : String(error);
     lifecycleControlAutomation.lastError ||= message;
     lifecycleCandidateAutomation.lastError ||= message;
+    opportunityCandidateAutomation.lastError ||= message;
   } finally {
     const durationMs = Date.now() - cycleStartedAt;
     for (const { automation } of cohorts) {
@@ -2170,6 +2283,15 @@ function paperStatus() {
       }),
     ]),
   );
+  const opportunityCandidateBookStatus = Object.fromEntries(
+    [...opportunityCandidateBooks.values()].map((book) => [
+      book.symbol,
+      paperBookStatus(book, {
+        strategyVersion: PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+        automation: opportunityCandidateAutomation,
+      }),
+    ]),
+  );
   const shadow = shadowEvaluator.snapshot();
   const operational = snapshot().readiness;
   const liveReadiness = currentLiveReadiness(operational.readyForPaper, books, shadow);
@@ -2246,6 +2368,28 @@ function paperStatus() {
           ? (Number(lifecycleCandidateAutomation.lastCycleAt)
             - Number(lifecycleCandidateAutomation.firstCycleAt))
             / (lifecycleCandidateAutomation.cycles - 1) : null,
+      },
+    },
+    opportunityExperiment: {
+      mode: "PAPER_ONLY_ISOLATED_OPPORTUNITY_COHORT",
+      boundary: {
+        liveExecutionSupported: false,
+        automaticPromotion: false,
+        v3ExecutionSupported: false,
+      },
+      strategyVersion: PAPER_OPPORTUNITY_CANDIDATE_VERSION,
+      checkpointRestore: opportunityCandidateCheckpoint,
+      hypothesis: PAPER_OPPORTUNITY_CANDIDATE_HYPOTHESIS,
+      strategy: PAPER_OPPORTUNITY_CANDIDATE_STRATEGY,
+      riskPolicy: PAPER_OPPORTUNITY_CANDIDATE_RISK_POLICY,
+      books: opportunityCandidateBookStatus,
+      automation: {
+        ...opportunityCandidateAutomation,
+        cycleIntervalMs: PAPER_CYCLE_MS,
+        observedCycleAverageMs: opportunityCandidateAutomation.cycles > 1
+          ? (Number(opportunityCandidateAutomation.lastCycleAt)
+            - Number(opportunityCandidateAutomation.firstCycleAt))
+            / (opportunityCandidateAutomation.cycles - 1) : null,
       },
     },
     evidence: evidenceJournal.snapshot(),
