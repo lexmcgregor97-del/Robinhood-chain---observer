@@ -3,7 +3,11 @@ export function selectSellProbeTargets(candidates, {
   hasFreshProbe,
   isPaperEntryEligible,
   limit = 3,
+  diagnostics = {},
 } = {}) {
+  Object.assign(diagnostics, { considered: 0, wrongVersion: 0, invalidMath: 0,
+    freshProbe: 0, entryBlocked: 0, missingObservedSell: 0,
+    duplicatePool: 0, selected: 0 });
   if (!Array.isArray(candidates) || !Number.isInteger(limit) || limit <= 0) return [];
   if (![observedSellFor, hasFreshProbe, isPaperEntryEligible]
     .every((callback) => typeof callback === "function")) return [];
@@ -11,17 +15,21 @@ export function selectSellProbeTargets(candidates, {
   const targets = [];
   const selectedPools = new Set();
   for (const candidate of candidates) {
-    if (candidate?.version !== "v2"
-        || candidate?.marketSafety?.buyMathOk !== true
-        || candidate?.marketSafety?.sellMathOk !== true
-        || hasFreshProbe(candidate)
-        || !isPaperEntryEligible(candidate)) continue;
+    diagnostics.considered += 1;
+    if (candidate?.version !== "v2") { diagnostics.wrongVersion += 1; continue; }
+    if (candidate?.marketSafety?.buyMathOk !== true
+        || candidate?.marketSafety?.sellMathOk !== true) {
+      diagnostics.invalidMath += 1; continue;
+    }
+    if (hasFreshProbe(candidate)) { diagnostics.freshProbe += 1; continue; }
+    if (!isPaperEntryEligible(candidate)) { diagnostics.entryBlocked += 1; continue; }
     const pool = String(candidate.address || "").toLowerCase();
-    if (!pool || selectedPools.has(pool)) continue;
+    if (!pool || selectedPools.has(pool)) { diagnostics.duplicatePool += 1; continue; }
     const observedSell = observedSellFor(candidate);
-    if (!observedSell?.transactionHash) continue;
+    if (!observedSell?.transactionHash) { diagnostics.missingObservedSell += 1; continue; }
     selectedPools.add(pool);
     targets.push({ candidate, observedSell });
+    diagnostics.selected += 1;
     if (targets.length >= limit) break;
   }
   return targets;

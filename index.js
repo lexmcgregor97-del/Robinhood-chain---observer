@@ -63,6 +63,8 @@ import { PositionLiveness } from "./position-liveness.js";
 import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { fetchLogsAdaptive } from "./rpc-log-query.js";
 import { envFlag } from "./runtime-flags.js";
+import { PaperOpportunities, opportunityQualification } from "./paper-opportunities.js";
+import { PaperTrialBudget } from "./paper-trial-budget.js";
 import { assessLiveReadiness } from "./live-readiness.js";
 import {
   probeTurnkeyPolicy, probeTurnkeyWallet, turnkeyConfigFromEnv,
@@ -70,7 +72,8 @@ import {
 import { Turnkey } from "@turnkey/sdk-server";
 import { EvidenceJournal } from "./evidence-journal.js";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
-import { gasMeasurementFromEnv, verifyGasMeasurement } from "./gas-measurement.js";
+import { gasMeasurementFromEnv } from "./gas-measurement.js";
+import { createGasRefresher, observedGasTransactions } from "./gas-refresh.js";
 import {
   isSellProbeReady, probeStateOverrideSupport, probeV2Sell, sellProbeConfigFromEnv,
 } from "./v2-sell-probe.js";
@@ -147,6 +150,12 @@ const GAS_VERIFICATION_INTERVAL_MS = Number.isFinite(CONFIGURED_GAS_VERIFICATION
   && CONFIGURED_GAS_VERIFICATION_INTERVAL_MS >= 60_000
   ? CONFIGURED_GAS_VERIFICATION_INTERVAL_MS : 60 * 60_000;
 const STATE_FILE = String(process.env.STATE_FILE || "");
+let paperTrial = null;
+let paperOpportunities = new PaperOpportunities();
+const beforeObserverRpc = async () => {
+  if (!paperTrial) throw new Error("paper-trial-not-initialized");
+  await paperTrial.beforeAttempt();
+};
 const STATE_SAVE_MS = Number(process.env.STATE_SAVE_MS || 30_000);
 const V3_BOUNDARY_CACHE_MS = Number(process.env.V3_BOUNDARY_CACHE_MS || 30_000);
 const CANDIDATE_CACHE_MS = Number(process.env.CANDIDATE_CACHE_MS || 15_000);
@@ -162,6 +171,12 @@ const EVIDENCE_DIR = String(process.env.EVIDENCE_DIR
 const EVIDENCE_FILE = EVIDENCE_DIR
   ? join(EVIDENCE_DIR, `${PAPER_STRATEGY_VERSION}.jsonl`) : "";
 const GAS_MEASUREMENT_CONFIG = gasMeasurementFromEnv(process.env);
+const gasRefresher = createGasRefresher({
+  config: GAS_MEASUREMENT_CONFIG,
+  getReceipt: (transactionHash) => rpc("eth_getTransactionReceipt", [transactionHash]),
+  getBlock: (blockNumber) => rpc("eth_getBlockByNumber", [blockNumber, false]),
+  verifyIntervalMs: GAS_VERIFICATION_INTERVAL_MS,
+});
 let GAS_MEASUREMENT = { verifiedInput: false, measuredAt: null, lastVerifiedAt: null,
   observedCostWei: null, observedCostWeth: null,
   configuredWethPerSide: GAS_MEASUREMENT_CONFIG.configuredWethPerSide,
@@ -170,6 +185,7 @@ const SELL_PROBE_CONFIG = sellProbeConfigFromEnv(process.env);
 let sellProbeLastAttemptAt = 0;
 let sellProbePromise = null;
 let latestSellProbeCandidates = [];
+let sellProbeSelection = null;
 let SELL_PROBE_OVERRIDE_STATUS = {
   checked: false, supported: false, checkedAt: null, failures: [],
 };
@@ -227,11 +243,11 @@ let opportunityCandidateCheckpoint = researchCohortRestoreStatus(
   undefined, PAPER_OPPORTUNITY_CANDIDATE_VERSION,
 );
 const rpcScheduler = new RpcScheduler({ minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS });
-const rpcTransport = new RpcTransport({ urls: RPC_URLS });
+const rpcTransport = new RpcTransport({ urls: RPC_URLS, beforeAttempt: beforeObserverRpc });
 const sellProbeRpcScheduler = new RpcScheduler({
   minIntervalMs: RPC_MIN_INTERVAL_MS, jitterMs: RPC_JITTER_MS,
 });
-const sellProbeRpcTransport = new RpcTransport({ urls: RPC_URLS });
+const sellProbeRpcTransport = new RpcTransport({ urls: RPC_URLS, beforeAttempt: beforeObserverRpc });
 let logDeduplicator = new LogDeduplicator();
 let positionLiveness = new PositionLiveness();
 let nextPollDelayMs = POLL_MS;
@@ -475,14 +491,16 @@ async function verifyAttestedSigningConfiguration(client, observerUserId) {
 }
 
 async function verifyConfiguredGasMeasurement() {
-  GAS_MEASUREMENT = await verifyGasMeasurement({ config: GAS_MEASUREMENT_CONFIG,
-    getReceipt: (transactionHash) => rpc("eth_getTransactionReceipt", [transactionHash]),
-    getBlock: (blockNumber) => rpc("eth_getBlockByNumber", [blockNumber, false]),
+  const now = Date.now();
+  GAS_MEASUREMENT = await gasRefresher.refresh({ now,
+    transactionHashes: observedGasTransactions(pools.values(), ROBINHOOD.weth,
+      now, GAS_MEASUREMENT_CONFIG.maxAgeMs / 2),
   });
 }
 
 function persistedState() {
   return {
+    paperOpportunities: paperOpportunities.snapshot(),
     cursor: metrics.cursor,
     pools: [...pools.values()],
     paperBooks: Object.fromEntries([...paperBooks].map(([quoteToken, book]) => [
@@ -542,6 +560,7 @@ async function restoreState() {
       if (evidenceJournal.snapshot().sequence > 0) throw new Error("evidence-state-divergence");
       return;
     }
+    paperOpportunities = new PaperOpportunities(state.paperOpportunities);
     for (const savedPool of (state.pools || []).slice(0, MAX_POOLS)) {
       const pool = {
         ...savedPool,
@@ -901,6 +920,7 @@ async function bootstrap(latest) {
 }
 
 async function poll() {
+  if (paperTrial?.reason()) return;
   try {
     const latest = intHex(await rpc("eth_blockNumber", []));
     metrics.latestBlock = latest;
@@ -948,6 +968,7 @@ async function poll() {
         openPositions,
       });
       if (cycleMode === "full") {
+        await verifyConfiguredGasMeasurement();
         await runPaperCycle();
         scheduleSellProbe(latestSellProbeCandidates);
       } else if (cycleMode === "exits-only") {
@@ -967,7 +988,7 @@ async function poll() {
     });
   } finally {
     await persistState();
-    setTimeout(poll, nextPollDelayMs);
+    if (!paperTrial?.reason()) setTimeout(poll, nextPollDelayMs);
   }
 }
 
@@ -985,9 +1006,15 @@ function snapshot() {
     latestBlock: metrics.latestBlock, cursor: metrics.cursor,
     backfillActive: backfill.active, lastError: metrics.lastError,
   });
+  if (paperTrial?.reason()) {
+    readiness.readyForPaper = false;
+    readiness.reasons.push(paperTrial.reason());
+  }
   const execution = executionStatus(readiness.readyForPaper);
   return {
-    mode: PAPER_ENTRIES_PAUSED ? "PAPER_ENTRIES_PAUSED" : "PAPER_ONLY",
+    mode: paperTrial?.reason() ? "PAPER_TRIAL_HALTED"
+      : PAPER_ENTRIES_PAUSED ? "PAPER_ENTRIES_PAUSED" : "PAPER_ONLY",
+    trial: paperTrial?.snapshot() || null,
     chainId: CHAIN_ID, uptimeSeconds: Math.floor((Date.now() - metrics.startedAt) / 1000),
     latestBlock: metrics.latestBlock, blockTimestamp: metrics.blockTimestamp,
     cursor: metrics.cursor, polling: {
@@ -1237,6 +1264,7 @@ function publicSellProbeStatus(now = Date.now()) {
     selfSimulationPassed: SELL_PROBE_STATUS.selfSimulationPassed === true,
     maxAgeMs: SELL_PROBE_CONFIG.maxAgeMs,
     failures: [...SELL_PROBE_STATUS.failures],
+    selection: sellProbeSelection,
     overridesSupported: SELL_PROBE_OVERRIDE_STATUS.supported === true,
     overrideCanaryCheckedAt: SELL_PROBE_OVERRIDE_STATUS.checkedAt,
     probeRpcScheduler: sellProbeRpcScheduler.snapshot(),
@@ -1298,7 +1326,9 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
       sellProbeByPool.delete(poolAddress);
     }
   }
+  const diagnostics = {};
   const eligible = selectSellProbeTargets(measured, {
+    diagnostics,
     observedSellFor: (candidate) => candidate.lastSellSwap
       || (isV2SellToQuote(candidate, candidate.lastSwap,
         ROBINHOOD.quoteTokens.map((token) => token.address)) ? candidate.lastSwap : null),
@@ -1328,6 +1358,8 @@ async function maybeRunSellProbe(measured, now = Date.now()) {
     }, now),
     limit: 3,
   });
+  sellProbeSelection = { checkedAt: new Date(now).toISOString(), ...diagnostics,
+    gasFailures: [...GAS_MEASUREMENT.failures] };
   const disposition = sellProbeAttemptDisposition({
     targetCount: eligible.length,
     now,
@@ -1783,11 +1815,14 @@ async function runCohortEntries({
   entryPlanner = planPaperEntry,
 }) {
   for (const candidate of measured) {
+    if (paperTrial?.reason()) return;
     const book = books.get(candidate.marketSafety.quoteToken);
     if (!book) {
       recordCohortRejection(automation, ["unsupported-paper-quote"]);
       rememberPaperDecision({ type: "reject", pool: candidate.address,
         reasons: ["unsupported-paper-quote"] }, automation);
+      await appendEvidence(paperOpportunities.record({ cohort: strategyVersion, candidate,
+        reasons: ["unsupported-paper-quote"], qualified: false, approved: false, now: Date.now() }));
       continue;
     }
     const policy = book.symbol === "WETH"
@@ -1805,9 +1840,16 @@ async function runCohortEntries({
       recordCohortRejection(automation, circuitFailures);
       rememberPaperDecision({ type: "reject", quote: book.symbol,
         pool: candidate.address, reasons: circuitFailures }, automation);
+      await appendEvidence(paperOpportunities.record({ cohort: strategyVersion, candidate,
+        reasons: circuitFailures, qualified: false, approved: false, now: Date.now() }));
       continue;
     }
-    const plan = entryPlanner(candidate, paperState, policy, Date.now());
+    const decisionAt = Date.now();
+    const plan = entryPlanner(candidate, paperState, policy, decisionAt);
+    const decisionReasons = plan.approved ? [] : paperEntryFailureDetails(candidate, plan.failures);
+    await appendEvidence(paperOpportunities.record({ cohort: strategyVersion, candidate,
+      reasons: decisionReasons, approved: plan.approved, now: decisionAt,
+      qualified: opportunityQualification(candidate, paperState, policy, decisionAt, entryPlanner) }));
     if (!plan.approved) {
       const reasons = paperEntryFailureDetails(candidate, plan.failures);
       recordCohortRejection(automation, reasons);
@@ -1817,6 +1859,7 @@ async function runCohortEntries({
     }
     const feeRate = poolFeeRate(candidate);
     const fee = plan.order.notional * feeRate;
+    if (paperTrial.reason()) return;
     book.portfolio.open({
       ...plan.order, fee,
       audit: {
@@ -1831,6 +1874,7 @@ async function runCohortEntries({
     await appendEvidence({ type: `${evidencePrefix}-open`, epoch: strategyVersion,
       cohort: strategyVersion, quote: book.symbol,
       trade: structuredClone(book.portfolio.trades.at(-1)) });
+    await paperTrial.progress();
     rememberPaperDecision({ type: "entry", quote: book.symbol,
       pool: candidate.address, price: plan.order.price,
       notional: plan.order.notional, fee }, automation);
@@ -2308,8 +2352,10 @@ function paperStatus() {
   const liveReadiness = currentLiveReadiness(operational.readyForPaper, books, shadow);
   return {
     mode: "PAPER_ONLY",
-    newEntriesPaused: PAPER_ENTRIES_PAUSED,
-    pauseReason: persistence.automationBlockedReason
+    trial: paperTrial?.snapshot() || null,
+    opportunities: paperOpportunities.snapshot(),
+    newEntriesPaused: PAPER_ENTRIES_PAUSED || Boolean(paperTrial?.reason()),
+    pauseReason: paperTrial?.reason() || persistence.automationBlockedReason
       || (PAPER_ENTRIES_PAUSED ? "paper-ledger-review" : null),
     shadowRecordingPaused: SHADOW_RECORDING_PAUSED,
     automationBlockedReason: persistence.automationBlockedReason,
@@ -2420,7 +2466,9 @@ async function dashboard() {
     cards.push(`<article><b>${esc(a.symbol)}/${esc(b.symbol)}</b><span>${esc(pool.dex || "unknown")} · ${pool.version.toUpperCase()}${pool.fee ? ` · ${pool.fee / 10000}%` : ""} · ${esc(pool.signal.state)}</span><small>${esc(pool.address)} · score ${pool.signal.score} · ${pool.signal.swapsCurrentWindow} recent swaps · ${pool.signal.acceleration}× acceleration</small></article>`);
   }
   const s = snapshot();
-  const paperNotice = PAPER_ENTRIES_PAUSED
+  const paperNotice = paperTrial?.reason()
+    ? `<p class="warn">PAPER TRIAL HALTED<br>${esc(paperTrial.reason())}</p>`
+    : PAPER_ENTRIES_PAUSED
     ? '<p class="warn">PAPER ENTRIES PAUSED<br>Shadow measurement continues.</p>'
     : '<p class="ok">PAPER SAMPLING ACTIVE<br>Virtual entries and exits are enabled.</p>';
   return `<!doctype html><meta name="viewport" content="width=device-width"><title>Atlas Trader</title><style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:auto;max-width:720px;padding:18px}h1{font-size:23px}.warn{background:#713f12;padding:12px;border-radius:10px}.ok{background:#14532d;padding:12px;border-radius:10px}.grid,article{display:grid;gap:9px}section,article{background:#1f2937;margin:12px 0;padding:15px;border-radius:12px}article span,small{color:#9ca3af}code{color:#86efac}</style><h1>Atlas Trader</h1><p>Robinhood Chain adapter</p>${paperNotice}<section class="grid"><b>Chain <code>4663</code></b><span>Latest block: ${s.latestBlock.toLocaleString()}</span><span>Cursor: ${s.cursor.toLocaleString()}</span><span>Pools: ${pools.size} (${metrics.v2Pools} V2 / ${metrics.v3Pools} V3)</span><span>Swaps observed: ${metrics.swaps}</span><span>Polls: ${metrics.successfulPolls} successful / ${metrics.failedPolls} failed</span><span>Last error: ${esc(metrics.lastError || "none")}</span><span>Paper readiness: ${s.readiness.readyForPaper ? "ready" : esc(s.readiness.reasons.join(", "))}</span></section><h2>Most active pools</h2>${cards.join("") || "<section>Waiting for pool events in the observation window.</section>"}`;
@@ -2467,18 +2515,32 @@ function json(res, value) {
 await blockIfExecutionRecoveryActive();
 await initializeEvidenceJournal();
 await restoreState();
-await verifyConfiguredGasMeasurement();
-await verifyTurnkeyConfiguration();
-await verifySellProbeOverrideSupport();
+// One observer replica owns this ledger. It is deliberately separate from
+// market checkpoints: reserve each network attempt durably before sending it.
+if (!STATE_FILE || persistence.writeBlocked) throw new Error("paper-trial-durable-state-required");
+const trialFile = `${STATE_FILE}.paper-trial.json`;
+paperTrial = new PaperTrialBudget({
+  state: await loadJsonState(trialFile),
+  maxRequests: Number(process.env.PAPER_TRIAL_MAX_RPC_REQUESTS || 10_000),
+  maxDurationMs: Number(process.env.PAPER_TRIAL_MAX_DURATION_MS || 2 * 60 * 60_000),
+  noProgressMs: Number(process.env.PAPER_TRIAL_NO_PROGRESS_MS || 30 * 60_000),
+  persist: (state) => saveJsonState(trialFile, state),
+});
+await paperTrial.check().catch(() => {});
+if (!paperTrial.reason()) {
+  await verifyConfiguredGasMeasurement();
+  await verifyTurnkeyConfiguration();
+  await verifySellProbeOverrideSupport();
+}
 server.listen(PORT, "0.0.0.0", () => console.log(`Read-only observer listening on ${PORT}`));
 poll();
 const gasVerificationTimer = setInterval(() => {
-  void verifyConfiguredGasMeasurement();
+  if (!paperTrial.reason()) void verifyConfiguredGasMeasurement();
 }, GAS_VERIFICATION_INTERVAL_MS);
 gasVerificationTimer.unref();
 if (MICRO_MAINNET_CONFIG.requested) {
   const turnkeyVerificationTimer = setInterval(() => {
-    void verifyTurnkeyConfiguration();
+    if (!paperTrial.reason()) void verifyTurnkeyConfiguration();
   }, GAS_VERIFICATION_INTERVAL_MS);
   turnkeyVerificationTimer.unref();
 }

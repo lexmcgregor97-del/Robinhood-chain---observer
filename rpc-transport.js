@@ -15,7 +15,8 @@ export function rpcUrlsFromEnv({ primary, fallbacks = "", defaultUrl }) {
 
 export class RpcTransport {
   constructor({ urls, fetchImpl = fetch, timeoutMs = 12_000, cooldownMs = 60_000,
-    now = Date.now } = {}) {
+    now = Date.now, beforeAttempt = async () => {} } = {}) {
+    this.beforeAttempt = beforeAttempt;
     this.urls = normalizeUrls(urls);
     if (!this.urls.length) throw new Error("at least one RPC URL is required");
     this.fetchImpl = fetchImpl;
@@ -45,6 +46,9 @@ export class RpcTransport {
     this.requestCount += 1;
     const errors = [];
     for (const index of this.candidateIndexes()) {
+      // Count every physical attempt, including failover; budget rejection must
+      // not itself be retried on another endpoint.
+      await this.beforeAttempt();
       try {
         const response = await this.fetchImpl(this.urls[index], {
           method: "POST",

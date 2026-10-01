@@ -35,6 +35,10 @@ export function validateResearchCohortCheckpoints(cohorts = {}, typeCounts = {})
 }
 
 export function validateEvidenceCheckpoint({ state, journal }) {
+  if (Number(state?.paperOpportunities?.evaluations || 0)
+      !== Number(journal?.typeCounts?.["paper-opportunity-evaluation"] || 0)) {
+    throw new Error("opportunity-evidence-checkpoint-divergence");
+  }
   const stateSequence = Number(state?.evidenceSequence || 0);
   const journalSequence = Number(journal?.sequence || 0);
   if (stateSequence !== journalSequence) throw new Error("evidence-state-divergence");

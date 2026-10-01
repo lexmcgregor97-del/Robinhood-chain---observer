@@ -83,3 +83,14 @@ test("the first transient eligible target can start an actual probe", () => {
     targetCount: 1, now: 300_000, lastAttemptAt: 0, intervalMs: 300_000,
   }), { start: true, reason: null });
 });
+
+test("selection diagnostics distinguish entry blockers from missing sell observations", () => {
+  const diagnostics = {};
+  selectSellProbeTargets([
+    candidate("blocked"), candidate("no-sell", { lastSellSwap: null }), candidate("ok"),
+  ], { ...callbacks({ ineligible: new Set(["blocked"]) }), diagnostics });
+  assert.equal(diagnostics.considered, 3);
+  assert.equal(diagnostics.entryBlocked, 1);
+  assert.equal(diagnostics.missingObservedSell, 1);
+  assert.equal(diagnostics.selected, 1);
+});

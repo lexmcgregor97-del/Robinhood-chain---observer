@@ -3,6 +3,17 @@ import assert from "node:assert/strict";
 import { validateEvidenceCheckpoint } from "./evidence-checkpoint.js";
 
 const hash = "a".repeat(64);
+
+test("opportunity totals must reconcile with durable evaluation events", () => {
+  const s = { evidenceSequence: 2, evidenceLastHash: hash,
+    paperOpportunities: { evaluations: 2 } };
+  const j = { sequence: 2, lastHash: hash,
+    typeCounts: { "paper-opportunity-evaluation": 2 } };
+  assert.equal(validateEvidenceCheckpoint({ state: s, journal: j }), true);
+  s.paperOpportunities.evaluations = 1;
+  assert.throws(() => validateEvidenceCheckpoint({ state: s, journal: j }),
+    /opportunity-evidence-checkpoint-divergence/);
+});
 const state = (trades = [{ type: "open" }, { type: "close" }]) => ({
   evidenceSequence: 4,
   evidenceLastHash: hash,
