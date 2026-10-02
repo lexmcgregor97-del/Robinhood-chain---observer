@@ -64,7 +64,7 @@ import { RpcTransport, rpcUrlsFromEnv } from "./rpc-transport.js";
 import { fetchLogsAdaptive } from "./rpc-log-query.js";
 import { envFlag } from "./runtime-flags.js";
 import { PaperOpportunities, opportunityQualification } from "./paper-opportunities.js";
-import { PaperTrialBudget } from "./paper-trial-budget.js";
+import { PaperTrialBudget, paperTrialStateFile } from "./paper-trial-budget.js";
 import { assessLiveReadiness } from "./live-readiness.js";
 import {
   probeTurnkeyPolicy, probeTurnkeyWallet, turnkeyConfigFromEnv,
@@ -79,7 +79,7 @@ import {
 } from "./v2-sell-probe.js";
 import {
   paperCycleDuringRecovery, paperOpenPositionCount, planLosslessRecovery,
-  recoveryPaperCycleMode,
+  recoveryPaperCycleMode, recoveryBlockLimit,
 } from "./recovery-policy.js";
 import {
   assessMicroMainnetActivation, forbiddenRuntimeSecretFailures,
@@ -124,7 +124,6 @@ const RPC_MIN_INTERVAL_MS = Number(process.env.RPC_MIN_INTERVAL_MS || 250);
 const RPC_JITTER_MS = Number(process.env.RPC_JITTER_MS || 50);
 const BACKFILL = 20_000;
 const CHUNK = 500;
-const MAX_RECOVERY_BLOCKS_PER_POLL = 100;
 const MAX_POOLS = 5_000;
 const SIGNAL_WINDOW_MS = Number(process.env.SIGNAL_WINDOW_MS || 60_000);
 const SIGNAL_BASELINE_MS = Number(process.env.SIGNAL_BASELINE_MS || 300_000);
@@ -919,6 +918,16 @@ async function bootstrap(latest) {
   }
 }
 
+function currentPaperOpenPositions() {
+  return paperOpenPositionCount([
+    ...[...paperBooks.values()].map((book) => book.portfolio.snapshot()),
+    ...[...frequencyCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+    ...[...lifecycleControlBooks.values()].map((book) => book.portfolio.snapshot()),
+    ...[...lifecycleCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+    ...[...opportunityCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
+  ]);
+}
+
 async function poll() {
   if (paperTrial?.reason()) return;
   try {
@@ -932,7 +941,7 @@ async function poll() {
       const recovery = planLosslessRecovery({
         cursor: metrics.cursor,
         latest,
-        maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
+        maxBlocksPerPoll: recoveryBlockLimit(currentPaperOpenPositions()),
       });
       await scanRange(recovery.from, recovery.to);
     }
@@ -956,13 +965,7 @@ async function poll() {
       === "completed-paper-epoch-not-flat";
     if ((!persistence.automationBlockedReason || completedEpochBlocked)
         && Date.now() - lastPaperCycleAt >= PAPER_CYCLE_MS) {
-      const openPositions = paperOpenPositionCount([
-        ...[...paperBooks.values()].map((book) => book.portfolio.snapshot()),
-        ...[...frequencyCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
-        ...[...lifecycleControlBooks.values()].map((book) => book.portfolio.snapshot()),
-        ...[...lifecycleCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
-        ...[...opportunityCandidateBooks.values()].map((book) => book.portfolio.snapshot()),
-      ]);
+      const openPositions = currentPaperOpenPositions();
       const cycleMode = completedEpochBlocked ? "exits-only" : recoveryPaperCycleMode({
         synchronized: ready.readyForPaper,
         openPositions,
@@ -1023,7 +1026,7 @@ function snapshot() {
     },
     recovery: {
       policy: "lossless-bounded-catchup",
-      maxBlocksPerPoll: MAX_RECOVERY_BLOCKS_PER_POLL,
+      maxBlocksPerPoll: recoveryBlockLimit(currentPaperOpenPositions()),
       skippedBlocks: metrics.recoverySkippedBlocks,
       remainingBlocks: Math.max(0, metrics.latestBlock - metrics.cursor),
       activeSince: metrics.recoveryActiveSince,
@@ -2518,7 +2521,9 @@ await restoreState();
 // One observer replica owns this ledger. It is deliberately separate from
 // market checkpoints: reserve each network attempt durably before sending it.
 if (!STATE_FILE || persistence.writeBlocked) throw new Error("paper-trial-durable-state-required");
-const trialFile = `${STATE_FILE}.paper-trial.json`;
+// A new ID is an explicit operator rearm; restarts with the same ID retain caps.
+// The previous trial's ledger is preserved, as are all market/paper checkpoints.
+const trialFile = paperTrialStateFile(STATE_FILE, process.env.PAPER_TRIAL_ID || "");
 paperTrial = new PaperTrialBudget({
   state: await loadJsonState(trialFile),
   maxRequests: Number(process.env.PAPER_TRIAL_MAX_RPC_REQUESTS || 10_000),

@@ -5,6 +5,7 @@ import {
   paperCycleDuringRecovery,
   planLosslessRecovery,
   recoveryPaperCycleMode,
+  recoveryBlockLimit,
 } from "./recovery-policy.js";
 
 test("a 308-block runtime lag scans all blocks without an eight-block jump", () => {
@@ -75,4 +76,36 @@ test("exit audit provenance follows synchronization rather than cycle mode", () 
 test("invalid open-position counts fail closed", () => {
   assert.throws(() => recoveryPaperCycleMode({ synchronized: false, openPositions: -1 }),
     /recovery-open-positions-invalid/);
+});
+
+test("flat recovery converges against a moving chain without skipping blocks", () => {
+  // Approximate the failed trial: 18,140 blocks behind, with 84 new blocks
+  // arriving per scan. The old 100-block batch cannot catch up in 214 polls.
+  let cursor = 1_000;
+  let latest = cursor + 18_140;
+  let polls = 0;
+  while (cursor < latest && polls < 214) {
+    const plan = planLosslessRecovery({ cursor, latest,
+      maxBlocksPerPoll: recoveryBlockLimit(0) });
+    assert.equal(plan.from, cursor + 1);
+    assert.equal(plan.skippedBlocks, 0);
+    cursor = plan.to;
+    polls++;
+    if (cursor < latest) latest += 84;
+  }
+  assert.equal(cursor, latest);
+  assert.ok(polls < 50);
+});
+
+test("positions in any cohort retain small recovery batches and exit-only management", () => {
+  for (let cohort = 0; cohort < 5; cohort++) {
+    const states = Array.from({ length: 5 }, (_, i) => ({
+      openPositions: i === cohort ? [{ pool: "open" }] : [],
+    }));
+    const count = paperOpenPositionCount(states);
+    assert.equal(recoveryBlockLimit(count), 100);
+    assert.equal(recoveryPaperCycleMode({ synchronized: false, openPositions: count }), "exits-only");
+  }
+  assert.throws(() => recoveryBlockLimit(NaN), /invalid/);
+  assert.throws(() => recoveryBlockLimit(-1), /invalid/);
 });

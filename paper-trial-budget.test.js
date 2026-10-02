@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PaperTrialBudget } from "./paper-trial-budget.js";
+import { PaperTrialBudget, paperTrialStateFile } from "./paper-trial-budget.js";
 import { RpcTransport } from "./rpc-transport.js";
 
 function make(options = {}) {
@@ -11,6 +11,13 @@ function make(options = {}) {
   const budget = new PaperTrialBudget(config);
   return { budget, config, saved: () => saved, time: (t) => { time = t; } };
 }
+test("explicit trial IDs isolate budgets while default retains the existing ledger", () => {
+  assert.equal(paperTrialStateFile("/data/state.json"), "/data/state.json.paper-trial.json");
+  assert.equal(paperTrialStateFile("/data/state.json", "catchup-1"), "/data/state.json.paper-trial.catchup-1.json");
+  for (const id of ["../reset", "a/b", "a.b", "x".repeat(81)]) {
+    assert.throws(() => paperTrialStateFile("/data/state.json", id), /invalid-paper-trial-id/);
+  }
+});
 test("concurrent transport attempts cannot exceed the shared cap", async () => {
   const { budget, saved } = make();
   let sent = 0;

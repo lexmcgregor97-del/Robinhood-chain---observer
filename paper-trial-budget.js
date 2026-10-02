@@ -1,3 +1,11 @@
+export function paperTrialStateFile(stateFile, trialId = "") {
+  if (!stateFile) throw new Error("paper-trial-durable-state-required");
+  if (typeof trialId !== "string" || (trialId && !/^[a-zA-Z0-9_-]{1,80}$/.test(trialId))) {
+    throw new Error("invalid-paper-trial-id");
+  }
+  return `${stateFile}.paper-trial${trialId ? `.${trialId}` : ""}.json`;
+}
+
 export class PaperTrialBudget {
   constructor({ state, maxRequests = 10_000, maxDurationMs = 2 * 60 * 60_000,
     noProgressMs = 30 * 60_000, now = Date.now, persist }) {

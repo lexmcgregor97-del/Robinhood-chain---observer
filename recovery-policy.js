@@ -39,6 +39,13 @@ export function recoveryPaperCycleMode({ synchronized, openPositions }) {
   return count > 0 ? "exits-only" : "paused";
 }
 
+// Flat books can use the scanner's existing 500-block log-query chunk.
+// Keep the smaller batch when exits need frequent attention.
+export function recoveryBlockLimit(openPositions) {
+  const count = nonNegativeInteger(openPositions, "recovery-open-positions");
+  return count === 0 ? 500 : 100;
+}
+
 export function paperOpenPositionCount(states = []) {
   if (!Array.isArray(states) || states.some((state) => (
     !state || !Array.isArray(state.openPositions)

@@ -42,22 +42,32 @@ test("normalizes a singleton address batch to a scalar filter", async () => {
   assert.equal(observedAddress, "0x1");
 });
 
-test("proactively chunks log queries to the Alchemy free-tier block limit", async () => {
+test("uses one request for a supported 500-block range", async () => {
   const ranges = [];
   const request = async (_method, [filter]) => {
-    const from = Number.parseInt(filter.fromBlock, 16);
-    const to = Number.parseInt(filter.toBlock, 16);
-    ranges.push([from, to]);
-    assert.ok(to - from + 1 <= 10);
+    ranges.push([parseInt(filter.fromBlock, 16), parseInt(filter.toBlock, 16)]);
     return [{ blockNumber: filter.fromBlock }];
   };
+  const logs = await fetchLogsAdaptive({ request, from: 100, to: 599,
+    address: ["0x1", "0x2"], topics: [] });
+  assert.deepEqual(ranges, [[100, 599]]);
+  assert.equal(logs.length, 1);
+});
 
-  const logs = await fetchLogsAdaptive({
-    request, from: 100, to: 124, address: ["0x1", "0x2"], topics: [],
-  });
-
-  assert.deepEqual(ranges, [[100, 109], [110, 119], [120, 124]]);
-  assert.equal(logs.length, 3);
+test("a restrictive provider falls back to complete ordered ranges before splitting addresses", async () => {
+  const accepted = [];
+  const address = ["0x1", "0x2"];
+  const request = async (_method, [filter]) => {
+    assert.deepEqual(filter.address, address);
+    const from = parseInt(filter.fromBlock, 16);
+    const to = parseInt(filter.toBlock, 16);
+    if (to - from + 1 > 10) throw Error("RPC: block range exceeds supported limit");
+    accepted.push([from, to]);
+    return Array.from({ length: to - from + 1 }, (_, i) => ({ blockNumber: from + i }));
+  };
+  const logs = await fetchLogsAdaptive({ request, from: 100, to: 599, address, topics: [] });
+  assert.equal(accepted.length, 64);
+  assert.deepEqual(logs.map((log) => log.blockNumber), Array.from({ length: 500 }, (_, i) => 100 + i));
 });
 
 test("fails closed when a single-block single-address query is rejected", async () => {
