@@ -2,6 +2,7 @@ import http from "node:http";
 import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { rankPools } from "./signals.js";
+import { poolAdmission, rankPaperPools } from "./pool-coverage.js";
 import { decodeSwapEvent, isV2SellToQuote } from "./market-data.js";
 import { quoteFlowFromSwap } from "./adaptive-flow.js";
 import { evaluateRiskGate } from "./risk-gate.js";
@@ -210,6 +211,8 @@ const PANCAKE_V3_SWAP = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d264
 const UNISWAP_V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
 const pools = new Map();
+const poolCoverage = { admitted: 0, evictedDormant: 0, capacityRejected: 0,
+  trackedSwapLogs: 0, untrackedSwapLogs: 0 };
  const v3BoundaryCache = new Map();
 function createPaperBooks() {
   return new Map([
@@ -500,6 +503,7 @@ async function verifyConfiguredGasMeasurement() {
 function persistedState() {
   return {
     paperOpportunities: paperOpportunities.snapshot(),
+    poolCoverage: { ...poolCoverage },
     cursor: metrics.cursor,
     pools: [...pools.values()],
     paperBooks: Object.fromEntries([...paperBooks].map(([quoteToken, book]) => [
@@ -560,6 +564,10 @@ async function restoreState() {
       return;
     }
     paperOpportunities = new PaperOpportunities(state.paperOpportunities);
+    for (const key of Object.keys(poolCoverage)) {
+      const value = state.poolCoverage?.[key];
+      if (Number.isSafeInteger(value) && value >= 0) poolCoverage[key] = value;
+    }
     for (const savedPool of (state.pools || []).slice(0, MAX_POOLS)) {
       const pool = {
         ...savedPool,
@@ -770,8 +778,22 @@ async function getLogs(from, to, address, topics) {
   return (result || []).map((log) => ({ ...log, blockNumber: intHex(log.blockNumber) }));
 }
 
-function registerPool(pool) {
-  if (pools.has(pool.address) || pools.size >= MAX_POOLS) return;
+function registerPool(pool, protectedAddresses) {
+  const admission = poolAdmission(pools, pool, { capacity: MAX_POOLS,
+    nowMs: pool.discoveryTimestampMs, retentionMs: Math.max(FLOW_HISTORY_MS, SIGNAL_HISTORY_MS),
+    protectedAddresses });
+  if (!admission.admitted) {
+    if (admission.reason === "capacity-protected") poolCoverage.capacityRejected++;
+    return;
+  }
+  if (admission.evict) {
+    const evicted = pools.get(admission.evict);
+    if (evicted.version === "v2") metrics.v2Pools--;
+    else metrics.v3Pools--;
+    pools.delete(admission.evict);
+    sellProbeByPool.delete(admission.evict);
+    poolCoverage.evictedDormant++;
+  }
   pools.set(pool.address, {
     ...pool,
     swapCount: 0,
@@ -782,9 +804,10 @@ function registerPool(pool) {
   });
   if (pool.version === "v2") metrics.v2Pools += 1;
   else metrics.v3Pools += 1;
+  poolCoverage.admitted++;
 }
 
-async function discover(from, to, rangeTimes) {
+async function discover(from, to, rangeTimes, protectedAddresses) {
   const factories = new Map(ROBINHOOD.factories.map(
     (factory) => [factory.address.toLowerCase(), factory],
   ));
@@ -800,7 +823,7 @@ async function discover(from, to, rangeTimes) {
       fee: factory.version === "v3" ? intHex(log.topics[3]) : null,
       discoveryBlock: log.blockNumber,
       discoveryTimestampMs: estimateBlockTimestamp(log.blockNumber, rangeTimes),
-    });
+    }, protectedAddresses);
   }
 }
 
@@ -861,13 +884,27 @@ function recordSwap(log, timestampMs) {
   metrics.swaps += 1;
 }
 
-async function observeSwaps(from, to, rangeTimes) {
-  const logs = await getLogs(
-    from, to, undefined, [[V2_SWAP, PANCAKE_V3_SWAP, UNISWAP_V3_SWAP]],
-  );
-  logs.forEach((log) => recordSwap(
-    log, estimateBlockTimestamp(log.blockNumber, rangeTimes),
-  ));
+function observeSwaps(logs, rangeTimes) {
+  for (const log of logs) {
+    if (pools.has(String(log.address).toLowerCase())) poolCoverage.trackedSwapLogs++;
+    else poolCoverage.untrackedSwapLogs++;
+    recordSwap(log, estimateBlockTimestamp(log.blockNumber, rangeTimes));
+  }
+}
+
+function protectedPoolAddresses(logs) {
+  const protectedAddresses = new Set(logs.map((log) => String(log.address).toLowerCase()));
+  for (const books of [paperBooks, frequencyCandidateBooks, lifecycleControlBooks,
+    lifecycleCandidateBooks, opportunityCandidateBooks]) {
+    for (const book of books.values()) {
+      for (const address of book.portfolio.positions.keys()) protectedAddresses.add(address);
+    }
+  }
+  for (const address of shadowEvaluator.pendingPoolAddresses()) protectedAddresses.add(address);
+  if (sellProbePromise) {
+    for (const candidate of latestSellProbeCandidates) protectedAddresses.add(candidate.address);
+  }
+  return protectedAddresses;
 }
 
 async function blockRangeTimes(from, to) {
@@ -899,8 +936,10 @@ async function scanRange(from, to) {
   for (let start = from; start <= to; start += CHUNK) {
     const end = Math.min(start + CHUNK - 1, to);
     const rangeTimes = await blockRangeTimes(start, end);
-    await discover(start, end, rangeTimes);
-    await observeSwaps(start, end, rangeTimes);
+    const swapLogs = await getLogs(start, end, undefined,
+      [[V2_SWAP, PANCAKE_V3_SWAP, UNISWAP_V3_SWAP]]);
+    await discover(start, end, rangeTimes, protectedPoolAddresses(swapLogs));
+    observeSwaps(swapLogs, rangeTimes);
     logDeduplicator.prune(end);
     metrics.cursor = end;
     if (metrics.backfill.active) metrics.backfill.current = end;
@@ -1036,6 +1075,8 @@ function snapshot() {
     backfill,
     poolDiscovery: { v2Pools: metrics.v2Pools, v3Pools: metrics.v3Pools,
       totalPools: pools.size, swapsObserved: metrics.swaps, capacity: MAX_POOLS },
+    poolCoverage: { ...poolCoverage, countersSince: "coverage-fix-deployment",
+      retentionMs: Math.max(FLOW_HISTORY_MS, SIGNAL_HISTORY_MS) },
     venues: Object.fromEntries(["pancakeswap", "uniswap"].map((dex) => [dex,
       [...pools.values()].filter((pool) => pool.dex === dex).length])),
     rpcLatencyMs: metrics.rpcLatencyMs,
@@ -1529,10 +1570,11 @@ async function measureCandidates(limit, {
   const quoteTokens = new Set(ROBINHOOD.quoteTokens.map(
     (token) => token.address.toLowerCase(),
   ));
-  const ranked = signals(25).filter((pool) => (
-    pool.version === "v2"
-      && quoteTokens.has(pool.token0) !== quoteTokens.has(pool.token1)
-  )).slice(0, limit);
+  const ranked = rankPaperPools([...pools.values()],
+    (metrics.blockTimestamp * 1_000) || Date.now(), {
+      quoteTokens, limit, windowMs: SIGNAL_WINDOW_MS,
+      baselineMs: SIGNAL_BASELINE_MS, minSwaps: SIGNAL_MIN_SWAPS,
+    });
   const measured = await Promise.all(ranked.map(async (pool) => ({
     ...pool, paperCohort: cohort,
     marketSafety: await marketSafety(pool, { books, strategy }),

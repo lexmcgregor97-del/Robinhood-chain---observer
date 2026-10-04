@@ -110,3 +110,34 @@ test("restored flat observer catches up and reaches paper evaluation in one scan
   assert.ok(paper.opportunityExperiment.automation.measurementCycles > 0);
   assert.equal(paper.execution.automaticSubmissionEnabled, false);
 });
+
+test("real scanner admits a new factory pool after restoring a full dormant registry", { timeout: 15_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "atlas-coverage-"));
+  const stateFile = join(directory, "state.json");
+  const pools = Array.from({ length: 5000 }, (_, i) => ({
+    address: `0x${(i + 1).toString(16).padStart(40, "0")}`,
+    version: "v2", token0: "old-token", token1: "other-token",
+    discoveryTimestampMs: 1, lastSwapTimestampMs: 0, swapCount: 0,
+  }));
+  await saveJsonState(stateFile, { cursor: 1, pools });
+  const run = start(stateFile, { PAPER_TRIAL_MAX_RPC_REQUESTS: "100",
+    TEST_DISCOVER_NEW_POOL: "true" });
+  t.after(async () => { await stop(run); await rm(directory, { recursive: true, force: true }); });
+  const url = await run.ready;
+  let health;
+  for (let i = 0; i < 200; i++) {
+    health = await (await fetch(`${url}/health`)).json();
+    if (health.polling.successful > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(health.poolDiscovery.totalPools, 5000);
+  assert.equal(health.poolDiscovery.v2Pools, 5000);
+  assert.equal(health.poolCoverage.admitted, 1);
+  assert.equal(health.poolCoverage.evictedDormant, 1);
+  assert.equal(health.poolCoverage.capacityRejected, 0);
+  await stop(run);
+  const state = await loadJsonState(stateFile);
+  assert.ok(state.pools.some((pool) => pool.address === "0x" + "a".repeat(40)));
+  assert.equal(state.pools.some((pool) => pool.address === pools[0].address), false);
+  assert.equal(state.poolCoverage.evictedDormant, 1);
+});
